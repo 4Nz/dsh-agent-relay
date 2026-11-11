@@ -154,7 +154,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 
 | 编号 | 任务 | 内容 |
 | --- | --- | --- |
-| T3.1 | 工具 | `relay_list_sessions`：列出某个 Agent 的候选会话。`relay_subscribe`：创建主动订阅。`relay_list`：查看订阅及状态。`relay_stop`：停止订阅。`relay_send`：转发消息，支持“发送后订阅” |
+| T3.1 | 工具 | `relay_list_sessions`：列出某个 Agent 的候选会话。`relay_subscribe`：创建主动订阅。`relay_list`：查看订阅及状态。`relay_stop`：停止订阅。`relay_check`：执行一次到期检查，未到期或暂停时跳过。`relay_send`：转发消息，支持“发送后订阅” |
 | T3.2 | DSH 侧 Skill | 什么时候订阅；有多个候选会话时先让用户确认；发送前复述目标会话；区分“已发送”和“已完成” |
 | T3.3 | 外部 Agent 侧通知 Skill | 给 Claude、Codex 用：用户说“完成后通知 DSH”时，先登记 `push` 订阅，使用 DSH 设置页面统一配置的共享 token，任务结束时调用 T2.6 的入口发送结果摘要。具体调用方式取决于 T0.6 |
 
@@ -231,3 +231,12 @@ T7 最后做端到端验收
 2. **M2 主动订阅**：T2.1～T2.5、Claude Adapter、`relay_subscribe` 和 `relay_list` 工具、看板。跑通 T7.1、T7.2。
 3. **M3 转发与会话分组**：T2.7、`relay_send` 工具、T6.3。跑通 T7.4。
 4. **M4 主动通知与 Codex**：T2.6、T3.3、Codex Adapter。跑通 T7.3、T7.5。
+
+
+## M2 实施状态（2026-11-11）
+
+T2.4、T2.5、插件入口接线及启动对账、T3.1 订阅相关工具、T6.1/T6.2/T6.4 已实现。工具包含 relay_list_sessions、relay_subscribe、relay_list、relay_stop、relay_check。T4 已提供页面所需的 Agent 能力、候选会话、订阅创建/分页/详情/暂停/恢复/停止/到期检查 RPC；外部 push HTTP、转发接口仍未实现。周期及有效期的独立修改接口尚未开放。
+
+两类 Adapter 都已注册，Codex 保持只读。M2 创建入口只开放 poll；push 投递时新建会话、外部通知入口、relay_send、DSH Skill 和共享凭证设置留给后续任务。
+
+实际验证及未验证项见 `T2.4-T2.5-T3.1-T4-T6-M2-implementation.md`，不以单元测试替代真实投递验收。

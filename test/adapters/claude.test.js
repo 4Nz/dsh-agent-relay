@@ -88,6 +88,7 @@ test("snapshot：会话不存在为 closed；busy 时不判定结束；状态查
   const broken = await adapter(dir, runner({ agentsFail: true }).run).snapshot(ID, null);
   assert.equal(broken.runtime, "unknown");
   assert.match(broken.runtime_error, /退出码 1/);
+  assert.match(broken.check_error, /退出码 1/);
 
   await assert.rejects(adapter(dir, empty.run).snapshot("../etc/passwd"), /格式无效/);
 });

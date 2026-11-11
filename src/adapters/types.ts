@@ -32,6 +32,8 @@ export interface Snapshot {
   held: boolean;
   // 运行状态查询失败的原因；此时 runtime 为 unknown。
   runtime_error: string | null;
+  // 实际查询失败；与 Codex 正常的实时状态 unknown 说明分开。
+  check_error: string | null;
   // 基线之后开始、且已经结束的最近一轮。
   finished_turn: { result: TurnResult; external_ref: string } | null;
   last_reply: string | null;

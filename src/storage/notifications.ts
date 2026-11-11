@@ -56,6 +56,9 @@ export function createNotifications(db: DatabaseSync) {
   }
   return {
     getBySubscription,
+    listUnknown() {
+      return db.prepare(`SELECT * FROM ${table} WHERE delivery_status='unknown' ORDER BY created_at,id`).all().map(row => decode<Notification>(row)!);
+    },
     record({
       notification,
       now,

@@ -227,3 +227,9 @@ test("历史清理：启动时执行一次，按间隔重复，出错不中断",
   assert.deepEqual(calls[0], { now: 5, retention_days: 30 });
   assert.deepEqual(errors, ["锁冲突"]);
 });
+
+test('对账不采纳属于其他会话或其他插件的 task id',async t=>{
+ const{store,sched,service}=fixture(t);const sub=(await service.subscribe(poll)).subscription;
+ sched.tasks.set(sub.schedule_task_id,{id:sub.schedule_task_id,sessionId:'another',prompt:'其他插件提醒',status:'active'});
+ const result=await service.reconcile();assert.equal(result.created,1);assert.notEqual(store.subscriptions.get(sub.id).schedule_task_id,sub.schedule_task_id);assert.ok(sched.tasks.has(sub.schedule_task_id));
+});

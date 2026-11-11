@@ -211,8 +211,9 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       const wanted = new Set<string>();
       for (const sub of [...unfinished()]) {
         if (!sub.dsh_session_id) continue;
-        if (sub.schedule_task_id && live.has(sub.schedule_task_id)) {
-          wanted.add(sub.schedule_task_id);
+        const existing = sub.schedule_task_id ? live.get(sub.schedule_task_id) : undefined;
+        if (existing && existing.sessionId === sub.dsh_session_id && MARKER.exec(existing.prompt)?.[1] === sub.id) {
+          wanted.add(existing.id);
           continue;
         }
         try {

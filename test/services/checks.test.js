@@ -1,0 +1,161 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openRelayStore } from "../../lib/storage/index.js";
+import { createAdapterRegistry } from "../../lib/adapters/registry.js";
+import { createCheckService } from "../../lib/services/checks.js";
+function fixture(t) {
+  const dir = mkdtempSync(join(tmpdir(), "relay-check-"));
+  const store = openRelayStore({ dataDir: dir });
+  t.after(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const state = {
+    now: 1000,
+    calls: 0,
+    deleted: 0,
+    snapshot: {
+      closed: false,
+      title: "测试",
+      cwd: null,
+      cursor: { uuid: "b", timestamp: 2000 },
+      last_activity_at: 2000,
+      runtime: "idle",
+      held: false,
+      runtime_error: null,
+      finished_turn: { result: "completed", external_ref: "turn" },
+      last_reply: "完成",
+    },
+  };
+  const adapter = {
+    agent: "claude",
+    capabilities: () => ({ snapshot: true }),
+    snapshot: async () => {
+      state.calls++;
+      if (state.error) throw Error("读取失败");
+      if (state.wait) await state.wait;
+      return state.snapshot;
+    },
+  };
+  const service = createCheckService({
+    store,
+    adapters: createAdapterRegistry([adapter]),
+    scheduler: {
+      delete: async () => {
+        state.deleted++;
+        return true;
+      },
+    },
+    now: () => state.now,
+  });
+  const sub = store.subscriptions.create({
+    id: "s",
+    owner: "local",
+    type: "poll",
+    agent: "claude",
+    external_session_id: "ext",
+    dsh_session_id: "dsh",
+    schedule_task_id: "task",
+    check_interval_seconds: 3600,
+    cursor: { uuid: "a", timestamp: 0 },
+    created_at: 1000,
+    updated_at: 1000,
+  });
+  return { store, state, service, sub };
+}
+test("未到期不读取；观察新消息后仍可判定已结束轮次，重复检查只登记一次通知", async (t) => {
+  const { store, state, service, sub } = fixture(t);
+  assert.equal((await service.check("s")).status, "not_due");
+  assert.equal(state.calls, 0);
+  state.now = sub.expires_at;
+  assert.equal((await service.check("s")).status, "extended");
+  state.now = store.subscriptions.get("s").expires_at;
+  assert.equal((await service.check("s")).status, "notified");
+  assert.equal(store.notifications.getBySubscription("s").result, "completed");
+  assert.equal(store.subscriptions.get("s").status, "ended");
+  await service.check("s");
+  assert.equal(state.calls, 2);
+  assert.equal(state.deleted, 1);
+});
+test("busy 顺延；连续查询失败达到三次才产生 unreachable", async (t) => {
+  const { store, state, service, sub } = fixture(t);
+  state.now = sub.expires_at;
+  state.snapshot.runtime = "busy";
+  assert.equal((await service.check("s")).status, "extended");
+  state.error = true;
+  for (let i = 1; i <= 3; i++) {
+    state.now = store.subscriptions.get("s").expires_at;
+    await service.check("s");
+    assert.equal(store.subscriptions.get("s").consecutive_failures, i);
+  }
+  assert.equal(
+    store.notifications.getBySubscription("s").result,
+    "unreachable",
+  );
+});
+for (const result of ["session_closed", "expired", "idle_timeout", "failed"])
+  test(result, async (t) => {
+    const { store, state, service, sub } = fixture(t);
+    state.now = result === "expired" ? sub.hard_expires_at : sub.expires_at;
+    state.snapshot.cursor = { uuid: "a", timestamp: 0 };
+    state.snapshot.closed = result === "session_closed";
+    state.snapshot.finished_turn =
+      result === "failed" ? { result: "failed", external_ref: "turn" } : null;
+    await service.check("s");
+    assert.equal(store.notifications.getBySubscription("s").result, result);
+  });
+test("检查中跳过重入，等待期间停止后不生成通知", async (t) => {
+  const { store, state, service, sub } = fixture(t);
+  state.now = sub.expires_at;
+  let release;
+  state.wait = new Promise((r) => (release = r));
+  const pending = service.check("s");
+  assert.equal((await service.check("s")).status, "running");
+  store.subscriptions.update({
+    id: "s",
+    expected_status: "active",
+    patch: {
+      status: "ended",
+      end_reason: "user_stopped",
+      ended_at: state.now,
+      updated_at: state.now,
+    },
+  });
+  release();
+  await pending;
+  assert.equal(store.notifications.getBySubscription("s"), null);
+});
+
+test("快照读取成功但状态查询实际失败，累计失败而不生成完成通知", async (t) => {
+  const { store, state, service, sub } = fixture(t);
+  state.snapshot.check_error = "Claude 状态命令失败";
+  state.snapshot.runtime_error = "Claude 状态命令失败";
+  state.snapshot.runtime = "unknown";
+  for (let i = 0; i < 3; i++) {
+    state.now = store.subscriptions.get("s").expires_at;
+    await service.check("s");
+  }
+  assert.equal(store.subscriptions.get("s").last_check_status, "error");
+  assert.equal(
+    store.notifications.getBySubscription("s").result,
+    "unreachable",
+  );
+});
+test("Codex 正常实时状态未知说明不作为查询失败", async (t) => {
+  const { store, state, service, sub } = fixture(t);
+  state.snapshot.runtime = "unknown";
+  state.snapshot.runtime_error = "daemon 无法确认桌面实时状态";
+  state.snapshot.check_error = null;
+  state.snapshot.cursor = { uuid: "a", timestamp: 0 };
+  state.snapshot.finished_turn = null;
+  state.now = sub.expires_at;
+  await service.check("s");
+  assert.equal(
+    store.notifications.getBySubscription("s").result,
+    "idle_timeout",
+  );
+  assert.equal(store.subscriptions.get("s").consecutive_failures, 0);
+});

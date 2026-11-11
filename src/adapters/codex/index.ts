@@ -43,7 +43,7 @@ function checkId(id: string) {
 }
 const closedSnapshot = (): Snapshot => ({
   closed: true, title: null, cwd: null, cursor: null, last_activity_at: null,
-  runtime: 'unknown', held: false, runtime_error: null, finished_turn: null, last_reply: null,
+  runtime: 'unknown', held: false, runtime_error: null, check_error: null, finished_turn: null, last_reply: null,
 });
 
 export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdapter {
@@ -137,6 +137,7 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
         return {
           ...metadata, closed: false, cursor, last_activity_at: activity,
           runtime_error: metadata.runtime === 'unknown' ? 'daemon 无法确认桌面会话的实时运行状态' : null,
+          check_error: null,
           finished_turn: finished, last_reply: reply,
         };
       });

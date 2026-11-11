@@ -197,6 +197,7 @@ export function createClaudeAdapter(
           runtime: "unknown",
           held: false,
           runtime_error: null,
+          check_error: null,
           finished_turn: null,
           last_reply: null,
         };
@@ -215,6 +216,7 @@ export function createClaudeAdapter(
         runtime: state.runtime,
         held: state.held,
         runtime_error: state.error,
+        check_error: state.error,
         finished_turn: finished,
         last_reply: transcript.last_reply,
       };

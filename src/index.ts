@@ -1,47 +1,159 @@
-import type { Context } from '@deepseek-ai/cordis'
-import { join } from 'node:path'
-import { mkdir } from 'node:fs/promises'
-import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { openRelayStore } from './storage/index.js'
-import { registerTools } from './tools.js'
-import { startHistoryCleanup } from './services/cleanup.js'
+import type { Context } from "@deepseek-ai/cordis";
+import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
+import { openRelayStore } from "./storage/index.js";
+import { registerTools } from "./tools.js";
+import { startHistoryCleanup } from "./services/cleanup.js";
 
-// workspaceRegistry 服务由 dsh-workspace 提供；这里声明最小类型，避免直接依赖该包。
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    workspaceRegistry: {
-      create(path: string, title?: string): Promise<unknown>
-    }
-  }
+import { createAdapterRegistry } from "./adapters/registry.js";
+import { createClaudeAdapter } from "./adapters/claude/index.js";
+import { createCodexAdapter } from "./adapters/codex/index.js";
+import { createDshScheduler } from "./services/scheduler.js";
+import { createSubscriptionService } from "./services/subscriptions.js";
+import { createCheckService } from "./services/checks.js";
+import { createNotificationService } from "./services/notifications.js";
+import {
+  createDshDelivery,
+  type DshDeliveryContext,
+} from "./services/delivery.js";
+import { createRelayService, type RelayService } from "./services/relay.js";
+import { acquireRuntimeLock } from "./services/lock.js";
+import { startRelayRuntime } from "./services/runtime.js";
+import { registerRelayApi, type RelayConnection } from "./api.js";
+
+interface RelayHost extends DshDeliveryContext {
+  schedule: unknown;
+  connection: RelayConnection;
+  workspaceRegistry: { create(path: string, title?: string): Promise<unknown> };
+  sessionQuery: DshDeliveryContext["sessionQuery"] & {
+    listSessions(): Promise<{ header: { id: string } }[]>;
+    readTitle(id: string): Promise<{ title: string } | undefined>;
+  };
 }
-
-export const inject = ['tools', 'workspaceRegistry']
-
-const RELAY_GROUP_TITLE = 'Agent Relay'
+export const inject = [
+  "tools",
+  "workspaceRegistry",
+  "schedule",
+  "sessionController",
+  "sessions",
+  "sessionQuery",
+  "connection",
+];
+const RELAY_GROUP_TITLE = "Agent Relay";
 
 export function apply(ctx: Context): void {
-  const store = openRelayStore({ dataDir: join(resolveDshHome(), 'agent-relay') })
-  ctx.effect(() => () => store.close())
-  registerTools(ctx, store)
-  ctx.effect(() =>
-    startHistoryCleanup({
-      store,
-      onError: (error) => ctx.logger.warn('[agent-relay] history cleanup failed: %s', error),
-    }),
-  )
-  void ensureRelayWorkspace(ctx)
-  ctx.logger.info('[agent-relay] server plugin loaded')
+  const host = ctx as unknown as RelayHost;
+  const dataDir = join(resolveDshHome(), "agent-relay");
+  const releaseLock = acquireRuntimeLock(dataDir);
+  let store: ReturnType<typeof openRelayStore>;
+  try {
+    store = openRelayStore({ dataDir });
+  } catch (error) {
+    releaseLock();
+    throw error;
+  }
+  const adapters = createAdapterRegistry([
+    createClaudeAdapter(),
+    createCodexAdapter(),
+  ]);
+  const scheduler = createDshScheduler(host.schedule);
+  const subscriptions = createSubscriptionService({
+    store,
+    adapters,
+    scheduler,
+  });
+  const checks = createCheckService({ store, adapters, scheduler });
+  const notifications = createNotificationService({
+    store,
+    transport: createDshDelivery(host),
+  });
+  const service = createRelayService({
+    store,
+    adapters,
+    subscriptions,
+    checks,
+    notifications,
+    listDshSessions: async () => {
+      const sessions = await host.sessionQuery.listSessions();
+      return Promise.all(
+        sessions.map(async (record) => ({
+          id: record.header.id,
+          title:
+            (
+              await host.sessionQuery
+                .readTitle(record.header.id)
+                .catch(() => undefined)
+            )?.title ?? record.header.id,
+        })),
+      );
+    },
+  });
+  let stopping = false;
+  const operations = new Set<Promise<unknown>>();
+  const runtime = startRelayRuntime({
+    store,
+    subscriptions,
+    notifications,
+    onError: (error) =>
+      ctx.logger.warn("[agent-relay] reconciliation failed: %s", error),
+    beforeClose: async () => {
+      await Promise.allSettled([...operations]);
+    },
+  });
+  const relay: RelayService = {
+    call(endpoint, payload, currentSession) {
+      if (stopping)
+        return Promise.resolve({
+          ok: false,
+          error: { code: "unavailable", message: "插件正在停止" },
+        });
+      const operation = runtime.ready
+        .then(() => service.call(endpoint, payload, currentSession))
+        .catch(() => ({
+          ok: false as const,
+          error: { code: "unavailable", message: "插件启动对账失败" },
+        }));
+      operations.add(operation);
+      void operation.finally(() => operations.delete(operation));
+      return operation;
+    },
+  };
+  let stopApi = () => {};
+  let stopCleanup = () => {};
+  ctx.effect(() => async () => {
+    stopping = true;
+    stopApi();
+    stopCleanup();
+    try {
+      await runtime.stop();
+    } finally {
+      releaseLock();
+    }
+  });
+  registerTools(ctx, store, relay);
+  stopApi = registerRelayApi(host.connection, relay);
+  stopCleanup = startHistoryCleanup({
+    store,
+    onError: (error) =>
+      ctx.logger.warn("[agent-relay] history cleanup failed: %s", error),
+  });
+  void ensureRelayWorkspace(ctx);
+  ctx.logger.info("[agent-relay] server plugin loaded");
 }
 
 // T6.3 通知会话分组的前置：在插件数据目录下建专用目录并注册为 workspace 项目，
 // 通知投递新建的会话以该目录为 cwd 时会自动归入「Agent Relay」分组。
 async function ensureRelayWorkspace(ctx: Context): Promise<void> {
-  const relayDir = join(resolveDshHome(), 'agent-relay', 'conversations')
+  const relayDir = join(resolveDshHome(), "agent-relay", "conversations");
   try {
-    await mkdir(relayDir, { recursive: true, mode: 0o700 })
-    await ctx.workspaceRegistry.create(relayDir, RELAY_GROUP_TITLE)
-    ctx.logger.info('[agent-relay] workspace group ready')
+    await mkdir(relayDir, { recursive: true, mode: 0o700 });
+    await (ctx as unknown as RelayHost).workspaceRegistry.create(
+      relayDir,
+      RELAY_GROUP_TITLE,
+    );
+    ctx.logger.info("[agent-relay] workspace group ready");
   } catch (error) {
-    ctx.logger.warn('[agent-relay] workspace group init failed:', error)
+    ctx.logger.warn("[agent-relay] workspace group init failed:", error);
   }
 }

@@ -38,3 +38,6 @@ coverage/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# 本机浏览器验收临时产物
+/.playwright-cli/

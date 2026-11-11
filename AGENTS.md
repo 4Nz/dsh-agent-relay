@@ -4,7 +4,7 @@
 
 DSH Agent Relay 是 DSH 的外部 Agent 任务订阅、通知与消息转发插件，目标是在 DSH 中关注指定外部会话，并向原会话补充消息。
 
-当前已实现独立的 T1 SQLite 存储模块（`src/storage/`）、T5.1 Claude Adapter（`src/adapters/claude/`，说明见 `docs/T5.1-claude-adapter.md`），以及 T2.2 注册表、T2.3 订阅服务和 T2.8 历史清理（`src/adapters/registry.ts`、`src/services/`，说明见 `docs/T2.2-T2.3-T2.8-subscription-service.md`）。尚未实现检查执行器、通知投递、转发服务、正式工具、页面与 Codex 接入；订阅服务尚未接入插件入口。不要把规划中的能力描述为已经实现。Node.js >=24，TypeScript（ESM），无第三方运行依赖，先运行 `rtk npm ci` 安装开发依赖；运行 `rtk npm run typecheck` 检查类型，`rtk npm test` 构建并运行存储与 Adapter 单元测试。Claude 真实冒烟测试会调用本机 CLI 并产生费用，单独运行 `rtk proxy node test/smoke/claude-smoke.js`。
+当前已实现 T1 SQLite 存储、Claude 与 Codex Adapter、T2.2 注册表、T2.3 订阅服务、T2.4 检查执行器、T2.5 通知服务和 T2.8 历史清理，并已接入插件入口。提供 M2 订阅工具、认证 RPC、订阅看板与新建订阅；Codex 仅支持只读。实现与验收边界见 `docs/T2.4-T2.5-T3.1-T4-T6-M2-implementation.md`。尚未实现转发服务、`relay_send`、push HTTP 入口和通知凭证设置，不能描述为已支持。Node.js >=24，TypeScript（ESM），运行依赖为 DSH 官方包和 Node.js 内置模块。先运行 `rtk npm ci --cache ./.npm-cache`；`rtk npm run typecheck` 检查服务端与前端类型，`rtk npm test` 构建并运行单元测试。真实冒烟单独运行 `rtk proxy node test/smoke/claude-smoke.js` 或 `rtk proxy node test/smoke/m2-smoke.js`，会新建专用 Claude 会话并产生费用。
 
 ## 开发语言与插件形态
 
