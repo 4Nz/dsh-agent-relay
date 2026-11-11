@@ -69,8 +69,8 @@
 | 编号 | 任务 | 要确认的内容 |
 | --- | --- | --- |
 | T0.1 | 插件骨架 | 服务端插件、前端 `client-ui` 插件、工具和 Skill 分别怎么写，怎么打包，怎么挂到 profile 的 `cordis.patch.yml` |
-| T0.2 | 存储 | goals 写的是 `dsh-storage-sqlite`，但本机只找到 `dsh-storage`、`dsh-storage-domain`、`dsh-storage-json`、`dsh-session-query-sqlite`。需要确认插件能否建表，支不支持唯一约束和分页查询 |
-| T0.3 | 定时 | `dsh-schedule` 到点会给会话发一条提示。需要确认插件能否通过代码创建和删除定时任务，触发时执行插件逻辑；不行就改用 `cordis-plugin-timer` |
+| T0.2 | 存储 | 已核实：`dsh-storage-sqlite` 不存在，DSH 自带存储是 KV 模型（`dsh-storage` + `dsh-storage-json` + `dsh-storage-domain`），缺唯一约束/分页/事务。第一版自建 SQLite（`node:sqlite`）建表 |
+| T0.3 | 定时 | 已核实：`dsh-schedule` 到点把提醒文本投递进绑定会话、唤醒该会话 agent，不执行插件代码。第一版用 `schedule_create` 做周期检查，检查动作由 agent 调 `relay_check` 工具执行 |
 | T0.4 | 投递与会话分组 | 插件怎么把通知送进 DSH 会话，是新建会话还是投到已有会话；会话能不能打标签或分组 |
 | T0.5 | 前端扩展点 | 怎么注册菜单页面，怎么在会话列表里加分组，前端怎么调用插件的后端接口 |
 | T0.6 | 外部通知入口 | 外部 Agent 怎么把通知送到 DSH：本机 HTTP 接口或 CLI，以及调用方怎么认证 |
@@ -79,7 +79,7 @@
 
 ## T1 存储设计（依赖 T0.2）
 
-先定下逻辑模型。T0.2 确认存储方式后，再落成具体的表结构。
+存储已定为自建 SQLite（`node:sqlite`）。以下逻辑模型直接建表，唯一约束、筛选与分页由 SQL 提供。
 
 **`relay_subscription`**：订阅
 
@@ -131,8 +131,8 @@
 | --- | --- | --- |
 | T2.1 | `AgentAdapter` 接口 | `listSessions()` 列出候选会话；`snapshot(sessionId)` 返回当前位置、最近活动时间、运行状态（`idle` / `busy` / `unknown`）、任务是否已结束、最后一条回复；`sendMessage(sessionId, text)`；`capabilities()` 声明支持哪些操作，不支持的操作返回“不支持” |
 | T2.2 | Adapter 注册表 | 按 `agent` 字段查找。新增 Agent 只需加一个 Adapter |
-| T2.3 | 订阅服务 | 创建：先取一次 `snapshot` 作为基线，写订阅，再建定时任务。暂停、恢复、手动停止。启动时按订阅表对账，补上缺失的定时任务，删掉多余的 |
-| T2.4 | 检查执行器 | 定时触发后调用 `snapshot`，按订阅加锁，上一轮没跑完就跳过。检测到任务结束，或在非 `busy` 状态下超过空闲时长（见“空闲超时”），就生成通知并结束订阅。检查失败时累加 `consecutive_failures`，成功时清零，达到阈值生成 `unreachable` 通知并结束订阅。只更新检查状态，不写逐条进展 |
+| T2.3 | 订阅服务 | 创建：先取一次 `snapshot` 作为基线，写订阅，再 `schedule_create` 建周期提醒。暂停、恢复、手动停止。启动时按订阅表对账，补上缺失的提醒、删掉多余的 |
+| T2.4 | 检查执行器 | 由 `schedule` 提醒唤醒的 agent 调 `relay_check` 工具触发，内部调用 `snapshot`，按订阅加锁，上一轮没跑完就跳过。检测到任务结束，或在非 `busy` 状态下超过空闲时长（见“空闲超时”），就生成通知并结束订阅。检查失败时累加 `consecutive_failures`，成功时清零，达到阈值生成 `unreachable` 通知并结束订阅。只更新检查状态，不写逐条进展 |
 | T2.5 | 通知服务 | 两种订阅共用。生成通知和结束订阅放在同一个事务里；投递失败时重试，重试耗尽后在看板上标记。送达 `push` 订阅后，`end_reason=delivered` |
 | T2.6 | 外部通知入口 | 接收 `push` 通知，校验 `push_token`，交给通知服务。重复通知按唯一约束忽略 |
 | T2.7 | 转发服务 | 写入 `relay_message`，调用 Adapter 发送。会话处理中或不支持发送时记为 `rejected` 并写明原因。可选“发送后订阅”：发送成功后自动创建一条 `poll` 订阅，任务完成时通知 |
