@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type {
   RelayStore,
@@ -20,6 +21,8 @@ export const endpoints = [
   "sessions",
   "dsh_sessions",
   "subscribe",
+  "send",
+  "messages",
   "list",
   "get",
   "pause",
@@ -154,6 +157,106 @@ export function createRelayService({
             };
             break;
           }
+          case "send": {
+            const selected = agent(args.agent);
+            const external = text(args.external_session_id, "external_session_id");
+            const content = text(args.content, "content");
+            const subscribeAfterSend =
+              args.subscribe_after_send === undefined
+                ? false
+                : args.subscribe_after_send;
+            if (typeof subscribeAfterSend !== "boolean")
+              throw new TypeError("subscribe_after_send 必须为布尔值");
+
+            let receiveSession: string | undefined;
+            if (subscribeAfterSend) {
+              receiveSession = text(
+                args.dsh_session_id ?? currentSession,
+                "dsh_session_id",
+              );
+              if (!(await listDshSessions()).some((s) => s.id === receiveSession))
+                throw new TypeError("接收通知的 DSH 会话不存在");
+            }
+
+            let subscriptionId: string | null = null;
+            if (args.subscription_id !== undefined && args.subscription_id !== null) {
+              subscriptionId = text(args.subscription_id, "subscription_id");
+              const subscription = store.subscriptions.get(subscriptionId);
+              if (
+                !subscription ||
+                subscription.agent !== selected ||
+                subscription.external_session_id !== external
+              )
+                throw new TypeError("订阅与消息目标不匹配");
+            }
+
+            const message = store.messages.create({
+              id: randomUUID(),
+              agent: selected,
+              external_session_id: external,
+              subscription_id: subscriptionId,
+              content,
+              created_at: Date.now(),
+            });
+            const adapter = adapters.get(selected);
+            let sendResult:
+              | { status: "sent"; external_ref: string | null }
+              | { status: "rejected"; reason: string }
+              | { status: "failed"; error: string }
+              | { status: "unknown"; error: string };
+            if (!adapter.capabilities().sendMessage)
+              sendResult = { status: "rejected", reason: `${selected} 不支持发送消息` };
+            else {
+              try {
+                sendResult = await adapter.sendMessage(external, content);
+              } catch (error) {
+                sendResult = { status: "failed", error: messageOf(error) };
+              }
+            }
+            const transitioned = store.messages.transition({
+              id: message.id,
+              expected_status: "sending",
+              status: sendResult.status,
+              ...(sendResult.status === "sent"
+                ? { external_ref: sendResult.external_ref, sent_at: Date.now() }
+                : { error: "reason" in sendResult ? sendResult.reason : sendResult.error }),
+            });
+            if (!transitioned) throw new Error("消息状态更新失败");
+            const saved = store.messages.get(message.id)!;
+            let createdSubscription = null;
+            if (saved.status === "sent") {
+              subscriptions.touch(selected, external);
+              if (subscribeAfterSend) {
+                const subscribed = await subscriptions.subscribe({
+                  type: "poll",
+                  agent: selected,
+                  external_session_id: external,
+                  dsh_session_id: receiveSession,
+                });
+                if (subscribed.ok) createdSubscription = subscribed.subscription;
+              }
+            }
+            value = { message: saved, subscription: createdSubscription };
+            break;
+          }
+          case "messages": {
+            const options: import("../storage/types.js").MessageFilter = {
+              limit:
+                args.limit === undefined
+                  ? 50
+                  : integer(args.limit, "limit", 1, 100),
+            };
+            if (args.agent !== undefined) options.agent = agent(args.agent);
+            if (args.external_session_id !== undefined)
+              options.external_session_id = text(
+                args.external_session_id,
+                "external_session_id",
+              );
+            if (args.subscription_id !== undefined)
+              options.subscription_id = text(args.subscription_id, "subscription_id");
+            value = store.messages.list(options);
+            break;
+          }
           case "list": {
             const options: SubscriptionFilter = {
               limit:
@@ -248,3 +351,7 @@ export function createRelayService({
   };
 }
 export type RelayService = ReturnType<typeof createRelayService>;
+
+function messageOf(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}

@@ -46,6 +46,20 @@ export function registerTools(
       },
     },
     {
+      name: "relay_send",
+      endpoint: "send",
+      description:
+        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，Codex 第一版不支持发送。可选发送成功后创建一次 poll 订阅。",
+      parameters: {
+        agent,
+        external_session_id: { type: "string", required: true },
+        content: { type: "string", required: true },
+        subscription_id: { type: "string" },
+        subscribe_after_send: { type: "boolean" },
+        dsh_session_id: { type: "string" },
+      },
+    },
+    {
       name: "relay_list",
       endpoint: "list",
       description: "分页查看订阅、检查和通知投递状态；任务结果与投递结果不同。",

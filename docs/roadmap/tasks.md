@@ -237,6 +237,10 @@ T7 最后做端到端验收
 
 T2.4、T2.5、插件入口接线及启动对账、T3.1 订阅相关工具、T6.1/T6.2/T6.4 已实现。工具包含 relay_list_sessions、relay_subscribe、relay_list、relay_stop、relay_check。T4 已提供页面所需的 Agent 能力、候选会话、订阅创建/分页/详情/暂停/恢复/停止/到期检查 RPC；外部 push HTTP、转发接口仍未实现。周期及有效期的独立修改接口尚未开放。
 
-两类 Adapter 都已注册，Codex 保持只读。M2 创建入口只开放 poll；push 投递时新建会话、外部通知入口、relay_send、DSH Skill 和共享凭证设置留给后续任务。
+两类 Adapter 都已注册，Codex 保持只读。M2 创建入口只开放 poll；push 投递时新建会话、外部通知入口、DSH Skill 和共享凭证设置留给后续任务。M3 转发核心已在下节记录。
+
+## M3 实施状态（2026-11-11）
+
+已实现转发核心：`relay_send` 工具、`send`/`messages` 认证 RPC、`relay_message` 状态落库、Adapter 能力拒绝、发送结果为 `unknown` 时的保留，以及发送成功后的有效期顺延和可选 poll 订阅。Codex 仍明确不支持发送。push HTTP、共享凭证、外部 Agent Skill 和 push 投递时新建接收会话仍未实现；T6.3 目前只完成 Agent Relay 工作区前置创建，尚未迁移已有会话。
 
 实际验证及未验证项见 `T2.4-T2.5-T3.1-T4-T6-M2-implementation.md`，不以单元测试替代真实投递验收。
