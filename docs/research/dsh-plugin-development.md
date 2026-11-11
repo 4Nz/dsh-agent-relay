@@ -179,7 +179,7 @@ agent.inject(message): void
 
 DSH 内部的 Client→Host RPC 是 Typert（`dsh-api-gateway` + `@Remote` 装饰器 + `ctx.typertGateway`），但它面向 DSH 自家 Client，带 peer/principal 认证，不是给外部进程（Claude/Codex）用的通用入口。
 
-**结论**：外部 Agent 主动通知（push）由插件**自建 HTTP server**（`node:http`）接收，本机单用户第一版可 loopback 监听 + `push_token` 校验。具体路由、端口、认证细节待 T2.6 / T4 阶段确认。`@deepseek-ai/dsh-http-proxy` 是否可复用未验证。
+**结论**：外部 Agent 主动通知（push）由插件**自建 HTTP server**（`node:http`）接收，本机单用户第一版 loopback 监听，默认端口 37421（可由 `DSH_AGENT_RELAY_PORT` 调整），通过共享 token 校验。路由为 `/api/agent-relay/notifications`；请求与会话创建、通知投递共用插件服务层。
 
 ## 5. 踩坑点
 

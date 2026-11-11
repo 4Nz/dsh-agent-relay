@@ -4,7 +4,8 @@
   "private": true,
   "files": [
     "lib",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "skills"
   ],
   "type": "module",
   "engines": {

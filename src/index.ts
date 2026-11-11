@@ -21,10 +21,16 @@ import { createRelayService, type RelayService } from "./services/relay.js";
 import { acquireRuntimeLock } from "./services/lock.js";
 import { startRelayRuntime } from "./services/runtime.js";
 import { registerRelayApi, type RelayConnection } from "./api.js";
+import { createCredentialService } from "./services/credentials.js";
+import { createPushHandler, createPushServer } from "./services/push.js";
+import { randomUUID } from "node:crypto";
 
 interface RelayHost extends DshDeliveryContext {
   schedule: unknown;
   connection: RelayConnection;
+  sessions: DshDeliveryContext["sessions"] & {
+    create(id: string, options: { meta: { cwd: string } }): unknown;
+  };
   workspaceRegistry: { create(path: string, title?: string): Promise<unknown> };
   sessionQuery: DshDeliveryContext["sessionQuery"] & {
     listSessions(): Promise<{ header: { id: string } }[]>;
@@ -45,6 +51,8 @@ const RELAY_GROUP_TITLE = "Agent Relay";
 export function apply(ctx: Context): void {
   const host = ctx as unknown as RelayHost;
   const dataDir = join(resolveDshHome(), "agent-relay");
+  const relayDir = join(dataDir, "conversations");
+  const credentials = createCredentialService({ dataDir });
   const releaseLock = acquireRuntimeLock(dataDir);
   let store: ReturnType<typeof openRelayStore>;
   try {
@@ -74,6 +82,7 @@ export function apply(ctx: Context): void {
     subscriptions,
     checks,
     notifications,
+    credentials,
     listDshSessions: async () => {
       const sessions = await host.sessionQuery.listSessions();
       return Promise.all(
@@ -121,11 +130,24 @@ export function apply(ctx: Context): void {
   };
   let stopApi = () => {};
   let stopCleanup = () => {};
+  const pushHandler = createPushHandler({
+    credentials,
+    store,
+    createSession: async () => {
+      await mkdir(relayDir, { recursive: true, mode: 0o700 });
+      const id = randomUUID();
+      await host.sessions.create(id, { meta: { cwd: relayDir } });
+      return id;
+    },
+    drain: () => notifications.drain(),
+  });
+  const pushServer = createPushServer({ handler: pushHandler });
   ctx.effect(() => async () => {
     stopping = true;
     stopApi();
     stopCleanup();
     try {
+      await pushServer.stop().catch(() => {});
       await runtime.stop();
     } finally {
       releaseLock();
@@ -139,6 +161,11 @@ export function apply(ctx: Context): void {
       ctx.logger.warn("[agent-relay] history cleanup failed: %s", error),
   });
   void ensureRelayWorkspace(ctx);
+  void pushServer.start().then(({ host: bindHost, port }) => {
+    ctx.logger.info(`[agent-relay] push endpoint listening on ${bindHost}:${port}`);
+  }).catch((error) => {
+    ctx.logger.warn("[agent-relay] push endpoint unavailable:", error);
+  });
   ctx.logger.info("[agent-relay] server plugin loaded");
 }
 

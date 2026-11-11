@@ -181,7 +181,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | 编号 | 任务 | 第一版能力 |
 | --- | --- | --- |
 | T5.1 | Claude Adapter | 列出会话、`snapshot`、发送消息。会话处理中或开在终端里时拒绝发送 |
-| T5.2 | Codex Adapter | 已实现独立只读 Adapter：列出会话、`snapshot`，发送消息声明为“不支持”；真实专用会话冒烟通过，尚待服务层注册，见 `docs/superpowers/plans/T5.2-codex-adapter-design.md` |
+| T5.2 | Codex Adapter | 已实现并注册独立只读 Adapter：列出会话、`snapshot`，发送消息声明为“不支持”；真实专用会话冒烟通过，见 `docs/superpowers/plans/T5.2-codex-adapter-design.md` |
 
 每个 Adapter 都要有针对真实会话的冒烟测试，测试会话和业务会话分开。
 
@@ -244,3 +244,9 @@ T2.4、T2.5、插件入口接线及启动对账、T3.1 订阅相关工具、T6.1
 已实现转发核心：`relay_send` 工具、`send`/`messages` 认证 RPC、`relay_message` 状态落库、Adapter 能力拒绝、发送结果为 `unknown` 时的保留，以及发送成功后的有效期顺延和可选 poll 订阅。Codex 仍明确不支持发送。push HTTP、共享凭证、外部 Agent Skill 和 push 投递时新建接收会话仍未实现；T6.3 目前只完成 Agent Relay 工作区前置创建，尚未迁移已有会话。
 
 实际验证及未验证项见 `T2.4-T2.5-T3.1-T4-T6-M2-implementation.md`，不以单元测试替代真实投递验收。
+
+## M4 实施状态（2026-11-11）
+
+已实现 T2.6、T3.2、T3.3、T4 配置修改、T6.3 的新建通知会话归组和 T6.5 凭证管理：push HTTP 使用插件级共享 token，push 订阅缺少接收会话时在 Agent Relay workspace 创建并回填 DSH 会话；`skills/agent-relay/SKILL.md` 同时覆盖 DSH 侧和外部 Agent 侧，Claude/Codex 共用协议流程并通过能力提示区分差异；订阅可独立修改有效期和检查周期；页面已接入凭证生成与重置。
+
+T7 真实端到端验收仍单独保留，不能以本轮单元测试代替。

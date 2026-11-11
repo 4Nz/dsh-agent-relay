@@ -233,3 +233,19 @@ test('对账不采纳属于其他会话或其他插件的 task id',async t=>{
  sched.tasks.set(sub.schedule_task_id,{id:sub.schedule_task_id,sessionId:'another',prompt:'其他插件提醒',status:'active'});
  const result=await service.reconcile();assert.equal(result.created,1);assert.notEqual(store.subscriptions.get(sub.id).schedule_task_id,sub.schedule_task_id);assert.ok(sched.tasks.has(sub.schedule_task_id));
 });
+
+test("更新订阅周期和有效期会持久化并重建主动检查提醒", async (t) => {
+  const { store, sched, service } = fixture(t);
+  const sub = (await service.subscribe(poll)).subscription;
+  const previousTask = sub.schedule_task_id;
+  const result = await service.update(sub.id, {
+    idle_timeout_seconds: 7200,
+    check_interval_seconds: 1800,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.subscription.idle_timeout_seconds, 7200);
+  assert.equal(result.subscription.check_interval_seconds, 1800);
+  assert.notEqual(result.subscription.schedule_task_id, previousTask);
+  assert.equal(sched.tasks.has(previousTask), false);
+  assert.equal(store.subscriptions.get(sub.id).expires_at, 1000 + 7200 * 1000);
+});
