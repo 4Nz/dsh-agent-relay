@@ -8,7 +8,7 @@
     "dsh": ">=0.2.0 <0.3.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsdown",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/storage/*.test.js"
   },
@@ -48,9 +48,10 @@
     "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
   },
   "devDependencies": {
-    "@types/node": "^24.19.2",
-    "typescript": "^7.0.2",
     "@deepseek-ai/cordis": "^4.0.4",
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@types/node": "^24.19.2",
+    "tsdown": "^0.23.7",
+    "typescript": "^7.0.2"
   }
 }
