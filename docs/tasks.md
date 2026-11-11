@@ -181,7 +181,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | 编号 | 任务 | 第一版能力 |
 | --- | --- | --- |
 | T5.1 | Claude Adapter | 列出会话、`snapshot`、发送消息。会话处理中或开在终端里时拒绝发送 |
-| T5.2 | Codex Adapter | 列出会话、`snapshot`。发送消息声明为“不支持” |
+| T5.2 | Codex Adapter | 已实现独立只读 Adapter：列出会话、`snapshot`，发送消息声明为“不支持”；真实专用会话冒烟通过，尚待服务层注册，见 `docs/T5.2-codex-adapter-design.md` |
 
 每个 Adapter 都要有针对真实会话的冒烟测试，测试会话和业务会话分开。
 
