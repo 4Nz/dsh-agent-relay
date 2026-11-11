@@ -704,7 +704,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       h(
         "div",
         null,
-        h("h1", null, "Agent Relay"),
+        h("h1", null, "任务跟踪"),
         h("p", { className: "muted" }, "关注外部 Agent 会话，接收一次结果通知。"),
       ),
       h(
@@ -850,8 +850,47 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
 function AgentRelayIcon() {
   return h(
     "span",
-    { "data-dsh-plugin": "dsh-agent-relay", "data-dsh-part": "sidebar-icon" },
-    "🔗",
+    {
+      "data-dsh-plugin": "dsh-agent-relay",
+      "data-dsh-part": "sidebar-icon",
+      "aria-label": "任务跟踪",
+      title: "任务跟踪",
+      style: {
+        display: "inline-flex",
+        width: "20px",
+        height: "20px",
+        alignItems: "center",
+        justifyContent: "center",
+      },
+    },
+    h(
+      "svg",
+      {
+        viewBox: "0 0 24 24",
+        width: "20",
+        height: "20",
+        fill: "none",
+        xmlns: "http://www.w3.org/2000/svg",
+        "aria-hidden": "true",
+        focusable: "false",
+      },
+      h("path", {
+        d: "M5 7.5h3.5c2.1 0 3.5 1.2 3.5 3.2v2.6c0 2 1.4 3.2 3.5 3.2H19",
+        stroke: "currentColor",
+        strokeWidth: "1.8",
+        strokeLinecap: "round",
+      }),
+      h("path", {
+        d: "M5 16.5h3.5c2.1 0 3.5-1.2 3.5-3.2v-2.6c0-2-1.4-3.2-3.5-3.2H19",
+        stroke: "currentColor",
+        strokeWidth: "1.8",
+        strokeLinecap: "round",
+      }),
+      h("circle", { cx: "5", cy: "7.5", r: "2", fill: "currentColor" }),
+      h("circle", { cx: "5", cy: "16.5", r: "2", fill: "currentColor" }),
+      h("circle", { cx: "19", cy: "7.5", r: "2", fill: "currentColor" }),
+      h("circle", { cx: "19", cy: "16.5", r: "2", fill: "currentColor" }),
+    ),
   );
 }
 interface RelayClientContext {
@@ -882,7 +921,7 @@ export function apply(ctx: RelayClientContext): void {
             name: "sidebar.panellist",
             id: PANEL_ID,
             order: 50,
-            label: () => "Agent Relay",
+            label: () => "任务跟踪",
           },
           AgentRelayIcon,
         );

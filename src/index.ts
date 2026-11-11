@@ -40,7 +40,7 @@ export const inject = [
   "sessionQuery",
   "connection",
 ];
-const RELAY_GROUP_TITLE = "Agent Relay";
+const RELAY_GROUP_TITLE = "Agent 通知";
 
 export function apply(ctx: Context): void {
   const host = ctx as unknown as RelayHost;
@@ -143,7 +143,7 @@ export function apply(ctx: Context): void {
 }
 
 // T6.3 通知会话分组的前置：在插件数据目录下建专用目录并注册为 workspace 项目，
-// 通知投递新建的会话以该目录为 cwd 时会自动归入「Agent Relay」分组。
+// 通知投递新建的会话以该目录为 cwd 时会自动归入「Agent 通知」分组。
 async function ensureRelayWorkspace(ctx: Context): Promise<void> {
   const relayDir = join(resolveDshHome(), "agent-relay", "conversations");
   try {
