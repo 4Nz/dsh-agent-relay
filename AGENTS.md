@@ -6,6 +6,13 @@ DSH Agent Relay 是 DSH 的外部 Agent 任务订阅、通知与消息转发插�
 
 当前已实现独立的 T1 SQLite 存储模块（`src/storage/`），尚未实现 DSH 插件挂载、工具、页面与 Agent 接入。不要把规划中的能力描述为已经实现。Node.js >=24，TypeScript（ESM），无第三方运行依赖，先运行 `rtk npm ci` 安装开发依赖；运行 `rtk npm run typecheck` 检查类型，`rtk npm test` 构建并验证存储模块。
 
+## 开发语言与插件形态
+
+- 本项目是 DSH 插件，采用 TypeScript 编写服务端和前端源码，编译为 JavaScript 模块，以独立 npm 包交由 DSH 的 Cordis 插件体系加载。
+- DSH 加载的服务端入口为 `lib/index.js`，前端入口为 `lib/client.js`；运行时加载 JavaScript，不直接加载 TypeScript 源码。
+- Python、Go 等语言不能直接作为上述插件入口；若后续确有桥接需求，须另行设计，不作为第一版默认技术栈。
+- 接入依据见 `docs/dsh-plugin-development.md`。具体构建工具与命令在引入插件源码时确定并补充，不将候选工具描述为已经配置。
+
 ## 项目文档
 
 - `docs/goals.md`：产品目标、整体能力与边界。
