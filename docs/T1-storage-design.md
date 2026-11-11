@@ -1,122 +1,57 @@
-# T1 存储设计（逻辑模型草案）
+# T1 存储设计与实现
 
-日期：2026-11-11。
+验证日期：2026-11-11，Node.js v24.14.0；采用 T0 已确定的 `node:sqlite`。已实现独立存储模块，未实现 DSH 挂载与实际投递。
 
-## 状态与实施前提
+## 入口和数据路径
 
-本文依据 `docs/tasks.md` 的 T1，定义供 T2 共用服务层使用的存储契约。当前仓库没有 T0.2 的存储验证结论，本文不代表已经建表或实现持久化。
+`src/storage/index.ts` 导出 `openRelayStore({dataDir})`，dataDir 为调用方提供的绝对目录。数据库固定为 `agent-relay.sqlite`，新目录权限 0700，数据库 0600。不要传入仓库或外部 Agent 数据目录。返回 subscriptions、messages、notifications、recoverInterrupted、cleanupHistory、close；close 可重复调用。
 
-优先采用 T0.2 实测确认的 DSH 存储。自行引入 SQLite 会增加生命周期和迁移责任，也不符合复用 DSH 存储的要求；直接按假设的 `dsh-storage-sqlite` API 开发缺少依据。因此先固定逻辑约束，待 T0.2 确认后映射为实际存储结构。
+Node.js >=24，TypeScript（ESM），无第三方运行依赖。运行 `rtk npm ci` 安装 TypeScript 开发依赖，`rtk npm run typecheck` 检查类型，`rtk npm run build` 生成 lib/ 与声明文件，`rtk npm test` 构建并测试。Node v24.14.0 会提示 node:sqlite 实验性警告。
 
-范围仅含订阅、通知和转发记录；不保存外部完整会话，不实现 Adapter、调度、通知投递或 HTTP 接口。
+## 表和约束
 
-## 公共约定
+实际结构见 `src/storage/schema.ts`，三张 STRICT 表：
 
-- ID 使用非空不透明字符串；具体生成方法由插件骨架确定。外部会话 ID 原样保留，按 `agent` 与 `external_session_id` 路由。
-- 时间均表示 UTC 时间点，存储精度与编码待 T0.2 确定；接口统一输出 ISO 8601 字符串。
-- 下文“可空”表示缺失，不能用空字符串代替。错误字段仅保存脱敏后的原因。
-- 所有写操作由服务层执行校验，不能仅依赖页面或工具调用方。
-- `owner` 必填；第一版使用插件配置确定的本机所有者，不引入多用户鉴权。
+- `relay_subscription`：沿用 tasks.md T1 字段，删除 push_token，新增 notification_recorded_at。owner、agent 和外部会话 ID 必填；标题与 cwd 只展示。poll 必须绑定 DSH 会话，周期至少 60 秒，idle_timeout_seconds 默认 3600、max_consecutive_failures 默认 3；push 不设置轮询字段。cursor 为 JSON。初态 active；允许暂停、恢复、结束，ended 不可复活。
+- `relay_notification`：subscription_id 唯一且引用订阅，source 与订阅类型一致。result 与 delivery_status 分开；后者为 pending/delivering/delivered/failed/unknown。新增 delivery_attempts、max_delivery_attempts=3、next_attempt_at、delivery_key（等于通知 ID，跨重试不变）。最多尝试 3 次，unknown 不自动重试。
+- `relay_message`：记录外发原文及 sending/sent/rejected/failed/unknown，关联订阅时数据库强制匹配 Agent 与外部会话。sent 只表示发送成功，不表示任务完成。
 
-## relay_subscription
+所有时间使用 UTC Unix 毫秒非负安全整数，可空字段返回 null。ID 由调用方提供且不复用。同一外部会话允许多条订阅。
 
-| 字段 | 逻辑类型与约束 |
-| --- | --- |
-| `id` | 字符串，主键 |
-| `owner` | 非空字符串 |
-| `type` | `poll` / `push` |
-| `agent` | `claude` / `codex` |
-| `external_session_id` | 非空字符串 |
-| `external_session_title`、`external_cwd` | 可空字符串，仅展示 |
-| `dsh_session_id` | 可空字符串；投递新建会话后必须保存真实 ID |
-| `status` | `active` / `paused` / `ended` |
-| `end_reason` | 可空；`completed` / `failed` / `idle_timeout` / `unreachable` / `delivered` / `user_stopped` |
-| `check_interval_seconds` | `poll` 必填正整数；默认值由订阅服务配置，任务文档未规定 |
-| `idle_timeout_seconds` | `poll` 必填正整数，默认 3600 |
-| `max_consecutive_failures` | `poll` 必填正整数，默认 3 |
-| `schedule_task_id` | 可空字符串；不能将非空视为定时任务仍存在 |
-| `cursor` | 可空不透明值，结构由 Adapter 定义，必须可序列化 |
-| `last_activity_at` | 可空时间；不能用创建时间冒充外部最近活动时间 |
-| `last_checked_at` | 可空时间 |
-| `last_check_status` | 可空；建议 `success` / `error`，待 T2 接口统一 |
-| `last_check_error` | 可空字符串，成功检查后清空 |
-| `consecutive_failures` | 非负整数，初始为 0，成功检查后清零 |
-| `push_token` | 仅 `push` 使用的校验材料；建议持久化摘要而非明文，实际字段名和校验算法待 T0.6 确认 |
-| `created_at`、`updated_at` | 必填时间 |
-| `ended_at` | 可空时间 |
+## 公共接口
 
-`push` 的检查配置、定时任务与最近检查字段为空，失败计数保持 0；不运行轮询。`poll` 的 token 为空。基线快照由创建服务提供；取快照失败不得写入一条看似已建立基线的有效订阅。
+- subscriptions.create(record)、get(id)、list(options)、update({id,expected_status,patch})。
+- messages.create(record)、get(id)、list(options)、transition({id,expected_status,status,error,external_ref,sent_at})。
+- notifications.record({notification,now}) 返回 created/duplicate/inactive 与记录；getBySubscription(id)、claim({id,now})、finish({id,status,now,error,next_attempt_at})、listDue({now,limit})。核对接口 reconcileUnknown({id,confirmation,now,error,next_attempt_at}) 仅处理 unknown；confirmation 为 delivered 时原子落账并结束 push，为 not_delivered 时才允许设置下一次重试，累计次数不清零。
+- recoverInterrupted({now}) 将 sending 消息和 delivering 通知标 unknown。必须仅在确认旧执行实例退出后显式调用，不在打开数据库时隐式执行，不自动发送。
+- cleanupHistory({now,retention_days=30}) 不分状态删除 created_at 满保留期的通知与消息，返回删除数量，不删除订阅。每日调度由 T2.8 实现。
 
-`ended` 必须同时具有 `end_reason` 和 `ended_at`；其他状态两者为空。结束后不恢复，重新关注创建新订阅。暂停保留基线和历史状态。允许同一外部会话有多个订阅，不对外部会话 ID 建唯一约束。
+订阅列表按 owner/agent/type/status 筛选，消息列表按 agent/external_session_id/subscription_id 筛选。列表返回 `{items,next_cursor}`，默认 50 条、最大 100；按 created_at DESC、id DESC 稳定分页，游标为 `{created_at,id}`。
 
-## relay_notification
+输入错误抛 TypeError，SQL 约束错误原样抛出，找不到返回 null，条件更新冲突返回 false。SQL 采用参数绑定；不向工具或页面暴露 SQL。
 
-| 字段 | 逻辑类型与约束 |
-| --- | --- |
-| `id` | 字符串，主键 |
-| `subscription_id` | 必填，引用订阅，唯一 |
-| `source` | `poll` / `push`，必须与订阅类型一致 |
-| `result` | `completed` / `failed` / `idle_timeout` / `unreachable` |
-| `summary` | 必填字符串，仅保存结果摘要；长度上限由服务层统一确定 |
-| `external_ref` | 可空字符串，不作为防重主键 |
-| `delivery_status` | 建议 `pending` / `delivering` / `delivered` / `failed` / `unknown`，待 T2.5 与 T0.4 统一 |
-| `delivered_at` | 可空时间，仅明确送达时填写 |
-| `delivery_error` | 可空字符串 |
-| `created_at` | 必填时间 |
+## 通知事务与清理防重
 
-任务结果与投递状态分别保存：例如 `result=completed` 的通知仍可能投递失败。发送超时且无法确认是否送达时使用 `unknown`；禁止把它直接当作可重试失败。
+record 在 BEGIN IMMEDIATE 中检查既有通知、订阅状态与 notification_recorded_at；首次创建通知并永久写入该标记。poll 同事务结束并记录任务结果；push 保持 active，finish delivered 时才结束为 delivered。此调用必须由 T2 在确认通知送达 DSH 会话并触发处理后执行。用户先停止的订阅不被后续投递覆盖结束原因。
 
-同一订阅只能插入一条通知，重复请求返回已有记录且不覆盖首次结果。仅进程内锁不能替代持久化唯一约束或经过验证的等效原子操作。
+重复请求返回原通知，不覆盖摘要；通知被清理后，订阅标记仍拒绝重复登记。订阅不存在也不接受通知。通知、消息满 30 天统一删除，包括待处理和 unknown，删除后不继续其重试。订阅和标记长期保留。
 
-## relay_message
+delivery_key 只是本地幂等标识；DSH 接收端的持久确认、幂等查询与重试退避仍属于 T2/T0.4 验证范围。数据库事务不能保证外部副作用恰好一次。
 
-| 字段 | 逻辑类型与约束 |
-| --- | --- |
-| `id` | 字符串，主键 |
-| `agent`、`external_session_id` | 必填，与订阅的路由规则相同 |
-| `subscription_id` | 可空；存在时必须引用同一 Agent 与外部会话的订阅 |
-| `content` | 必填非空字符串，保存发送原文 |
-| `status` | `sending` / `sent` / `rejected` / `failed` / `unknown` |
-| `error` | 可空字符串；拒绝、失败或结果未知时记录原因 |
-| `external_ref` | 可空字符串 |
-| `created_at` | 必填时间 |
-| `sent_at` | 可空时间，仅明确发送成功时填写 |
+## 插件升级和迁移
 
-先持久化 `sending` 再调用 Adapter。明确拒绝记为 `rejected`，明确失败记为 `failed`，无法确认记为 `unknown`。重启后遗留的 `sending` 不能自动重发，应交由服务层核对或转为 `unknown`。`sent` 仅表示发送成功，不代表外部任务完成。
+插件版本与表结构版本独立，结构版本保存在 PRAGMA user_version。当前 v1；新增结构迁移追加到 schema.js 的 migrations 数组，已有迁移不得改写。按照 vN→vN+1 顺序执行，迁移和版本更新包在同一事务内；失败回滚并拒绝启动。v0 仅接受空数据库，未知非空库拒绝；旧插件遇到高版本库拒绝打开，不自动降级。数据转换也必须放在版本迁移中并补充旧库夹具测试。
 
-## 原子性与重启对账
+生产升级前需停旧实例并备份数据库（WAL 模式不能在运行中只复制主文件）；恢复备份应同时恢复匹配的插件版本。T1 未实现自动备份或降级。
 
-1. `poll` 检测到终态：条件更新尚未结束的订阅与插入唯一通知必须属于同一事务；结束原因等于通知结果。
-2. `push` 接受通知：先持久化唯一通知，保留订阅为 `active`，投递明确成功后在同一事务内写入 `delivered`、投递时间，并将订阅结束为 `end_reason=delivered`。
-3. 第 2 条是对任务文档歧义的建议解释：T2.5 要求“生成通知和结束订阅同事务”，但核心模型要求 push 送达后结束；两者对 push 不能同时严格成立。实施前应与 T2 统一，并同步任务文档，不能隐藏这个差异。
-4. 投递是外部副作用，数据库事务不能保证只投递一次。需要 T0.4 验证投递幂等键或结果查询；未知结果不得盲目重发。
-5. 订阅和定时任务跨服务创建，不能假设同事务；先保存订阅，再创建并回填任务 ID，失败交给启动对账修复。暂停或结束后的遗留任务由对账清除。
-6. 需要持久化重试次数、下次重试时间、投递幂等键或租约时，由 T2.5 明确后补充模型；当前字段不足以宣称已经支持重启后恢复投递重试。
+## 共享 token
 
-## 查询与索引需求
+token 不放业务表。插件级共享 token 在 DSH 设置页面统一配置与重置，本机全部 Agent 共用；请求通过订阅 ID 路由。建议仅存摘要、生成时一次展示明文，重置后旧 token 失效。配置可写入与敏感字段保护尚待 DSH 接入验证；认证实现属于 T2.6，页面属于 T6.5。
 
-- 订阅按 `owner`、`agent`、`type`、`status` 组合筛选，按 `created_at` 与 `id` 稳定倒序分页。
-- 通知按 `subscription_id` 唯一查找；按投递状态查询待处理记录。
-- 转发记录按 Agent、外部会话和可选订阅筛选，按 `created_at` 与 `id` 稳定倒序分页。
-- 时间字段需要支持保留期查询；具体复合索引依据实际查询能力建立，不在未核实的后端上给出虚构 SQL。
+## 验证边界
 
-## 保留期
+测试使用临时 SQLite 文件及独立 worker 连接，覆盖迁移回滚、重开持久化、SQL 约束、路由校验、分页、并发登记、条件投递、3 次上限、未知恢复和清理后防重。未访问真实外部会话、未修改 DSH 配置，也未验收真实通知投递。
 
-默认保留 30 天，每天由 T2.8 执行清理。建议仅清理已终结记录：消息按 `sent_at` 或 `created_at` 判断；通知按 `delivered_at` 或 `created_at` 判断。`sending`、`pending`、`delivering` 和 `unknown` 不自动删除，避免丢失待核对证据；这一保守例外需由 T2.8 明确采纳。
+验证结果：`rtk npm run typecheck` 通过，`rtk npm test` 的真实 SQLite 测试通过。测试仍用 JavaScript，导入编译后的 lib/storage 模块，确保实际产物可运行。
 
-任务文档未要求删除订阅；第一版保留订阅及其终态，防止删除通知后旧 push 请求重新产生通知。结束订阅必须先拒绝新通知，再处理防重逻辑。清理消息或通知不能级联删除订阅。
-
-## T0.2 交接与验收清单
-
-具体实现前需要提供实际 DSH 版本、存储插件及 API、扩展模型注册方式、唯一约束或原子条件写入、事务与回滚能力、分页筛选能力、数据目录和迁移机制的实测结果。
-
-落地后验证：
-
-- 三种记录持久化并在重启后读取；非法枚举、负数配置和错误关联被拒绝。
-- 并发重复通知只保留一条，事务失败后不留下半条终态。
-- push 投递失败不误报送达；poll 任务结果不受投递失败覆盖。
-- 发送超时和重启残留发送记录保留未知结果，不自动重发。
-- 多条件筛选及相同时间记录分页无重复遗漏。
-- 清理边界、待核对记录保护和已结束订阅的迟到通知拒绝。
-
-当前验收仅能检查文档与逻辑一致性，不存在可运行的存储代码或测试命令。下一步等待 T0.2 结论及本草案确认，再实现具体结构、迁移与存储测试。
+审查剩余小项：MessageFilter 的 subscription_id 类型仍包含 null，但当前查询只支持具体非空 ID；调用 list({subscription_id:null}) 会抛 TypeError。后续可补 IS NULL 筛选或收窄类型。

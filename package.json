@@ -1,1 +1,24 @@
-{"name":"dsh-agent-relay","version":"0.1.0","private":true,"type":"module","engines":{"node":">=24.0.0"},"scripts":{"test":"node --test test/storage/*.test.js"},"exports":{"./storage":"./src/storage/index.js"}}
+{
+  "name": "dsh-agent-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/storage/*.test.js"
+  },
+  "exports": {
+    "./storage": {
+      "types": "./lib/storage/index.d.ts",
+      "import": "./lib/storage/index.js"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}

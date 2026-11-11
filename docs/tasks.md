@@ -8,7 +8,7 @@
 
 - 页面：一个订阅看板菜单；把“由 Agent 通知发起的 DSH 会话”分组管理。
 - 对话入口：DSH 模型可调用的工具，以及一份说明怎么用这些工具的 Skill。
-- 后端：存储设计（复用 DSH 的存储）、基本 CRUD 接口、订阅和通知的抽象逻辑、Claude 和 Codex 的接入。
+- 后端：存储设计（按 T0 结论自建 SQLite）、基本 CRUD 接口、订阅和通知的抽象逻辑、Claude 和 Codex 的接入。
 
 不在第一版范围内：
 
@@ -90,14 +90,14 @@
 | `agent` | `claude` / `codex` |
 | `external_session_id` | 外部会话 ID，只按 ID 路由 |
 | `external_session_title`、`external_cwd` | 展示用，方便人工核对 |
-| `dsh_session_id` | 接收通知的 DSH 会话。为空时，通知到达时新建 |
+| `dsh_session_id` | 接收通知的 DSH 会话。poll 创建时必填；push 可在投递时新建并回填 |
 | `status` | `active` / `paused` / `ended` |
 | `end_reason` | `completed` / `failed` / `idle_timeout` / `unreachable` / `delivered` / `user_stopped` |
 | `check_interval_seconds`、`idle_timeout_seconds`、`max_consecutive_failures` | 只用于 `poll`；`idle_timeout_seconds` 默认 3600，`max_consecutive_failures` 默认 3 |
 | `schedule_task_id` | 对应的 DSH 定时任务 |
 | `cursor`、`last_activity_at` | 订阅时设成外部会话的当前位置，避免把历史当成新内容 |
 | `last_checked_at`、`last_check_status`、`last_check_error`、`consecutive_failures` | |
-| `push_token` | 只用于 `push`，外部 Agent 发通知时携带，用来校验 |
+| `notification_recorded_at` | 首次生成通知时原子写入，通知清理后保留用于防重 |
 | `created_at`、`updated_at`、`ended_at` | |
 
 **`relay_notification`**：通知。每条订阅最多一条。
@@ -123,7 +123,9 @@
 | `external_ref` | 发送成功后对应的外部记录 |
 | `created_at`、`sent_at` | |
 
-历史数据默认保留 30 天，由定时任务清理。
+通知和消息按 created_at 满 30 天统一删除，所有状态适用；订阅及 notification_recorded_at 保留用于防重。每日清理由 T2.8 调度。
+
+T1 已提供独立存储模块；接口、迁移与限制见 `docs/T1-storage-design.md`。共享 token 不存业务表，在 DSH 设置页面统一配置和重置，本机 Agent 共用；认证与配置接入由 T2.6/T6 实现。
 
 ## T2 抽象层
 
@@ -133,8 +135,8 @@
 | T2.2 | Adapter 注册表 | 按 `agent` 字段查找。新增 Agent 只需加一个 Adapter |
 | T2.3 | 订阅服务 | 创建：先取一次 `snapshot` 作为基线，写订阅，再 `schedule_create` 建周期提醒。暂停、恢复、手动停止。启动时按订阅表对账，补上缺失的提醒、删掉多余的 |
 | T2.4 | 检查执行器 | 由 `schedule` 提醒唤醒的 agent 调 `relay_check` 工具触发，内部调用 `snapshot`，按订阅加锁，上一轮没跑完就跳过。检测到任务结束，或在非 `busy` 状态下超过空闲时长（见“空闲超时”），就生成通知并结束订阅。检查失败时累加 `consecutive_failures`，成功时清零，达到阈值生成 `unreachable` 通知并结束订阅。只更新检查状态，不写逐条进展 |
-| T2.5 | 通知服务 | 两种订阅共用。生成通知和结束订阅放在同一个事务里；投递失败时重试，重试耗尽后在看板上标记。送达 `push` 订阅后，`end_reason=delivered` |
-| T2.6 | 外部通知入口 | 接收 `push` 通知，校验 `push_token`，交给通知服务。重复通知按唯一约束忽略 |
+| T2.5 | 通知服务 | 两种订阅共用。poll 生成通知和结束订阅同事务；push 在送达 DSH 会话并触发处理后结束为 delivered，不等待回复完成。投递最多尝试 3 次，使用稳定幂等标识；未知结果先核对，不盲目重发 |
+| T2.6 | 外部通知入口 | 接收 `push` 通知，校验插件级共享 token，交给通知服务。重复通知按唯一约束忽略 |
 | T2.7 | 转发服务 | 写入 `relay_message`，调用 Adapter 发送。会话处理中或不支持发送时记为 `rejected` 并写明原因。可选“发送后订阅”：发送成功后自动创建一条 `poll` 订阅，任务完成时通知 |
 | T2.8 | 历史清理 | 每天清理超过保留期限的通知和消息 |
 
@@ -151,7 +153,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | --- | --- | --- |
 | T3.1 | 工具 | `relay_list_sessions`：列出某个 Agent 的候选会话。`relay_subscribe`：创建主动订阅。`relay_list`：查看订阅及状态。`relay_stop`：停止订阅。`relay_send`：转发消息，支持“发送后订阅” |
 | T3.2 | DSH 侧 Skill | 什么时候订阅；有多个候选会话时先让用户确认；发送前复述目标会话；区分“已发送”和“已完成” |
-| T3.3 | 外部 Agent 侧通知 Skill | 给 Claude、Codex 用：用户说“完成后通知 DSH”时，先登记 `push` 订阅拿到 token，任务结束时调用 T2.6 的入口发送结果摘要。具体调用方式取决于 T0.6 |
+| T3.3 | 外部 Agent 侧通知 Skill | 给 Claude、Codex 用：用户说“完成后通知 DSH”时，先登记 `push` 订阅，使用 DSH 设置页面统一配置的共享 token，任务结束时调用 T2.6 的入口发送结果摘要。具体调用方式取决于 T0.6 |
 
 工具与 T4 的 HTTP 接口共用 T2 的服务层，不重复实现业务逻辑。
 
@@ -161,7 +163,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | --- | --- |
 | `GET /agents` | Agent 列表及各自支持的操作 |
 | `GET /agents/:agent/sessions` | 可订阅的外部会话 |
-| `POST /subscriptions` | 创建订阅（`poll` 或 `push`）。`push` 返回 token |
+| `POST /subscriptions` | 创建订阅（`poll` 或 `push`）。返回订阅 ID；不生成独立 token |
 | `GET /subscriptions`、`GET /subscriptions/:id` | 列表（按 Agent、类型、状态筛选）和详情 |
 | `PATCH /subscriptions/:id` | 修改检查周期和空闲时长，暂停、恢复 |
 | `POST /subscriptions/:id/stop` | 手动停止 |
@@ -190,6 +192,10 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | T6.4 | 能力提示 | 不支持的操作置灰并说明原因，例如“Codex 暂不支持发送消息” |
 
 会话内的对话、回复和后续处理都用 DSH 原生能力，插件不另做聊天界面。
+
+### T6.5 共享通知凭证设置
+
+DSH 设置页面统一配置和重置插件级共享 token；本机所有 Agent 共用。只保存摘要，生成时一次展示明文，重置后旧凭证失效。不再为每条订阅生成 token。
 
 ## T7 验收
 
