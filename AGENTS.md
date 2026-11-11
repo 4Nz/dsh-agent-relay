@@ -6,6 +6,13 @@ DSH Agent Relay 是 DSH 的外部 Agent 任务订阅、通知与消息转发插�
 
 当前仓库处于需求与接入可行性验证阶段，只有 `docs/` 文档，尚无插件源码、依赖清单、构建脚本或自动化测试。不要把规划中的能力描述为已经实现，也不要假设技术栈或编造运行命令。
 
+## 开发语言与插件形态
+
+- 本项目是 DSH 插件，采用 TypeScript 编写服务端和前端源码，编译为 JavaScript 模块，以独立 npm 包交由 DSH 的 Cordis 插件体系加载。
+- DSH 加载的服务端入口为 `lib/index.js`，前端入口为 `lib/client.js`；运行时加载 JavaScript，不直接加载 TypeScript 源码。
+- Python、Go 等语言不能直接作为上述插件入口；若后续确有桥接需求，须另行设计，不作为第一版默认技术栈。
+- 接入依据见 `docs/dsh-plugin-development.md`。具体构建工具与命令在引入插件源码时确定并补充，不将候选工具描述为已经配置。
+
 ## 项目文档
 
 - `docs/goals.md`：产品目标、整体能力与边界。
