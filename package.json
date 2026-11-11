@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsdown",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/storage/*.test.js"
+    "test": "npm run build && node --test test/storage/*.test.js test/adapters/*.test.js"
   },
   "exports": {
     ".": {

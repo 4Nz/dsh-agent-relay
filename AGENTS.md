@@ -4,7 +4,7 @@
 
 DSH Agent Relay 是 DSH 的外部 Agent 任务订阅、通知与消息转发插件，目标是在 DSH 中关注指定外部会话，并向原会话补充消息。
 
-当前已实现独立的 T1 SQLite 存储模块（`src/storage/`），尚未实现 DSH 插件挂载、工具、页面与 Agent 接入。不要把规划中的能力描述为已经实现。Node.js >=24，TypeScript（ESM），无第三方运行依赖，先运行 `rtk npm ci` 安装开发依赖；运行 `rtk npm run typecheck` 检查类型，`rtk npm test` 构建并验证存储模块。
+当前已实现独立的 T1 SQLite 存储模块（`src/storage/`）和 T5.1 Claude Adapter（`src/adapters/claude/`，说明见 `docs/T5.1-claude-adapter.md`），尚未实现服务层、正式工具、页面与 Codex 接入。不要把规划中的能力描述为已经实现。Node.js >=24，TypeScript（ESM），无第三方运行依赖，先运行 `rtk npm ci` 安装开发依赖；运行 `rtk npm run typecheck` 检查类型，`rtk npm test` 构建并运行存储与 Adapter 单元测试。Claude 真实冒烟测试会调用本机 CLI 并产生费用，单独运行 `rtk proxy node test/smoke/claude-smoke.js`。
 
 ## 开发语言与插件形态
 
