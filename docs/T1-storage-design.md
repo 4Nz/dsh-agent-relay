@@ -12,7 +12,7 @@ Node.js >=24，TypeScript（ESM），无第三方运行依赖。运行 `rtk npm 
 
 实际结构见 `src/storage/schema.ts`，三张 STRICT 表：
 
-- `relay_subscription`：沿用 tasks.md T1 字段，删除 push_token，新增 notification_recorded_at。owner、agent 和外部会话 ID 必填；标题与 cwd 只展示。poll 必须绑定 DSH 会话，周期至少 60 秒，idle_timeout_seconds 默认 3600、max_consecutive_failures 默认 3；push 不设置轮询字段。cursor 为 JSON。初态 active；允许暂停、恢复、结束，ended 不可复活。
+- `relay_subscription`：沿用 tasks.md T1 字段，删除 push_token，新增 notification_recorded_at。owner、agent 和外部会话 ID 必填；标题与 cwd 只展示。poll 必须绑定 DSH 会话，周期至少 60 秒；push 不设置检查周期。两种订阅都有有效期：idle_timeout_seconds 默认 3600、max_lifetime_seconds 默认 86400、max_consecutive_failures 默认 3。expires_at 创建时为 created_at+有效期，hard_expires_at 由 created_at+最长存活计算且不可修改，数据库约束 expires_at≤hard_expires_at。结束原因新增 expired、session_closed。cursor 为 JSON。初态 active；允许暂停、恢复、结束，ended 不可复活。
 - `relay_notification`：subscription_id 唯一且引用订阅，source 与订阅类型一致。result 与 delivery_status 分开；后者为 pending/delivering/delivered/failed/unknown。新增 delivery_attempts、max_delivery_attempts=3、next_attempt_at、delivery_key（等于通知 ID，跨重试不变）。最多尝试 3 次，unknown 不自动重试。
 - `relay_message`：记录外发原文及 sending/sent/rejected/failed/unknown，关联订阅时数据库强制匹配 Agent 与外部会话。sent 只表示发送成功，不表示任务完成。
 
@@ -20,7 +20,7 @@ Node.js >=24，TypeScript（ESM），无第三方运行依赖。运行 `rtk npm 
 
 ## 公共接口
 
-- subscriptions.create(record)、get(id)、list(options)、update({id,expected_status,patch})。
+- subscriptions.create(record)、get(id)、list(options)、update({id,expected_status,patch})、extend({id,now})。extend 用于发送消息或查阅内容后顺延有效期：expires_at 取 now+有效期，不超过 hard_expires_at，也不会提前；已结束订阅返回 false。
 - messages.create(record)、get(id)、list(options)、transition({id,expected_status,status,error,external_ref,sent_at})。
 - notifications.record({notification,now}) 返回 created/duplicate/inactive 与记录；getBySubscription(id)、claim({id,now})、finish({id,status,now,error,next_attempt_at})、listDue({now,limit})。核对接口 reconcileUnknown({id,confirmation,now,error,next_attempt_at}) 仅处理 unknown；confirmation 为 delivered 时原子落账并结束 push，为 not_delivered 时才允许设置下一次重试，累计次数不清零。
 - recoverInterrupted({now}) 将 sending 消息和 delivering 通知标 unknown。必须仅在确认旧执行实例退出后显式调用，不在打开数据库时隐式执行，不自动发送。
@@ -40,7 +40,7 @@ delivery_key 只是本地幂等标识；DSH 接收端的持久确认、幂等查
 
 ## 插件升级和迁移
 
-插件版本与表结构版本独立，结构版本保存在 PRAGMA user_version。当前 v1；新增结构迁移追加到 schema.js 的 migrations 数组，已有迁移不得改写。按照 vN→vN+1 顺序执行，迁移和版本更新包在同一事务内；失败回滚并拒绝启动。v0 仅接受空数据库，未知非空库拒绝；旧插件遇到高版本库拒绝打开，不自动降级。数据转换也必须放在版本迁移中并补充旧库夹具测试。
+插件版本与表结构版本独立，结构版本保存在 PRAGMA user_version。当前 v1。有效期字段和新结束原因在尚无部署数据库时直接并入 v1；此后新增结构迁移追加到 schema.ts 的 migrations 数组，已发布的迁移不得改写。按照 vN→vN+1 顺序执行，迁移和版本更新包在同一事务内；失败回滚并拒绝启动。v0 仅接受空数据库，未知非空库拒绝；旧插件遇到高版本库拒绝打开，不自动降级。数据转换也必须放在版本迁移中并补充旧库夹具测试。
 
 生产升级前需停旧实例并备份数据库（WAL 模式不能在运行中只复制主文件）；恢复备份应同时恢复匹配的插件版本。T1 未实现自动备份或降级。
 
@@ -50,7 +50,7 @@ token 不放业务表。插件级共享 token 在 DSH 设置页面统一配置�
 
 ## 验证边界
 
-测试使用临时 SQLite 文件及独立 worker 连接，覆盖迁移回滚、重开持久化、SQL 约束、路由校验、分页、并发登记、条件投递、3 次上限、未知恢复和清理后防重。未访问真实外部会话、未修改 DSH 配置，也未验收真实通知投递。
+测试使用临时 SQLite 文件及独立 worker 连接，覆盖有效期默认值与顺延上限、迁移回滚、重开持久化、SQL 约束、路由校验、分页、并发登记、条件投递、3 次上限、未知恢复和清理后防重。未访问真实外部会话、未修改 DSH 配置，也未验收真实通知投递。
 
 验证结果：`rtk npm run typecheck` 通过，`rtk npm test` 的真实 SQLite 测试通过。测试仍用 JavaScript，导入编译后的 lib/storage 模块，确保实际产物可运行。
 

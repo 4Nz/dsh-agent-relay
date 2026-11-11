@@ -1,7 +1,13 @@
 export type Agent = "claude" | "codex";
 export type SubscriptionType = "poll" | "push";
 export type SubscriptionStatus = "active" | "paused" | "ended";
-export type Result = "completed" | "failed" | "idle_timeout" | "unreachable";
+export type Result =
+  | "completed"
+  | "failed"
+  | "idle_timeout"
+  | "expired"
+  | "session_closed"
+  | "unreachable";
 export type EndReason = Result | "delivered" | "user_stopped";
 export type MessageStatus =
   "sending" | "sent" | "rejected" | "failed" | "unknown";
@@ -21,10 +27,13 @@ export interface Subscription {
   status: SubscriptionStatus;
   end_reason: EndReason | null;
   check_interval_seconds: number | null;
-  idle_timeout_seconds: number | null;
-  max_consecutive_failures: number | null;
+  idle_timeout_seconds: number;
+  max_lifetime_seconds: number;
+  max_consecutive_failures: number;
   schedule_task_id: string | null;
   cursor: Json;
+  expires_at: number;
+  hard_expires_at: number;
   last_activity_at: number | null;
   last_checked_at: number | null;
   last_check_status: "success" | "error" | null;
@@ -56,6 +65,7 @@ export type SubscriptionInput = Pick<
       | "created_at"
       | "updated_at"
       | "notification_recorded_at"
+      | "hard_expires_at"
     >
   >;
 export type SubscriptionPatch = Partial<
@@ -70,6 +80,8 @@ export type SubscriptionPatch = Partial<
     | "external_cwd"
     | "created_at"
     | "notification_recorded_at"
+    | "max_lifetime_seconds"
+    | "hard_expires_at"
   >
 >;
 export interface Message {

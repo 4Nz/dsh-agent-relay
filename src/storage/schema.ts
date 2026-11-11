@@ -8,20 +8,24 @@ CREATE TABLE relay_subscription (
  external_session_id TEXT NOT NULL CHECK(length(trim(external_session_id))>0), external_session_title TEXT, external_cwd TEXT,
  dsh_session_id TEXT CHECK(dsh_session_id IS NULL OR length(trim(dsh_session_id))>0),
  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','ended')),
- end_reason TEXT CHECK(end_reason IN ('completed','failed','idle_timeout','unreachable','delivered','user_stopped')),
- check_interval_seconds INTEGER, idle_timeout_seconds INTEGER, max_consecutive_failures INTEGER,
+ end_reason TEXT CHECK(end_reason IN ('completed','failed','idle_timeout','expired','session_closed','unreachable','delivered','user_stopped')),
+ check_interval_seconds INTEGER CHECK(check_interval_seconds IS NULL OR check_interval_seconds>=60),
+ idle_timeout_seconds INTEGER NOT NULL CHECK(idle_timeout_seconds>0),
+ max_lifetime_seconds INTEGER NOT NULL CHECK(max_lifetime_seconds>0),
+ max_consecutive_failures INTEGER NOT NULL CHECK(max_consecutive_failures>0),
  schedule_task_id TEXT, cursor TEXT CHECK(cursor IS NULL OR json_valid(cursor)),
+ ${time("expires_at")}, ${time("hard_expires_at")},
  ${time("last_activity_at", true)}, ${time("last_checked_at", true)},
  last_check_status TEXT CHECK(last_check_status IN ('success','error')),last_check_error TEXT,
  consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK(consecutive_failures>=0),
  ${time("notification_recorded_at", true)}, ${time("created_at")},${time("updated_at")},${time("ended_at", true)},
  CHECK((status='ended' AND end_reason IS NOT NULL AND ended_at IS NOT NULL) OR (status!='ended' AND end_reason IS NULL AND ended_at IS NULL)),
- CHECK((type='poll' AND dsh_session_id IS NOT NULL AND check_interval_seconds IS NOT NULL AND check_interval_seconds>=60 AND idle_timeout_seconds IS NOT NULL AND idle_timeout_seconds>0 AND max_consecutive_failures IS NOT NULL AND max_consecutive_failures>0)
- OR (type='push' AND check_interval_seconds IS NULL AND idle_timeout_seconds IS NULL AND max_consecutive_failures IS NULL AND schedule_task_id IS NULL AND last_checked_at IS NULL AND last_check_status IS NULL AND last_check_error IS NULL AND consecutive_failures=0))
+ CHECK(hard_expires_at=created_at+max_lifetime_seconds*1000 AND expires_at<=hard_expires_at),
+ CHECK((type='poll' AND dsh_session_id IS NOT NULL AND check_interval_seconds IS NOT NULL) OR (type='push' AND check_interval_seconds IS NULL))
 ) STRICT;
 CREATE TABLE relay_notification (
  id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0), subscription_id TEXT NOT NULL UNIQUE REFERENCES relay_subscription(id),
- source TEXT NOT NULL CHECK(source IN ('poll','push')), result TEXT NOT NULL CHECK(result IN ('completed','failed','idle_timeout','unreachable')),
+ source TEXT NOT NULL CHECK(source IN ('poll','push')), result TEXT NOT NULL CHECK(result IN ('completed','failed','idle_timeout','expired','session_closed','unreachable')),
  summary TEXT NOT NULL, external_ref TEXT,
  delivery_status TEXT NOT NULL DEFAULT 'pending' CHECK(delivery_status IN ('pending','delivering','delivered','failed','unknown')),
  delivery_attempts INTEGER NOT NULL DEFAULT 0 CHECK(delivery_attempts BETWEEN 0 AND 3), max_delivery_attempts INTEGER NOT NULL DEFAULT 3 CHECK(max_delivery_attempts=3),
@@ -45,6 +49,7 @@ CREATE TRIGGER notification_source BEFORE INSERT ON relay_notification BEGIN
 CREATE TRIGGER notification_marker BEFORE UPDATE OF notification_recorded_at ON relay_subscription WHEN OLD.notification_recorded_at IS NOT NULL AND NEW.notification_recorded_at IS NOT OLD.notification_recorded_at BEGIN SELECT RAISE(ABORT,'通知标记不可清空或修改'); END;
 CREATE INDEX subscription_list ON relay_subscription(created_at DESC,id DESC);
 CREATE INDEX subscription_filter ON relay_subscription(owner,agent,type,status);
+CREATE INDEX subscription_expiry ON relay_subscription(status,expires_at);
 CREATE INDEX notification_due ON relay_notification(delivery_status,next_attempt_at);
 CREATE INDEX notification_cleanup ON relay_notification(created_at);
 CREATE INDEX message_list ON relay_message(created_at DESC,id DESC);

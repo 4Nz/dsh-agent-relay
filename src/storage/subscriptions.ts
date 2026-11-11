@@ -15,6 +15,7 @@ import type {
 } from "./types.js";
 import {
   text,
+  integer,
   validate,
   json,
   decode,
@@ -49,16 +50,26 @@ export function createSubscriptions(db: DatabaseSync) {
           : null) != null
       )
         throw new TypeError("不能指定通知标记");
+      if ("hard_expires_at" in input)
+        throw new TypeError("hard_expires_at 由 max_lifetime_seconds 计算");
       const record: Record<string, unknown> = {
         status: "active",
         end_reason: null,
         ended_at: null,
         consecutive_failures: 0,
-        ...(input.type === "poll"
-          ? { idle_timeout_seconds: 3600, max_consecutive_failures: 3 }
-          : {}),
+        idle_timeout_seconds: 3600,
+        max_lifetime_seconds: 86400,
+        max_consecutive_failures: 3,
         ...input,
       };
+      validate(record);
+      const created = record.created_at as number;
+      record.hard_expires_at =
+        created + (record.max_lifetime_seconds as number) * 1000;
+      record.expires_at ??= Math.min(
+        created + (record.idle_timeout_seconds as number) * 1000,
+        record.hard_expires_at as number,
+      );
       if ("cursor" in record)
         record.cursor = record.cursor === null ? null : json(record.cursor);
       insert(db, table, record, allowed);
@@ -82,6 +93,7 @@ export function createSubscriptions(db: DatabaseSync) {
         "last_check_status",
         "last_check_error",
         "consecutive_failures",
+        "expires_at",
         "check_interval_seconds",
         "idle_timeout_seconds",
         "max_consecutive_failures",
@@ -116,6 +128,18 @@ export function createSubscriptions(db: DatabaseSync) {
             id,
             expected_status,
           ).changes === 1
+      );
+    },
+    // 发送消息或查阅内容时顺延有效期，不超过 hard_expires_at，也不提前。
+    extend({ id, now }: { id: string; now: number }) {
+      text(id, "id");
+      integer(now, "now");
+      return (
+        db
+          .prepare(
+            `UPDATE ${table} SET expires_at=max(expires_at,min(?+idle_timeout_seconds*1000,hard_expires_at)),updated_at=? WHERE id=? AND status!='ended'`,
+          )
+          .run(now, now, id).changes === 1
       );
     },
   };

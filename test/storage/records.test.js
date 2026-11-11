@@ -126,3 +126,34 @@ test("消息关联路由、状态与查询", (t) => {
     false,
   );
 });
+test("有效期默认值、顺延上限与新结束原因", (t) => {
+  const { db } = fixture(t);
+  const s = createSubscriptions(db);
+  const push = s.create(subscription("p", "push"));
+  assert.equal(push.idle_timeout_seconds, 3600);
+  assert.equal(push.expires_at, 100 + 3600000);
+  assert.equal(push.hard_expires_at, 100 + 86400000);
+  assert.throws(
+    () => s.create({ ...subscription("x"), hard_expires_at: 1 }),
+    TypeError,
+  );
+  assert.equal(s.extend({ id: "p", now: 1000 }), true);
+  assert.equal(s.get("p").expires_at, 1000 + 3600000);
+  assert.equal(s.extend({ id: "p", now: 500 }), true);
+  assert.equal(s.get("p").expires_at, 1000 + 3600000);
+  s.extend({ id: "p", now: 86400000 });
+  assert.equal(s.get("p").expires_at, 100 + 86400000);
+  for (const reason of ["expired", "session_closed"]) {
+    const id = "e-" + reason;
+    s.create(subscription(id));
+    assert.equal(
+      s.update({
+        id,
+        expected_status: "active",
+        patch: { status: "ended", end_reason: reason, ended_at: 200 },
+      }),
+      true,
+    );
+  }
+  assert.equal(s.extend({ id: "e-expired", now: 300 }), false);
+});
