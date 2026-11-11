@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { openRelayStore } from './storage/index.js'
 import { registerTools } from './tools.js'
+import { startHistoryCleanup } from './services/cleanup.js'
 
 // workspaceRegistry 服务由 dsh-workspace 提供；这里声明最小类型，避免直接依赖该包。
 declare module '@deepseek-ai/cordis' {
@@ -22,6 +23,12 @@ export function apply(ctx: Context): void {
   const store = openRelayStore({ dataDir: join(resolveDshHome(), 'agent-relay') })
   ctx.effect(() => () => store.close())
   registerTools(ctx, store)
+  ctx.effect(() =>
+    startHistoryCleanup({
+      store,
+      onError: (error) => ctx.logger.warn('[agent-relay] history cleanup failed: %s', error),
+    }),
+  )
   void ensureRelayWorkspace(ctx)
   ctx.logger.info('[agent-relay] server plugin loaded')
 }

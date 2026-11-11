@@ -20,4 +20,5 @@ export function openRelayStore({ dataDir }: { dataDir: string }) {
   };
 }
 
+export type RelayStore = ReturnType<typeof openRelayStore>;
 export type * from "./types.js";
