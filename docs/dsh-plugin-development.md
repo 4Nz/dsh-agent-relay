@@ -91,7 +91,7 @@ export default class MyPlugin {
 
 ### 3.2 构建
 
-第三方插件用 `tsdown`（TS → JS bundle），产物落在 `lib/`。官方插件仓库用 `pnpm run build`。本仓库尚未引入代码，构建工具栈在 T0 之后随首个代码提交确定。
+T0 已引入实际构建（见第 7 节）：服务端用 `tsc`（NodeNext/ESM → `lib/`），前端用 `tsdown`（打包成 `window.__ModuleLoader__.load` 的惰性 CJS factory 格式 → `lib/client.js`）。两者互补：`tsc` 编译服务端入口与类型声明，`tsdown` 只打包前端 `src/client.ts`。
 
 ### 3.3 挂载方式
 
@@ -199,3 +199,48 @@ DSH 内部的 Client→Host RPC 是 Typert（`dsh-api-gateway` + `@Remote` 装�
 - HTTP 外部入口的路由与认证方案（T2.6 / T4 阶段定）。
 - `schedule_create` 周期提醒到点后 agent 执行检查的端到端链路（T7 阶段验收）。
 - 自建 SQLite 的文件路径、迁移策略与并发锁（T1 阶段定）。
+
+## 7. T0 骨架实现（2026-11-11）
+
+T0 已落地实际插件骨架（worktree `feat/t0-skeleton`），在 T1 存储模块之上补挂载层。实际改动与验证：
+
+### 7.1 实际文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `package.json` | 加 `engines.dsh`、`exports`（`.` / `./client` / `./storage` / `./cordis.patch.yml`）、`dsh.bundle.patch`、`dsh.client.inject`（sidebar + layout）、依赖 |
+| `cordis.patch.yml` | 声明 entry `agent-relay`（`lib/index.js`）与 `agent-relay-client`（`lib/client.js`） |
+| `src/index.ts` | 服务端 `apply(ctx)`：`openRelayStore` 打开 storage → 注册工具 → `ctx.effect` 关闭 |
+| `src/tools.ts` | 注册 `relay_ping` 工具（探活 storage） |
+| `src/client.ts` | 前端 `apply(ctx)`：注册 `sidebar.panellist` 图标 + `main` 空 panel |
+| `tsdown.config.mjs` | 前端打包配置：`format: cjs` + `banner/footer/intro` 产出 `window.__ModuleLoader__.load` factory 格式，react/cordis 为 external |
+| `tsconfig.json` | `exclude: ["src/client.ts"]`（前端交 tsdown，tsc 只管服务端） |
+
+### 7.2 构建与验证命令
+
+```bash
+rtk npm ci --cache ./.npm-cache   # 本机 npm 全局缓存有 root-owned 文件，需指定本地缓存
+rtk npm run typecheck             # tsc --noEmit（服务端）
+rtk npm run build                 # tsc + tsdown
+rtk npm test                      # build + node --test（T1 存储测试）
+```
+
+### 7.3 已验证
+
+- `lib/index.js` 可加载，`apply` 是函数；`openRelayStore` 落盘 `agent-relay.sqlite`、`list` 返回 `{items, next_cursor}`、`close` 幂等。
+- 前端 `lib/client.js` 产出正确的 `window.__ModuleLoader__.load({ id: "dsh-agent-relay", factory })` 格式，`react` 为 external。
+
+### 7.4 新增踩坑点（T0 开发中实测）
+
+1. **npm 全局缓存 root-owned**：本机 `~/.npm/_cacache` 有 root 文件，`npm ci` 报 `EPERM`；用 `--cache ./.npm-cache` 指定本地缓存绕过，并把 `.npm-cache/` 加 `.gitignore`。
+2. **`tsdown.config.mjs` 是纯 JS**：不能写 TypeScript 类型注解（`const x: string` 会报 `Missing initializer in const declaration`）。
+3. **`ctx.effect` 回调要返回 disposer**：`ctx.effect(() => { store.close() })` 类型错（`() => void` ≠ `() => Effect`），正确是 `ctx.effect(() => () => store.close())`。
+4. **`defineTool` 的 `output.schema` object 需 `additionalProperties`**：`{ type: 'object' }` 不完整，要 `{ type: 'object', additionalProperties: true }` 或 `{ type: 'json' }`。
+5. **前端 client.js 必须 tsdown 打包**：tsc 输出的普通 ESM 无法被 DSH 前端加载，必须 tsdown 产出 `window.__ModuleLoader__.load` factory 格式（banner/footer/intro 三件套）。
+6. tsdown `format: cjs` 会提示「建议用 ESM」WARN，无害——DSH loader 的惰性 CJS 模型需要 CJS。
+
+### 7.5 剩余限制
+
+- **实机挂载验证未做**：把插件挂进 web profile 并重启 `dsh web` 验证菜单 + `relay_ping` 会中断当前会话，留待合并后单独验证。
+- 前端 slot 契约（`sidebar.panellist` + `main`）从 `dsh-mnemon` 编译产物反推，未经官方文档确认，实机验证时可能需微调。
+- `relay_ping` 是占位探活工具，正式工具（`relay_subscribe` / `relay_list` / `relay_send` 等）在 T3 实现。
