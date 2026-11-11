@@ -157,3 +157,17 @@ test("有效期默认值、顺延上限与新结束原因", (t) => {
   }
   assert.equal(s.extend({ id: "e-expired", now: 300 }), false);
 });
+test("按外部会话顺延：只影响同 agent、同会话的未结束订阅", (t) => {
+  const { db } = fixture(t);
+  const s = createSubscriptions(db);
+  s.create(subscription("a"));
+  s.create(subscription("b", "push"));
+  s.create({ ...subscription("other"), external_session_id: "x" });
+  s.create(subscription("done"));
+  s.update({ id: "done", expected_status: "active", patch: { status: "ended", end_reason: "user_stopped", ended_at: 150 } });
+  assert.equal(s.touchSession({ agent: "claude", external_session_id: "session'1", now: 1000 }), 2);
+  assert.equal(s.touchSession({ agent: "codex", external_session_id: "session'1", now: 1000 }), 0);
+  assert.equal(s.get("a").expires_at, 1000 + 3600000);
+  assert.equal(s.get("other").expires_at, 100 + 3600000);
+  assert.equal(s.get("done").expires_at, 100 + 3600000);
+});

@@ -142,5 +142,26 @@ export function createSubscriptions(db: DatabaseSync) {
           .run(now, now, id).changes === 1
       );
     },
+    // 按外部会话顺延所有未结束订阅，返回顺延的条数。
+    touchSession({
+      agent,
+      external_session_id,
+      now,
+    }: {
+      agent: Subscription["agent"];
+      external_session_id: string;
+      now: number;
+    }) {
+      text(agent, "agent");
+      text(external_session_id, "external_session_id");
+      integer(now, "now");
+      return Number(
+        db
+          .prepare(
+            `UPDATE ${table} SET expires_at=max(expires_at,min(?+idle_timeout_seconds*1000,hard_expires_at)),updated_at=? WHERE agent=? AND external_session_id=? AND status!='ended'`,
+          )
+          .run(now, now, agent, external_session_id).changes,
+      );
+    },
   };
 }
