@@ -66,7 +66,8 @@ DSH 由多个插件组合包按层叠加而成：`dsh.profile.bundles` 中的每
 两种形式，任选其一：
 
 ```ts
-// 形式 A：函数式
+// 形式 A：函数式，声明实际访问的服务
+export const inject = ['tools']
 export function apply(ctx: Context) {
   ctx.tools.register(/* ... */)
 }
@@ -84,10 +85,9 @@ export default class MyPlugin {
 - insert:
     - id: my-relay
       name: 'dsh-agent-relay'          # 对应 lib/index.js
-    # 前端 entry（如需要独立前端插件）
-    - id: my-relay-client
-      name: 'dsh-agent-relay/client'   # 对应 lib/client.js
 ```
+
+浏览器入口由 `exports["./client"]` 和 `dsh.client` 交给客户端模块系统加载，不可加入服务端 patch。`./client` 导出须为字符串或带字符串 `default` 的对象，只有 `import` 不符合 DSH 客户端解析契约。
 
 ### 3.2 构建
 
@@ -209,7 +209,7 @@ T0 已落地实际插件骨架（worktree `feat/t0-skeleton`），在 T1 存储�
 | 文件 | 作用 |
 | --- | --- |
 | `package.json` | 加 `engines.dsh`、`exports`（`.` / `./client` / `./storage` / `./cordis.patch.yml`）、`dsh.bundle.patch`、`dsh.client.inject`（sidebar + layout）、依赖 |
-| `cordis.patch.yml` | 声明 entry `agent-relay`（`lib/index.js`）与 `agent-relay-client`（`lib/client.js`） |
+| `cordis.patch.yml` | 只声明服务端 entry `agent-relay`（`lib/index.js`）；前端由客户端模块系统自动加载 |
 | `src/index.ts` | 服务端 `apply(ctx)`：`openRelayStore` 打开 storage → 注册工具 → `ctx.effect` 关闭 |
 | `src/tools.ts` | 注册 `relay_ping` 工具（探活 storage） |
 | `src/client.ts` | 前端 `apply(ctx)`：注册 `sidebar.panellist` 图标 + `main` 空 panel |
@@ -241,6 +241,6 @@ rtk npm test                      # build + node --test（T1 存储测试）
 
 ### 7.5 剩余限制
 
-- **实机挂载验证未做**：把插件挂进 web profile 并重启 `dsh web` 验证菜单 + `relay_ping` 会中断当前会话，留待合并后单独验证。
-- 前端 slot 契约（`sidebar.panellist` + `main`）从 `dsh-mnemon` 编译产物反推，未经官方文档确认，实机验证时可能需微调。
+- **实机启动已验证（2026-11-11）**：修复接入配置后，`dsh web --no-open` 启动成功，浏览器主界面及 Agent Relay 菜单可见。`relay_ping` 实际调用与面板点击验收尚未完成，见 `T0-startup-fix.md`。
+- 前端通过 `export const inject = ['slots']` 声明服务；使用 `ctx.slots.inject` 等待 `main` 和 `sidebar.panellist` 就绪后注册，并回收注册项。实机已验证菜单显示；其余交互尚未验收。
 - `relay_ping` 是占位探活工具，正式工具（`relay_subscribe` / `relay_list` / `relay_send` 等）在 T3 实现。

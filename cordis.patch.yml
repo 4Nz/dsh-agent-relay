@@ -1,5 +1,3 @@
 - insert:
     - id: agent-relay
       name: 'dsh-agent-relay'
-    - id: agent-relay-client
-      name: 'dsh-agent-relay/client'
