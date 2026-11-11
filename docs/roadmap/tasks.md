@@ -1,6 +1,6 @@
 # 第一版任务拆解
 
-依据：`docs/goals.md` 和本轮讨论确定的范围。
+依据：`docs/roadmap/goals.md` 和本轮讨论确定的范围。
 
 ## 范围
 
@@ -128,7 +128,7 @@
 
 通知和消息按 created_at 满 30 天统一删除，所有状态适用；订阅及 notification_recorded_at 保留用于防重。每日清理由 T2.8 调度。
 
-T1 已提供独立存储模块；接口、迁移与限制见 `docs/T1-storage-design.md`。共享 token 不存业务表，在 DSH 设置页面统一配置和重置，本机 Agent 共用；认证与配置接入由 T2.6/T6 实现。
+T1 已提供独立存储模块；接口、迁移与限制见 `docs/superpowers/plans/T1-storage-design.md`。共享 token 不存业务表，在 DSH 设置页面统一配置和重置，本机 Agent 共用；认证与配置接入由 T2.6/T6 实现。
 
 ## T2 抽象层
 
@@ -181,7 +181,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | 编号 | 任务 | 第一版能力 |
 | --- | --- | --- |
 | T5.1 | Claude Adapter | 列出会话、`snapshot`、发送消息。会话处理中或开在终端里时拒绝发送 |
-| T5.2 | Codex Adapter | 已实现独立只读 Adapter：列出会话、`snapshot`，发送消息声明为“不支持”；真实专用会话冒烟通过，尚待服务层注册，见 `docs/T5.2-codex-adapter-design.md` |
+| T5.2 | Codex Adapter | 已实现独立只读 Adapter：列出会话、`snapshot`，发送消息声明为“不支持”；真实专用会话冒烟通过，尚待服务层注册，见 `docs/superpowers/plans/T5.2-codex-adapter-design.md` |
 
 每个 Adapter 都要有针对真实会话的冒烟测试，测试会话和业务会话分开。
 

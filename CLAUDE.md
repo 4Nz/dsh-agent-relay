@@ -10,4 +10,4 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - 当前没有构建、lint 或测试命令。引入代码后，把实际命令补充到 `AGENTS.md`，不要在这里另写一份。
 - Worktree 布局：Claude 任务放在仓库内 `.worktrees/<任务名>`（如 `.worktrees/claude-session-relay`），Codex 的 worktree 在 `~/.codex/worktrees/` 下。`git worktree list` 可查看全部。
-- 任务顺序以 `docs/tasks.md` 末尾的「依赖与顺序」和里程碑 M1～M4 为准：T0 确认 DSH 接入点后才能做 T1 存储，T2 服务层是 T3 工具、T4 接口、T5 Adapter 的共同依赖。
+- 任务顺序以 `docs/roadmap/tasks.md` 末尾的「依赖与顺序」和里程碑 M1～M4 为准：T0 确认 DSH 接入点后才能做 T1 存储，T2 服务层是 T3 工具、T4 接口、T5 Adapter 的共同依赖。
