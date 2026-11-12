@@ -6,6 +6,7 @@ import type { Agent, Subscription, SubscriptionType } from "../storage/types.js"
 import type { Scheduler } from "./scheduler.js";
 
 export interface SubscribeInput {
+  id?: string;
   type: SubscriptionType;
   agent: Agent;
   external_session_id: string;
@@ -15,6 +16,12 @@ export interface SubscribeInput {
   idle_timeout_seconds?: number;
   max_lifetime_seconds?: number;
   check_interval_seconds?: number;
+}
+export interface PushSubscriptionInput {
+  id: string;
+  agent: Agent;
+  external_session_id: string;
+  owner?: string;
 }
 export type SubscribeResult =
   | { ok: true; subscription: Subscription }
@@ -124,6 +131,26 @@ async function closeSession(agent: Agent, externalSessionId: string) {
   }
 
   return {
+    // 外部 Agent 直接 push 时，通知请求本身就是任务完成的证据，不能要求
+    // Relay 先重新读取外部会话；否则外部任务已结束但历史不可读时会被错误拒绝。
+    createPush(input: PushSubscriptionInput): SubscribeResult {
+      const time = now();
+      const created = subs.create({
+        id: input.id,
+        owner: input.owner ?? "local",
+        type: "push",
+        agent: input.agent,
+        external_session_id: input.external_session_id,
+        external_session_title: null,
+        external_cwd: null,
+        dsh_session_id: null,
+        cursor: null,
+        last_activity_at: null,
+        created_at: time,
+        updated_at: time,
+      });
+      return { ok: true, subscription: subs.get(created.id)! };
+    },
     async subscribe(input: SubscribeInput): Promise<SubscribeResult> {
       const adapter = adapters.get(input.agent);
       if (!adapter.capabilities().snapshot)
@@ -137,7 +164,7 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       const time = now();
       const idle = input.idle_timeout_seconds ?? DEFAULT_IDLE_SECONDS;
       const draft = {
-        id: newId(),
+        id: input.id ?? newId(),
         owner: input.owner ?? "local",
         type: input.type,
         agent: input.agent,

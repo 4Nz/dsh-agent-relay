@@ -36,7 +36,7 @@ export function registerTools(
       name: "relay_subscribe",
       endpoint: "subscribe",
       description:
-        "创建一次性订阅；poll 默认向当前 DSH 会话通知，push 可在外部 Agent 通知时新建 Agent Relay 会话。默认有效期一小时、最长24小时。只有 schedule_ready=true 才表示定时检查已就绪。",
+        "创建一次性订阅；poll 默认向当前 DSH 会话通知，预注册 push 可指定接收会话。外部 Agent 也可不预先订阅，直接调用通知入口。默认有效期一小时、最长24小时。只有 schedule_ready=true 才表示定时检查已就绪。",
       parameters: {
         agent,
         type: { type: "string", enum: ["poll", "push"] },

@@ -133,6 +133,7 @@ export function apply(ctx: Context): void {
   const pushHandler = createPushHandler({
     credentials,
     store,
+    createSubscription: async (input) => subscriptions.createPush(input),
     createSession: async () => {
       await mkdir(relayDir, { recursive: true, mode: 0o700 });
       const id = randomUUID();

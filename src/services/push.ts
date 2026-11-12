@@ -19,9 +19,17 @@ export interface PushHandlerOptions {
       update(input: { id: string; expected_status: "active"; patch: { dsh_session_id: string; updated_at: number } }): boolean;
     };
     notifications: {
+      getBySubscription?(id: string): unknown;
       record(input: { notification: { id: string; subscription_id: string; source: "push"; result: Result; summary: string; external_ref?: string | null }; now: number }): { outcome: "created" | "duplicate" | "inactive"; notification: unknown };
     };
   };
+  createSubscription: (input: {
+    id: string;
+    type: "push";
+    agent: "claude" | "codex";
+    external_session_id: string;
+    dsh_session_id: null;
+  }) => Promise<{ ok: true; subscription: Subscription } | { ok: false; message: string }>;
   createSession: (subscription: Subscription) => Promise<string>;
   drain: () => Promise<unknown>;
   now?: () => number;
@@ -32,10 +40,39 @@ export function createPushHandler({
   credentials,
   store,
   createSession,
+  createSubscription,
   drain,
   now = Date.now,
   newId = randomUUID,
 }: PushHandlerOptions) {
+  const sessionLocks = new Map<string, Promise<string>>();
+
+  async function ensureSession(subscription: Subscription): Promise<string> {
+    const current = store.subscriptions.get(subscription.id);
+    if (current?.dsh_session_id) return current.dsh_session_id;
+    const existing = sessionLocks.get(subscription.id);
+    if (existing) return existing;
+    const pending = (async () => {
+      const latest = store.subscriptions.get(subscription.id);
+      if (latest?.dsh_session_id) return latest.dsh_session_id;
+      const sessionId = await createSession(latest ?? subscription);
+      if (store.subscriptions.update({
+        id: subscription.id,
+        expected_status: "active",
+        patch: { dsh_session_id: sessionId, updated_at: now() },
+      })) return sessionId;
+      const updated = store.subscriptions.get(subscription.id);
+      if (updated?.dsh_session_id) return updated.dsh_session_id;
+      throw new Error("接收会话创建冲突");
+    })();
+    sessionLocks.set(subscription.id, pending);
+    try {
+      return await pending;
+    } finally {
+      if (sessionLocks.get(subscription.id) === pending) sessionLocks.delete(subscription.id);
+    }
+  }
+
   return async function handle(request: Request): Promise<Response> {
     if (request.method !== "POST") return new Response("方法不支持", { status: 405 });
     if (request.headers.get("content-type")?.split(";")[0].trim() !== "application/json")
@@ -52,9 +89,9 @@ export function createPushHandler({
     if (!body || typeof body !== "object" || Array.isArray(body))
       return new Response("请求体无效", { status: 400 });
     const input = body as Record<string, unknown>;
+    const direct = input.subscription_id === undefined;
     if (
-      typeof input.subscription_id !== "string" ||
-      !input.subscription_id.trim() ||
+      (!direct && (typeof input.subscription_id !== "string" || !input.subscription_id.trim())) ||
       typeof input.result !== "string" ||
       !RESULTS.has(input.result as Result) ||
       typeof input.summary !== "string" ||
@@ -64,19 +101,52 @@ export function createPushHandler({
       return new Response("通知字段无效", { status: 400 });
     if (input.external_ref !== undefined && input.external_ref !== null && typeof input.external_ref !== "string")
       return new Response("external_ref 无效", { status: 400 });
-    const subscription = store.subscriptions.get(input.subscription_id);
+    if (direct && (
+      typeof input.request_id !== "string" || !input.request_id.trim() || input.request_id.length > 500 ||
+      (input.agent !== "claude" && input.agent !== "codex") ||
+      typeof input.external_session_id !== "string" || !input.external_session_id.trim()
+    )) return new Response("直接 push 缺少 request_id、agent 或 external_session_id", { status: 400 });
+    const subscriptionId = direct ? `push:${input.request_id as string}` : input.subscription_id as string;
+    let subscription = store.subscriptions.get(subscriptionId);
+    if (!subscription && direct) {
+      try {
+        const created = await createSubscription({
+          id: subscriptionId,
+          type: "push",
+          agent: input.agent as "claude" | "codex",
+          external_session_id: input.external_session_id as string,
+          dsh_session_id: null,
+        });
+        if (!created.ok) return new Response(created.message, { status: 422 });
+        subscription = created.subscription;
+      } catch {
+        // 并发请求可能由另一条请求先创建同一个 request_id；重新读取即可复用。
+        subscription = store.subscriptions.get(subscriptionId);
+        if (!subscription) return new Response("无法创建 push 订阅", { status: 500 });
+      }
+    }
     if (!subscription || subscription.type !== "push")
       return new Response("push 订阅不存在", { status: 404 });
-    if (subscription.status !== "active")
+    if (direct && (
+      subscription.agent !== input.agent ||
+      subscription.external_session_id !== input.external_session_id
+    )) return new Response("request_id 已绑定其他外部会话", { status: 409 });
+    if (subscription.status !== "active") {
+      if (store.notifications.getBySubscription?.(subscription.id)) {
+        return Response.json({
+          accepted: true,
+          duplicate: true,
+          subscription_id: subscription.id,
+          dsh_session_id: subscription.dsh_session_id,
+        }, { status: 202 });
+      }
       return new Response("push 订阅未运行", { status: 409 });
-    let sessionId = subscription.dsh_session_id;
-    if (!sessionId) {
-      sessionId = await createSession(subscription);
-      if (!store.subscriptions.update({
-        id: subscription.id,
-        expected_status: "active",
-        patch: { dsh_session_id: sessionId, updated_at: now() },
-      })) return new Response("接收会话创建冲突", { status: 409 });
+    }
+    let sessionId: string;
+    try {
+      sessionId = await ensureSession(subscription);
+    } catch (error) {
+      return new Response(error instanceof Error ? error.message : "接收会话创建失败", { status: 409 });
     }
     const result = store.notifications.record({
       notification: {
