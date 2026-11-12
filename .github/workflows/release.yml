@@ -1,0 +1,31 @@
+name: 生成草稿发布
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci --cache ./.npm-cache
+      - run: npm run release:prepare
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+      - name: 上传已验证的安装包至草稿
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$RELEASE_TAG" dist/*/*.tgz dist/*/SHA256SUMS dist/*/release.json
+          --verify-tag --draft --latest=false --title "Agent Relay $RELEASE_TAG" --notes-file CHANGELOG.md

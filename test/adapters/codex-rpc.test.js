@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 function frame(value, opcode = 1) {
   const body = Buffer.from(typeof value === 'string' ? value : JSON.stringify(value));
@@ -15,7 +16,7 @@ function frame(value, opcode = 1) {
   else { header[1] = 127; header.writeBigUInt64BE(BigInt(body.length), 2); }
   return Buffer.concat([header, body]);
 }
-async function server(t, handler) {
+async function server(t, handler, onInitialize = () => {}) {
   const dir = await mkdtemp(join(tmpdir(), 'relay-rpc-'));
   const path = join(dir, 'test.sock');
   const http = createServer();
@@ -39,7 +40,10 @@ async function server(t, handler) {
         buffer = buffer.subarray(offset + 4 + length);
         if (opcode !== 1) continue;
         const request = JSON.parse(body.toString());
-        if (request.method === 'initialize') socket.write(frame({ id: request.id, result: { userAgent: 'test' } }));
+        if (request.method === 'initialize') {
+          onInitialize(request.params);
+          socket.write(frame({ id: request.id, result: { userAgent: 'test' } }));
+        }
         else if (request.method !== 'initialized') handler(request, socket);
       }
     });
@@ -48,6 +52,19 @@ async function server(t, handler) {
   t.after(async () => { for (const s of sockets) s.destroy(); await new Promise(resolve => http.close(resolve)); await rm(dir, { recursive: true, force: true }); });
   return path;
 }
+
+test('Codex RPC：安装包版本变化后握手同步版本', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'relay-version-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await cp(new URL('../../lib/', import.meta.url), join(dir, 'lib'), { recursive: true });
+  await writeFile(join(dir, 'package.json'), JSON.stringify({ type: 'module', version: '0.9.9-test.1' }));
+  let initialize;
+  const path = await server(t, () => {}, params => { initialize = params; });
+  const { connectCodex } = await import(pathToFileURL(join(dir, 'lib/adapters/codex/rpc.js')).href);
+  const client = await connectCodex({ socketPath: path, timeoutMs: 500 });
+  t.after(() => client.close());
+  assert.equal(initialize.clientInfo.version, '0.9.9-test.1');
+});
 
 test('Codex RPC：真实 Unix socket 握手、并发响应与分段帧', async t => {
   const { connectCodex } = await import('../../lib/adapters/codex/rpc.js');

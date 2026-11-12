@@ -6,7 +6,9 @@
     "lib",
     "cordis.patch.yml",
     "skills",
-    "scripts/install-skills.mjs"
+    "scripts/install-skills.mjs",
+    "CHANGELOG.md",
+    "docs/operations/T0-T1-T3-T7-plugin-release.md"
   ],
   "type": "module",
   "engines": {
@@ -15,9 +17,11 @@
   },
   "scripts": {
     "skills:install": "node scripts/install-skills.mjs",
-    "build": "tsc -p tsconfig.json && tsdown",
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build",
+    "release:prepare": "npm run typecheck && npm test && node scripts/release.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json",
-    "test": "npm run build && node --test test/storage/*.test.js test/adapters/*.test.js test/services/*.test.js"
+    "test": "npm run build && node --test test/storage/*.test.js test/adapters/*.test.js test/services/*.test.js test/scripts/*.test.js"
   },
   "exports": {
     ".": {
@@ -25,7 +29,6 @@
       "import": "./lib/index.js"
     },
     "./client": {
-      "types": "./lib/client.d.ts",
       "default": "./lib/client.js"
     },
     "./storage": {

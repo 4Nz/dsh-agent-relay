@@ -24,6 +24,7 @@ import { registerRelayApi, type RelayConnection } from "./api.js";
 import { createCredentialService } from "./services/credentials.js";
 import { createPushHandler, createPushServer } from "./services/push.js";
 import { randomUUID } from "node:crypto";
+import { PLUGIN_VERSION } from "./version.js";
 
 interface RelayHost extends DshDeliveryContext {
   schedule: unknown;
@@ -170,7 +171,7 @@ export function apply(ctx: Context): void {
   }).catch((error) => {
     ctx.logger.warn("[agent-relay] push endpoint unavailable:", error);
   });
-  ctx.logger.info("[agent-relay] server plugin loaded");
+  ctx.logger.info("[agent-relay] server plugin loaded, version %s", PLUGIN_VERSION);
 }
 
 // T6.3 通知会话分组的前置：在插件数据目录下建专用目录并注册为 workspace 项目，

@@ -8,6 +8,8 @@ DSH Agent Relay 是 DSH 的外部 Agent 任务订阅、通知与消息转发插�
 
 ## 开发语言与插件形态
 
+交付检查运行 `rtk npm run release:prepare`，执行类型检查、全量单元测试、干净构建、包清单检查和隔离 tarball 安装冒烟，输出 `dist/<版本>/`；普通 `npm pack` 通过 prepack 自动构建。安装、Skill 更新、升级备份和草稿 Release 说明见 `docs/operations/T0-T1-T3-T7-plugin-release.md`。安装包冒烟不启动真实 DSH，不替代 T7，也不自动上传。
+
 - 本项目是 DSH 插件，采用 TypeScript 编写服务端和前端源码，编译为 JavaScript 模块，以独立 npm 包交由 DSH 的 Cordis 插件体系加载。
 - DSH 加载的服务端入口为 `lib/index.js`，前端入口为 `lib/client.js`；运行时加载 JavaScript，不直接加载 TypeScript 源码。
 - Python、Go 等语言不能直接作为上述插件入口；若后续确有桥接需求，须另行设计，不作为第一版默认技术栈。

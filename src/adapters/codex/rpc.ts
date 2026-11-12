@@ -1,5 +1,6 @@
 import { request as httpRequest } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
+import { PLUGIN_VERSION } from '../../version.js';
 import type { Duplex } from 'node:stream';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -134,7 +135,7 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
   }
   try {
     await request('initialize', {
-      clientInfo: { name: 'dsh-agent-relay', version: '0.1.0' },
+      clientInfo: { name: 'dsh-agent-relay', version: PLUGIN_VERSION },
       capabilities: { experimentalApi: true },
     });
     send({ method: 'initialized' });

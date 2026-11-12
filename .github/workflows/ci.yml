@@ -1,0 +1,26 @@
+name: 安装包验证
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci --cache ./.npm-cache
+      - run: npm run release:prepare
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-relay-package
+          path: dist/*/*
+          if-no-files-found: error

@@ -1,5 +1,7 @@
 # 第一版任务拆解
 
+交付补充（T0、T1、T3、T7）：安装包生成、Skill 链接更新与草稿上传流程见 `docs/operations/T0-T1-T3-T7-plugin-release.md`。`release:prepare` 的安装包冒烟不替代本文件的真实 T7 场景。
+
 依据：`docs/roadmap/goals.md` 和本轮讨论确定的范围。
 
 ## 范围
