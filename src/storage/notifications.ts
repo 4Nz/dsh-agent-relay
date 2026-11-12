@@ -116,9 +116,9 @@ export function createNotifications(db: DatabaseSync) {
       return (
         db
           .prepare(
-            `UPDATE ${table} SET delivery_status='delivering',delivery_attempts=delivery_attempts+1,next_attempt_at=NULL WHERE id=? AND delivery_attempts<max_delivery_attempts AND (delivery_status='pending' OR (delivery_status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at<=?))`,
+            `UPDATE ${table} SET delivery_status='delivering',delivery_attempts=delivery_attempts+1,next_attempt_at=NULL WHERE id=? AND delivery_attempts<max_delivery_attempts AND (delivery_status='pending' OR (delivery_status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at<=?)) AND NOT EXISTS (SELECT 1 FROM relay_subscription s WHERE s.id=${table}.subscription_id AND (s.end_reason='user_stopped' OR (s.type='push' AND s.hard_expires_at<=?)))`,
           )
-          .run(id, now).changes === 1
+          .run(id, now, now).changes === 1
       );
     },
     finish(input: FinishInput) {
@@ -161,5 +161,80 @@ export function createNotifications(db: DatabaseSync) {
         .all(now, limit)
         .map((row) => decode<Notification>(row)!);
     },
+    // 批量到期：将到达 hard_expires_at 的未结束 push 订阅标为 ended/expired，
+    // 保留原通知 result、summary、防重标记与投递事实；无通知时登记至多一条 expired 通知。
+    expirePushSubscriptions({ now }: { now: number }): number {
+      integer(now, "now");
+      return transaction(db, () => {
+        const rows = db
+          .prepare(
+            "SELECT id FROM relay_subscription WHERE type='push' AND status!='ended' AND hard_expires_at<=?",
+          )
+          .all(now) as unknown as { id: string }[];
+        let count = 0;
+        for (const row of rows) count += expirePushLocked(row.id, now);
+        return count;
+      });
+    },
+    // 单条到期：供 check 的最长存活分支使用，与批量扫描复用相同逻辑。
+    expirePush(id: string, now: number): number {
+      text(id, "id");
+      integer(now, "now");
+      return transaction(db, () => expirePushLocked(id, now));
+    },
+    // 取消未开始的 pending / 待重试 failed 通知：标 failed + 明确原因，不再调度。
+    // 不改变通知 result（任务结果），仅停止投递。
+    cancelDeliveries(subscriptionId: string, now: number, reason: string): number {
+      text(subscriptionId, "subscription_id");
+      integer(now, "now");
+      text(reason, "reason");
+      return Number(
+        db
+          .prepare(
+            `UPDATE ${table} SET delivery_status='failed',delivery_error=?,next_attempt_at=NULL WHERE subscription_id=? AND (delivery_status='pending' OR (delivery_status='failed' AND next_attempt_at IS NOT NULL))`,
+          )
+          .run(reason, subscriptionId).changes,
+      );
+    },
   };
+
+  // 事务内对单条到期 push 订阅做原子转换；返回转换条数。
+  function expirePushLocked(id: string, now: number): number {
+    const sub = db
+      .prepare("SELECT * FROM relay_subscription WHERE id=?")
+      .get(id) as unknown as Subscription | undefined;
+    if (!sub || sub.type !== "push" || sub.status === "ended") return 0;
+    // 停止尚未开始的投递，避免到期后仍继续调度重试。
+    db.prepare(
+      `UPDATE ${table} SET delivery_status='failed',delivery_error=?,next_attempt_at=NULL WHERE subscription_id=? AND (delivery_status='pending' OR (delivery_status='failed' AND next_attempt_at IS NOT NULL))`,
+    ).run("push 订阅已到期，取消投递", sub.id);
+    if (sub.notification_recorded_at === null) {
+      const notificationId = `${sub.id}:expired`;
+      db.prepare(
+        `INSERT INTO ${table} (id,subscription_id,source,result,summary,external_ref,delivery_status,delivery_attempts,max_delivery_attempts,delivery_key,next_attempt_at,delivered_at,delivery_error,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        notificationId,
+        sub.id,
+        "push",
+        "expired",
+        `${sub.external_session_title ?? sub.external_session_id}（${sub.agent}/${sub.external_session_id}）：已达到最长订阅时间`.slice(0, 4000),
+        null,
+        "pending",
+        0,
+        3,
+        notificationId,
+        null,
+        null,
+        null,
+        now,
+      );
+      db.prepare(
+        "UPDATE relay_subscription SET notification_recorded_at=?,updated_at=? WHERE id=?",
+      ).run(now, now, sub.id);
+    }
+    db.prepare(
+      "UPDATE relay_subscription SET status='ended',end_reason='expired',ended_at=?,updated_at=? WHERE id=? AND status!='ended'",
+    ).run(now, now, sub.id);
+    return 1;
+  }
 }

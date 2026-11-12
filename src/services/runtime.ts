@@ -9,7 +9,7 @@ export function startRelayRuntime({
   intervalMs = 30000,
   beforeClose = async () => {},
 }: {
-  store: Pick<RelayStore, "recoverInterrupted" | "close">;
+  store: Pick<RelayStore, "recoverInterrupted" | "close" | "notifications">;
   subscriptions: Pick<SubscriptionService, "reconcile">;
   notifications: NotificationService;
   onError: (error: unknown) => void;
@@ -21,6 +21,9 @@ export function startRelayRuntime({
   let timer: ReturnType<typeof setTimeout> | undefined;
   async function reconcile() {
     try {
+      // 每轮对账前先到期扫描：收敛到达最长存活时间的 push 订阅，
+      // 不依赖模型轮询或接收会话存在；暂停不突破最长存活上限。
+      store.notifications.expirePushSubscriptions({ now: Date.now() });
       const report = await subscriptions.reconcile();
       for (const error of report.errors) onError(error);
     } catch (error) {

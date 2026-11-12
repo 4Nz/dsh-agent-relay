@@ -715,7 +715,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       h(
         "p",
         { className: "muted" },
-        "停止后不再检查，也不再接收该订阅的通知。不会停止外部 Agent 任务。",
+        "停止后不再发起新的通知投递；已在途或已送达的消息不会撤回。",
       ),
       h(
         "footer",

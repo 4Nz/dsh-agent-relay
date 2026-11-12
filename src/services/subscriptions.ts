@@ -273,7 +273,11 @@ async function closeSession(agent: Agent, externalSessionId: string) {
         end_reason: "user_stopped",
         ended_at: time,
       });
-      if (result.ok) await unscheduleQuietly(result.subscription);
+      if (result.ok) {
+        // 停止后不再发起新的通知投递：取消未开始的 pending/待重试 failed 通知。
+        store.notifications.cancelDeliveries(id, time, "订阅已停止，取消投递");
+        await unscheduleQuietly(result.subscription);
+      }
       return result;
     },
     // 通过 Relay 查阅会话内容：顺延该会话所有订阅的有效期；会话已关闭时结束这些订阅。

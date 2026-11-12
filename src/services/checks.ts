@@ -75,6 +75,15 @@ export function createCheckService({
       status: recorded.outcome === "inactive" ? "inactive" : "notified",
     };
   }
+  // 最长存活到期：poll 走常规 finish；push 用原子单条转换登记 expired 通知并结束，
+  // 不以 record(duplicate) 代替结束操作。
+  async function expireOrFinish(sub: Subscription) {
+    if (sub.type === "push") {
+      store.notifications.expirePush(sub.id, now());
+      return { status: "expired" };
+    }
+    return await finish(sub, "expired", "已达到最长订阅时间");
+  }
   return {
     async check(id: string): Promise<{ status: string }> {
       if (running.has(id)) return { status: "running" };
@@ -83,8 +92,7 @@ export function createCheckService({
         let sub = store.subscriptions.get(id);
         if (!sub) return { status: "not_found" };
         if (sub.status !== "active") return { status: "inactive" };
-        if (now() >= sub.hard_expires_at)
-          return await finish(sub, "expired", "已达到最长订阅时间");
+        if (now() >= sub.hard_expires_at) return await expireOrFinish(sub);
         if (now() < sub.expires_at) return { status: "not_due" };
         let snap: Snapshot;
         try {
@@ -113,8 +121,7 @@ export function createCheckService({
               updated_at: now(),
             },
           });
-          if (now() >= sub.hard_expires_at)
-            return await finish(sub, "expired", "已达到最长订阅时间");
+          if (now() >= sub.hard_expires_at) return await expireOrFinish(sub);
           return failures >= sub.max_consecutive_failures
             ? await finish(sub, "unreachable", `连续检查失败：${reason}`)
             : { status: "check_failed" };
@@ -122,8 +129,7 @@ export function createCheckService({
         // 外部查询期间可能发生停止、暂停或人工查阅，重新检查有效期。
         sub = store.subscriptions.get(id)!;
         if (!sub || sub.status !== "active") return { status: "inactive" };
-        if (now() >= sub.hard_expires_at)
-          return await finish(sub, "expired", "已达到最长订阅时间");
+        if (now() >= sub.hard_expires_at) return await expireOrFinish(sub);
         if (now() < sub.expires_at) return { status: "not_due" };
         const time = now();
         store.subscriptions.update({

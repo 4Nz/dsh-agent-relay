@@ -377,3 +377,21 @@ test("已结束订阅的旧版任务在对账时被清理，不补建任务", as
   assert.equal(sched.tasks.size, 0);
   assert.equal(store.subscriptions.get(sub.id).status, "ended");
 });
+
+test("停止订阅取消未开始的投递通知，不改写任务结果", async (t) => {
+  const { store, service } = fixture(t);
+  const push = service.createPush({ id: "push:req-stop", agent: "claude", external_session_id: "ext" });
+  store.notifications.record({
+    notification: { id: "stop-n", subscription_id: push.subscription.id, source: "push", result: "completed", summary: "完成" },
+    now: 1000,
+  });
+  assert.equal(store.notifications.getBySubscription(push.subscription.id).delivery_status, "pending");
+  const stopped = await service.stop(push.subscription.id);
+  assert.equal(stopped.ok, true);
+  const notif = store.notifications.getBySubscription(push.subscription.id);
+  assert.equal(notif.delivery_status, "failed");
+  assert.equal(notif.delivery_error, "订阅已停止，取消投递");
+  assert.equal(notif.next_attempt_at, null);
+  // 任务结果仍为 completed，不因停止改写。
+  assert.equal(notif.result, "completed");
+});

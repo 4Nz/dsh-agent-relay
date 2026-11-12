@@ -159,3 +159,41 @@ test("Codex 正常实时状态未知说明不作为查询失败", async (t) => {
   );
   assert.equal(store.subscriptions.get("s").consecutive_failures, 0);
 });
+
+test("push 订阅到期用原子转换结束：已有通知保留，无通知登记 expired", async (t) => {
+  const { store, state, service } = fixture(t);
+  // 无通知的 push 到期登记一条 expired 通知。
+  store.subscriptions.create({
+    id: "p1",
+    owner: "local",
+    type: "push",
+    agent: "claude",
+    external_session_id: "ext",
+    dsh_session_id: null,
+    created_at: 1000,
+    updated_at: 1000,
+  });
+  state.now = store.subscriptions.get("p1").hard_expires_at;
+  assert.equal((await service.check("p1")).status, "expired");
+  assert.equal(store.notifications.getBySubscription("p1").result, "expired");
+  assert.equal(store.subscriptions.get("p1").end_reason, "expired");
+  // 已有通知的 push 到期保留原通知，不生成第二条。
+  store.subscriptions.create({
+    id: "p2",
+    owner: "local",
+    type: "push",
+    agent: "claude",
+    external_session_id: "ext",
+    dsh_session_id: null,
+    created_at: 1000,
+    updated_at: 1000,
+  });
+  store.notifications.record({
+    notification: { id: "p2n", subscription_id: "p2", source: "push", result: "completed", summary: "完成" },
+    now: 1000,
+  });
+  state.now = store.subscriptions.get("p2").hard_expires_at;
+  assert.equal((await service.check("p2")).status, "expired");
+  assert.equal(store.notifications.getBySubscription("p2").result, "completed");
+  assert.equal(store.subscriptions.get("p2").end_reason, "expired");
+});
