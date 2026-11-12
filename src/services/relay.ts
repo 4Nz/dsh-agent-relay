@@ -10,6 +10,7 @@ import type { SubscriptionService } from "./subscriptions.js";
 import type { CheckService } from "./checks.js";
 import type { NotificationService } from "./notifications.js";
 import type { CredentialService } from "./credentials.js";
+import type { SkillInstallService } from "./skill-install.js";
 export interface DshSessionOption {
   id: string;
   title: string;
@@ -29,7 +30,10 @@ export const endpoints = [
   "credential_get",
   "credential_generate",
   "credential_reset",
+  "install_skill",
+  "install_skill_preview",
   "list",
+  "notify_poll",
   "get",
   "pause",
   "resume",
@@ -69,6 +73,7 @@ export function createRelayService({
   checks,
   notifications,
   credentials,
+  skillInstall,
   listDshSessions,
   createDshSession,
 }: {
@@ -78,6 +83,7 @@ export function createRelayService({
   checks: CheckService;
   notifications: NotificationService;
   credentials?: CredentialService;
+  skillInstall: SkillInstallService;
   listDshSessions: () => Promise<DshSessionOption[]>;
   createDshSession?: () => Promise<string>;
 }) {
@@ -105,6 +111,12 @@ export function createRelayService({
             break;
           case "agents":
             value = adapters.list();
+            break;
+          case "install_skill_preview":
+            value = await skillInstall.preview(agent(args.agent));
+            break;
+          case "install_skill":
+            value = await skillInstall.install(agent(args.agent));
             break;
           case "sessions": {
             const adapter = adapters.get(agent(args.agent));
@@ -303,6 +315,19 @@ export function createRelayService({
             if (args.subscription_id !== undefined)
               options.subscription_id = text(args.subscription_id, "subscription_id");
             value = store.messages.list(options);
+            break;
+          }
+          case "notify_poll": {
+            // 前端轮询接口：按 created_at 游标拉取新增通知，用于浏览器弹窗提醒。
+            const after =
+              args.after === undefined
+                ? 0
+                : integer(args.after, "after", 0, Number.MAX_SAFE_INTEGER);
+            const limit =
+              args.limit === undefined
+                ? 50
+                : integer(args.limit, "limit", 1, 100);
+            value = store.notifications.listRecent({ after, limit });
             break;
           }
           case "update": {

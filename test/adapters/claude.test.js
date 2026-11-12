@@ -169,6 +169,36 @@ test("sendMessage：同一会话串行发送", async (t) => {
   assert.equal(peak, 1);
 });
 
+test("runPrompt：开新会话不带 --resume，带 --add-dir，成功返回 completed", async (t) => {
+  const { dir } = fixture(t);
+  const r = runner({
+    onPrint: async () => ({ code: 0, stdout: JSON.stringify({ result: "已安装" }), stderr: "", timedOut: false }),
+  });
+  const result = await adapter(dir, r.run).runPrompt("安装 skill", { addDirs: ["/tmp/skills"] });
+  assert.deepEqual(result, { status: "completed", output: "已安装" });
+  const call = r.calls.find((c) => c.args[0] === "-p");
+  assert.equal(call.args.includes("--resume"), false);
+  assert.deepEqual(call.args, ["-p", "安装 skill", "--permission-prompts", "none", "--output-format", "json", "--add-dir", "/tmp/skills"]);
+  assert.equal(call.options.input, undefined);
+});
+
+test("runPrompt：非 JSON 输出摘要；is_error 或非零退出为 failed；超时为 failed", async (t) => {
+  const { dir } = fixture(t);
+  const plain = runner({ onPrint: async () => ({ code: 0, stdout: "普通输出", stderr: "", timedOut: false }) });
+  assert.deepEqual((await adapter(dir, plain.run).runPrompt("x")).status, "completed");
+
+  const err = runner({ onPrint: async () => ({ code: 1, stdout: JSON.stringify({ is_error: true, result: "安装失败原因" }), stderr: "", timedOut: false }) });
+  assert.deepEqual((await adapter(dir, err.run).runPrompt("x")), { status: "failed", error: "安装失败原因" });
+
+  const timeout = runner({ onPrint: async () => ({ code: null, stdout: "", stderr: "", timedOut: true }) });
+  assert.match((await adapter(dir, timeout.run).runPrompt("x")).error, /超时/);
+});
+
+test("runPrompt：空提示词拒绝", async (t) => {
+  const { dir } = fixture(t);
+  await assert.rejects(adapter(dir, runner().run).runPrompt("  "), /提示词内容不能为空/);
+});
+
 test("listSessions：按修改时间倒序，带标题和运行状态，忽略非会话文件", async (t) => {
   const { dir, file } = fixture(t);
   writeFileSync(file, title("会话甲") + prompt("任务", 1));

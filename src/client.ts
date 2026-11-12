@@ -201,6 +201,11 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const [snapshot, setSnapshot] = useState<any>(null);
   const [failures, setFailures] = useState("3"), [interval, setIntervalValue] = useState("60");
   const [message, setMessage] = useState("");
+  const [installAgent, setInstallAgent] = useState("claude");
+  const [installPreview, setInstallPreview] = useState<any>(null);
+  const [installResult, setInstallResult] = useState<any>(null);
+  const [installBusy, setInstallBusy] = useState(false);
+  const [installError, setInstallError] = useState("");
   const revision = useRef(0);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const creating = drawer === "create";
@@ -267,6 +272,23 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   useEffect(() => {
     void call("agents").then(setCapabilities).catch((e) => setError(e.message));
   }, []);
+  useEffect(() => {
+    if (drawer !== "install") return;
+    let live = true;
+    setInstallPreview(null);
+    setInstallResult(null);
+    setInstallError("");
+    void call("install_skill_preview", { agent: installAgent })
+      .then((value) => {
+        if (live) setInstallPreview(value);
+      })
+      .catch((e) => {
+        if (live) setInstallError((e as Error).message);
+      });
+    return () => {
+      live = false;
+    };
+  }, [drawer, installAgent]);
   const capability = (agent: string, key: string) =>
     capabilities.find((a) => a.agent === agent)?.capabilities?.[key] === true;
   async function inspect(sub: any) {
@@ -322,6 +344,28 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+  async function runInstall() {
+    setInstallBusy(true);
+    setInstallError("");
+    setInstallResult(null);
+    try {
+      const value = await call("install_skill", { agent: installAgent });
+      setInstallResult(value);
+    } catch (e) {
+      setInstallError((e as Error).message);
+    } finally {
+      setInstallBusy(false);
+    }
+  }
+  async function copyPrompt() {
+    if (!installPreview?.prompt) return;
+    try {
+      await navigator.clipboard.writeText(installPreview.prompt);
+      setNotice("安装提示词已复制到剪贴板。");
+    } catch {
+      setInstallError("复制失败，请手动选中提示词复制。");
     }
   }
   async function submit(event: Event) {
@@ -745,6 +789,35 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     h("label", null, "消息", h("textarea", { value: message, rows: 5, maxLength: 500, onChange: (e: any) => setMessage(e.target.value) })),
     error && h("p", { role: "alert", className: "error" }, error),
     h("button", { disabled: busy || !message.trim() || !capability(sub.agent, "sendMessage"), onClick: () => void send(sub) }, "确认目标并发送"));
+  const installStatusLabel = (status: string) =>
+    status === "completed" ? "已完成" : status === "failed" ? "失败" : status === "rejected" ? "被拒绝" : status;
+  const installDrawer = () => h(Drawer, { title: "安装通知 Skill", onClose: close },
+    h("p", { className: "muted" }, "向本地 Agent 开一个新会话执行安装提示词，把 external-agent-notification skill 写入其技能目录，之后该 Agent 就能在任务完成后把结果通知回 DSH。"),
+    fieldSelect("Agent", installAgent, (v) => {
+      setInstallAgent(v);
+      setInstallResult(null);
+      setInstallError("");
+    }, [["claude", "Claude"], ["codex", "Codex"]]),
+    installPreview && h("div", { className: "notice small" },
+      h("p", null, `技能：${installPreview.skill}`),
+      h("p", { className: "muted" }, `安装目录：${installPreview.target_dir}`),
+      !installPreview.supported && h("p", { className: "warn" }, installPreview.reason)),
+    installPreview && h("label", null, "安装提示词（可复制后手动执行）",
+      h("textarea", { readOnly: true, value: installPreview.prompt, rows: 11 })),
+    installError && h("p", { role: "alert", className: "error" }, installError),
+    installResult && h("div", { className: "notice" },
+      installResult.supported === false
+        ? h("p", null, installResult.reason)
+        : h("p", null, `执行结果：${installStatusLabel(installResult.result.status)}`),
+      installResult.result?.error && h("p", { className: "error" }, installResult.result.error),
+      installResult.result?.output && h("p", { className: "small", style: { whiteSpace: "pre-wrap" } }, installResult.result.output)),
+    h("footer", null,
+      h("button", { disabled: !installPreview, onClick: () => void copyPrompt() }, "复制提示词"),
+      h("button", {
+        className: "primary",
+        disabled: busy || installBusy || !installPreview || !installPreview.supported,
+        onClick: () => void runInstall(),
+      }, installBusy ? "正在安装…" : "发送安装指令")));
   return h(
     "div",
     {
@@ -766,6 +839,19 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         "div",
         { className: "row" },
         h("button", { onClick: () => setDrawer("settings") }, "通知凭证设置"),
+        h(
+          "button",
+          {
+            onClick: () => {
+              setInstallAgent("claude");
+              setInstallPreview(null);
+              setInstallResult(null);
+              setInstallError("");
+              setDrawer("install");
+            },
+          },
+          "安装通知 Skill",
+        ),
         h(
           "button",
           { className: "primary", onClick: () => { setMinutes("60"); setFailures("3"); setTarget(""); setError(""); setDrawer("create"); } },
@@ -902,9 +988,89 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     drawer === "settings" && settingsDrawer(),
     drawer === "edit" && current && editDrawer(current),
     drawer === "send" && current && sendDrawer(current),
+    drawer === "install" && installDrawer(),
   );
 }
-function AgentRelayIcon() {
+// ---- 浏览器通知提醒（渠道抽象，后续可扩展 macOS / 飞书等） ----
+interface NotifyChannel {
+  available(): boolean;
+  request(): Promise<boolean>;
+  notify(title: string, body: string): void;
+}
+
+const browserNotifyChannel: NotifyChannel = {
+  available: () => typeof Notification !== "undefined",
+  async request() {
+    if (typeof Notification === "undefined") return false;
+    if (Notification.permission === "granted") return true;
+    if (Notification.permission === "denied") return false;
+    try {
+      return (await Notification.requestPermission()) === "granted";
+    } catch {
+      return false;
+    }
+  },
+  notify(title: string, body: string) {
+    try {
+      new Notification(title, { body });
+    } catch {
+      /* 通知弹窗失败时静默，不影响事件投递 */
+    }
+  },
+};
+
+const NOTIFY_STORAGE_KEY = "dsh-agent-relay:notify:lastSeen";
+const NOTIFY_POLL_INTERVAL_MS = 30_000;
+
+function notifyText(item: any) {
+  const status = label(item.result);
+  const summary = String(item.summary ?? "").trim().slice(0, 200);
+  return summary ? `${status}：${summary}` : status;
+}
+
+// 常驻轮询：侧边栏图标挂载期间，定时拉取 notify_poll 的新增通知并弹浏览器通知。
+function useNotifyPolling(rpc: Rpc | undefined) {
+  useEffect(() => {
+    if (!rpc || !browserNotifyChannel.available()) return;
+    const conn = rpc;
+    let stopped = false;
+    async function poll() {
+      if (stopped || !(await browserNotifyChannel.request())) return;
+      const lastSeen =
+        Number(localStorage.getItem(NOTIFY_STORAGE_KEY) ?? "0") || 0;
+      let result: { ok: boolean; value?: any; error?: { message: string } };
+      try {
+        result = await conn.call("/api", "agent-relay/notify_poll", {
+          after: lastSeen,
+          limit: 50,
+        });
+      } catch {
+        return;
+      }
+      if (!result.ok || !Array.isArray(result.value)) return;
+      const items = result.value;
+      if (!items.length) return;
+      const latest = items[items.length - 1].created_at;
+      if (lastSeen === 0) {
+        // 首次仅校准游标，避免把历史通知一股脑弹出来
+        localStorage.setItem(NOTIFY_STORAGE_KEY, String(latest));
+        return;
+      }
+      for (const item of items)
+        browserNotifyChannel.notify("Agent Relay 通知", notifyText(item));
+      localStorage.setItem(NOTIFY_STORAGE_KEY, String(latest));
+    }
+    void poll();
+    const timer = setInterval(poll, NOTIFY_POLL_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [rpc]);
+}
+
+function AgentRelayIcon({ rpc }: { rpc: Rpc }) {
+  useNotifyPolling(rpc);
   return h(
     "span",
     {
@@ -1013,6 +1179,7 @@ export function apply(ctx: RelayClientContext): void {
             id: PANEL_ID,
             order: 50,
             label: () => "任务跟踪",
+            inject: () => ({ rpc: ctx.connection.rpc }),
           },
           AgentRelayIcon,
         );

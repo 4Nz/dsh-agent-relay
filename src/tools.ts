@@ -68,6 +68,13 @@ export function registerTools(
       },
     },
     {
+      name: "relay_install_skill",
+      endpoint: "install_skill",
+      description:
+        "向本地 Agent 开一个新会话执行安装提示词，把 external-agent-notification 通知 Skill 写入其技能目录；Codex 第一版为后续预留，返回不支持。",
+      parameters: { agent },
+    },
+    {
       name: "relay_list",
       endpoint: "list",
       description: "分页查看订阅、检查和通知投递状态；任务结果与投递结果不同。",

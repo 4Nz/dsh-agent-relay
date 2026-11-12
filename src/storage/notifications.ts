@@ -56,6 +56,19 @@ export function createNotifications(db: DatabaseSync) {
   }
   return {
     getBySubscription,
+    // 供前端轮询拉取「新增通知」：按 created_at 升序返回 after 之后的通知。
+    // 不区分 source，poll 与 push 生成的通知都会返回，由前端决定如何提醒。
+    listRecent({ after, limit = 50 }: { after: number; limit?: number }) {
+      integer(after, "after");
+      integer(limit, "limit", 1);
+      if (limit > 100) throw new TypeError("limit 最大 100");
+      return db
+        .prepare(
+          `SELECT * FROM ${table} WHERE created_at > ? ORDER BY created_at, id LIMIT ?`,
+        )
+        .all(after, limit)
+        .map((row) => decode<Notification>(row)!);
+    },
     listUnknown() {
       return db.prepare(`SELECT * FROM ${table} WHERE delivery_status='unknown' ORDER BY created_at,id`).all().map(row => decode<Notification>(row)!);
     },

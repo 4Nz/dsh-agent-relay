@@ -147,3 +147,24 @@ test("unknown 核对后原子落账，确认未送达才恢复重试", (t) => {
     false,
   );
 });
+
+test("listRecent 按时间游标升序返回 after 之后的通知", (t) => {
+  const { db } = fixture(t);
+  const s = createSubscriptions(db),
+    n = createNotifications(db);
+  s.create(subscription("a", "push"));
+  s.create(subscription("b", "push"));
+  n.record({ notification: notice("push", "n1", "a"), now: 100 });
+  n.record({ notification: notice("push", "n2", "b"), now: 200 });
+  assert.deepEqual(
+    n.listRecent({ after: 0 }).map((x) => x.id),
+    ["n1", "n2"],
+  );
+  assert.deepEqual(
+    n.listRecent({ after: 100 }).map((x) => x.id),
+    ["n2"],
+  );
+  assert.equal(n.listRecent({ after: 200 }).length, 0);
+  assert.equal(n.listRecent({ after: 0, limit: 1 }).length, 1);
+  assert.throws(() => n.listRecent({ after: -1 }));
+});

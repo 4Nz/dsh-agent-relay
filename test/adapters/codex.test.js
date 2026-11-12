@@ -24,8 +24,9 @@ async function setup({ turns = [turn()], metadata = thread, archived = false, fa
 
 test('Codex：只读能力，发送始终拒绝且不连接', async () => {
   const { adapter, calls } = await setup();
-  assert.deepEqual(adapter.capabilities(), { listSessions: true, snapshot: true, sendMessage: false });
+  assert.deepEqual(adapter.capabilities(), { listSessions: true, snapshot: true, sendMessage: false, runPrompt: false });
   assert.equal((await adapter.sendMessage(ID, '继续')).status, 'rejected');
+  assert.equal((await adapter.runPrompt('安装 skill')).status, 'rejected');
   assert.deepEqual(calls, []);
 });
 

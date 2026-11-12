@@ -6,6 +6,8 @@ export interface AdapterCapabilities {
   listSessions: boolean;
   snapshot: boolean;
   sendMessage: boolean;
+  // 开新会话执行一次性提示词（如安装通知 Skill）；不支持时声明 false。
+  runPrompt: boolean;
 }
 // 外部会话中的位置，存入订阅的 cursor 作为基线。
 export interface SessionCursor {
@@ -43,6 +45,11 @@ export type SendResult =
   | { status: "rejected"; reason: string }
   | { status: "failed"; error: string }
   | { status: "unknown"; error: string };
+// 开新会话执行一次性提示词的结果；completed 表示 CLI 正常退出并返回内容。
+export type RunPromptResult =
+  | { status: "completed"; output: string | null }
+  | { status: "failed"; error: string }
+  | { status: "rejected"; reason: string };
 // 检查失败：拿不到会话状态。会话不存在不属于此类，由 Snapshot.closed 表示。
 export class AdapterError extends Error {
   constructor(
@@ -62,4 +69,8 @@ export interface AgentAdapter {
     baseline?: SessionCursor | null,
   ): Promise<Snapshot>;
   sendMessage(sessionId: string, text: string): Promise<SendResult>;
+  runPrompt(
+    text: string,
+    options?: { addDirs?: string[] },
+  ): Promise<RunPromptResult>;
 }

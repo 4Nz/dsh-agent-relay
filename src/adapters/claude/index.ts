@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { AdapterError } from "../types.js";
 import type {
   AgentAdapter,
+  RunPromptResult,
   RuntimeStatus,
   SendResult,
   SessionCursor,
@@ -22,6 +23,8 @@ export interface ClaudeAdapterOptions {
   // 等待转发消息写入会话记录的最长时间，超时记为 unknown。
   acceptTimeoutMs?: number;
   pollIntervalMs?: number;
+  // 开新会话执行一次性提示词的最长等待时间，超时记为 failed。
+  runPromptTimeoutMs?: number;
 }
 interface Runtime {
   runtime: RuntimeStatus;
@@ -40,6 +43,7 @@ export function createClaudeAdapter(
   const statusTimeoutMs = options.statusTimeoutMs ?? 15_000;
   const acceptTimeoutMs = options.acceptTimeoutMs ?? 120_000;
   const pollIntervalMs = options.pollIntervalMs ?? 500;
+  const runPromptTimeoutMs = options.runPromptTimeoutMs ?? 300_000;
   // 同一会话的发送串行执行。
   const sending = new Map<string, Promise<unknown>>();
 
@@ -136,9 +140,47 @@ export function createClaudeAdapter(
     }
   }
 
+  // 开新会话执行一次性提示词：不 --resume，等进程退出后按退出码和 JSON 输出判定。
+  async function runPrompt(
+    text: string,
+    { addDirs = [] }: { addDirs?: string[] } = {},
+  ): Promise<RunPromptResult> {
+    if (typeof text !== "string" || !text.trim())
+      throw new AdapterError("invalid_input", "提示词内容不能为空");
+    const result = await run(
+      [
+        "-p",
+        text,
+        "--permission-prompts",
+        "none",
+        "--output-format",
+        "json",
+        ...addDirs.flatMap((dir) => ["--add-dir", dir]),
+      ],
+      { timeoutMs: runPromptTimeoutMs },
+    );
+    if (result.timedOut) return { status: "failed", error: "claude -p 执行超时" };
+    let output: { is_error?: boolean; result?: unknown } | null = null;
+    try {
+      output = JSON.parse(result.stdout);
+    } catch {
+      // 非 JSON 输出按原文摘要处理。
+    }
+    if (output?.is_error === true || result.code !== 0) {
+      const detail =
+        typeof output?.result === "string"
+          ? output.result
+          : result.stderr.trim() || `退出码 ${result.code}`;
+      return { status: "failed", error: detail.slice(0, 500) };
+    }
+    const text_ =
+      typeof output?.result === "string" ? output.result : result.stdout.trim();
+    return { status: "completed", output: text_ ? text_.slice(0, 2000) : null };
+  }
+
   return {
     agent: "claude",
-    capabilities: () => ({ listSessions: true, snapshot: true, sendMessage: true }),
+    capabilities: () => ({ listSessions: true, snapshot: true, sendMessage: true, runPrompt: true }),
     async listSessions({ limit = 50 } = {}) {
       let dirs: string[];
       try {
@@ -233,6 +275,9 @@ export function createClaudeAdapter(
         if (sending.get(sessionId) === settled) sending.delete(sessionId);
       });
       return current;
+    },
+    async runPrompt(text, options) {
+      return runPrompt(text, options);
     },
   };
 }

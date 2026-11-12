@@ -22,6 +22,7 @@ import { acquireRuntimeLock } from "./services/lock.js";
 import { startRelayRuntime } from "./services/runtime.js";
 import { registerRelayApi, type RelayConnection } from "./api.js";
 import { createCredentialService } from "./services/credentials.js";
+import { createSkillInstallService } from "./services/skill-install.js";
 import { createPushHandler, createPushServer } from "./services/push.js";
 import { randomUUID } from "node:crypto";
 import { PLUGIN_VERSION } from "./version.js";
@@ -77,6 +78,7 @@ export function apply(ctx: Context): void {
     store,
     transport: createDshDelivery(host),
   });
+  const skillInstall = createSkillInstallService({ adapters });
   const createReceiveSession = async () => {
     await mkdir(relayDir, { recursive: true, mode: 0o700 });
     await host.workspaceRegistry.create(relayDir, RELAY_GROUP_TITLE);
@@ -91,6 +93,7 @@ export function apply(ctx: Context): void {
     checks,
     notifications,
     credentials,
+    skillInstall,
     createDshSession: createReceiveSession,
     listDshSessions: async () => {
       const sessions = await host.sessionQuery.listSessions();

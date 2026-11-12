@@ -16,6 +16,7 @@ function setup(t, options = {}) {
   });
   const sendResults = [];
   let nextSendResult = { status: "sent", external_ref: "external-message" };
+  const runPromptCalls = [];
   const adapters = createAdapterRegistry([
     {
       agent: "claude",
@@ -23,11 +24,16 @@ function setup(t, options = {}) {
         snapshot: true,
         listSessions: true,
         sendMessage: true,
+        runPrompt: true,
       }),
       listSessions: async () => [],
       sendMessage: async (...args) => {
         sendResults.push(args);
         return nextSendResult;
+      },
+      runPrompt: async (text, options) => {
+        runPromptCalls.push([text, options]);
+        return { status: "completed", output: "已安装" };
       },
       snapshot: async () => ({
         closed: options.closed ?? false,
@@ -39,7 +45,7 @@ function setup(t, options = {}) {
     },
     {
       agent: "codex",
-      capabilities: () => ({ snapshot: true, listSessions: true, sendMessage: false }),
+      capabilities: () => ({ snapshot: true, listSessions: true, sendMessage: false, runPrompt: false }),
       listSessions: async () => [],
       snapshot: async () => ({
         closed: false,
@@ -49,6 +55,7 @@ function setup(t, options = {}) {
         last_activity_at: null,
       }),
       sendMessage: async () => ({ status: "rejected", reason: "Codex 第一版不支持发送消息" }),
+      runPrompt: async () => ({ status: "rejected", reason: "Codex 开新会话执行安装为后续版本预留" }),
     },
   ]);
   const subscriptions = createSubscriptionService({
@@ -73,6 +80,20 @@ function setup(t, options = {}) {
     checks: { check: async () => ({ status: "not_due" }) },
     notifications: { drain: async () => {} },
     credentials,
+    skillInstall: {
+      preview: async (agent) => ({
+        agent,
+        skill: "external-agent-notification",
+        target_dir: `/tmp/${agent}/skills`,
+        prompt: "请安装",
+        supported: agent === "claude",
+        reason: agent === "claude" ? null : "预留",
+      }),
+      install: async (agent) =>
+        agent === "claude"
+          ? { supported: true, prompt: "请安装", result: { status: "completed", output: "已安装" } }
+          : { supported: false, reason: "Codex 开新会话执行安装为后续版本预留" },
+    },
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
     createDshSession: async () => "new-dsh",
   });
@@ -80,6 +101,7 @@ function setup(t, options = {}) {
     relay,
     store,
     sendResults,
+    runPromptCalls,
     setSendResult(result) {
       nextSendResult = result;
     },
@@ -218,6 +240,29 @@ test("凭证 RPC 只通过服务层暴露生成、查询和重置", async (t) =>
   assert.equal((await relay.call("credential_reset", {})).value.token, "new-token");
 });
 
+test("安装通知 Skill：预览按能力路由，Codex 预留不支持", async (t) => {
+  const { relay } = setup(t);
+  const claude = await relay.call("install_skill_preview", { agent: "claude" });
+  assert.equal(claude.ok, true);
+  assert.equal(claude.value.supported, true);
+  assert.equal(claude.value.skill, "external-agent-notification");
+  const codex = await relay.call("install_skill_preview", { agent: "codex" });
+  assert.equal(codex.ok, true);
+  assert.equal(codex.value.supported, false);
+  assert.match(codex.value.reason, /预留/);
+});
+
+test("安装通知 Skill：Claude 执行返回结果，Codex 拒绝，非法 Agent 报错", async (t) => {
+  const { relay } = setup(t);
+  const run = await relay.call("install_skill", { agent: "claude" });
+  assert.equal(run.ok, true);
+  assert.equal(run.value.supported, true);
+  assert.equal(run.value.result.status, "completed");
+  const codex = await relay.call("install_skill", { agent: "codex" });
+  assert.equal(codex.value.supported, false);
+  assert.equal((await relay.call("install_skill", { agent: "bad" })).ok, false);
+});
+
 
 test("查阅快照顺延有效期，查询失败不伪造成功", async (t) => {
   const { relay, store } = setup(t);
@@ -253,4 +298,30 @@ test("发送时发现外部会话关闭，立即结束订阅并拒绝发送", as
   assert.equal(result.value.message.status, "rejected");
   assert.equal(sendResults.length, 0);
   assert.equal(store.subscriptions.get(created.value.subscription.id).end_reason, "session_closed");
+});
+
+test("notify_poll 按游标返回新增通知并校验输入", async (t) => {
+  const { relay, store } = setup(t);
+  assert.deepEqual((await relay.call("notify_poll", {})).value, []);
+  assert.equal((await relay.call("notify_poll", { after: -1 })).ok, false);
+  const created = await relay.call("subscribe", {
+    agent: "claude",
+    external_session_id: "ext",
+    type: "push",
+  });
+  store.notifications.record({
+    notification: {
+      id: "n1",
+      subscription_id: created.value.subscription.id,
+      source: "push",
+      result: "completed",
+      summary: "完成",
+    },
+    now: 500,
+  });
+  const page = (await relay.call("notify_poll", { after: 0 })).value;
+  assert.equal(page.length, 1);
+  assert.equal(page[0].id, "n1");
+  assert.equal(page[0].summary, "完成");
+  assert.equal((await relay.call("notify_poll", { after: 500 })).value.length, 0);
 });

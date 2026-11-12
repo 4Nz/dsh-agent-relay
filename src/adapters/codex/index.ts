@@ -76,8 +76,9 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
   }
   return {
     agent: 'codex',
-    capabilities: () => ({ listSessions: true, snapshot: true, sendMessage: false }),
+    capabilities: () => ({ listSessions: true, snapshot: true, sendMessage: false, runPrompt: false }),
     async sendMessage() { return { status: 'rejected', reason: 'Codex 第一版不支持发送消息' }; },
+    async runPrompt() { return { status: 'rejected', reason: 'Codex 开新会话执行安装为后续版本预留' }; },
     async listSessions({ limit = 50 } = {}) {
       if (!Number.isInteger(limit) || limit < 1 || limit > 1000)
         throw new AdapterError('invalid_input', '会话数量必须为 1～1000 的整数');
