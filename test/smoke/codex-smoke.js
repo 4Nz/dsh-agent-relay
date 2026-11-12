@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { openRelayStore } from '../../lib/storage/index.js';
 import { connectCodex } from '../../lib/adapters/codex/rpc.js';
+import { waitForCodexTurn } from '../helpers/codex-history.js';
 
 // DSH 启动器会打印临时访问凭证，冒烟输出统一隐藏。
 const log = console.log.bind(console);
@@ -53,16 +54,8 @@ async function tool(name,args,sessionId){const r=await app.ctx.get('tools').get(
 async function waitTurn(threadId,turnId){
  const client=await connectCodex();
  try{
-  const end=Date.now()+150000;
-  while(Date.now()<end){
-   const p=await client.request('thread/turns/list',{threadId,limit:10,sortDirection:'desc',itemsView:'full'});
-   const turn=p.data.find(t=>t.id===turnId);
-   if(turn && ['completed','failed','interrupted'].includes(turn.status)){
-    assert.equal(turn.status,'completed',JSON.stringify(turn.error)); return turn;
-   }
-   await new Promise(r=>setTimeout(r,500));
-  }
-  throw Error('等待 Codex 轮次超时');
+  const turn=await waitForCodexTurn(client,threadId,turnId);
+  assert.equal(turn.status,'completed',JSON.stringify(turn.error));return turn;
  }finally{client.close();}
 }
 async function notify(sent,sessionId){
