@@ -254,3 +254,108 @@ test("发送时发现外部会话关闭，立即结束订阅并拒绝发送", as
   assert.equal(sendResults.length, 0);
   assert.equal(store.subscriptions.get(created.value.subscription.id).end_reason, "session_closed");
 });
+
+test("发送后订阅使用发送前快照基线，空历史 cursor=null 不被发送后位置覆盖", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-baseline-"));
+  const store = openRelayStore({ dataDir: dir });
+  t.after(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  let snapshotCount = 0;
+  const adapters = createAdapterRegistry([
+    {
+      agent: "claude",
+      capabilities: () => ({ snapshot: true, listSessions: true, sendMessage: true }),
+      listSessions: async () => [],
+      snapshot: async () => {
+        snapshotCount++;
+        return {
+          closed: false,
+          // 发送前为空历史（cursor=null），发送后为非空位置。
+          cursor: snapshotCount === 1 ? null : { uuid: `u${snapshotCount}`, timestamp: snapshotCount },
+          title: "测试",
+          cwd: null,
+          last_activity_at: null,
+        };
+      },
+      sendMessage: async () => ({ status: "sent", external_ref: "ref" }),
+    },
+  ]);
+  const subscriptions = createSubscriptionService({
+    store,
+    adapters,
+    scheduler: { create: async () => { throw Error("暂不可用"); }, catalog: async () => [] },
+  });
+  const relay = createRelayService({
+    store,
+    adapters,
+    subscriptions,
+    checks: { check: async () => ({ status: "not_due" }) },
+    notifications: { drain: async () => {} },
+    listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
+    createDshSession: async () => "new-dsh",
+  });
+  const result = await relay.call(
+    "send",
+    { agent: "claude", external_session_id: "ext", content: "继续", subscribe_after_send: true },
+    "dsh",
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.value.message.status, "sent");
+  // 订阅基线为发送前空历史，而非发送后的当前位置。
+  assert.equal(result.value.subscription.cursor, null);
+  // 只读取一次快照（发送前），订阅创建不再重新读取历史。
+  assert.equal(snapshotCount, 1);
+});
+
+test("发送成功但订阅创建失败时保留 sent 消息并返回 subscription_error", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-suberr-"));
+  const realStore = openRelayStore({ dataDir: dir });
+  t.after(() => {
+    realStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const store = {
+    ...realStore,
+    subscriptions: {
+      ...realStore.subscriptions,
+      create: () => {
+        throw new Error("存储写入失败");
+      },
+    },
+  };
+  const adapters = createAdapterRegistry([
+    {
+      agent: "claude",
+      capabilities: () => ({ snapshot: true, listSessions: true, sendMessage: true }),
+      listSessions: async () => [],
+      snapshot: async () => ({ closed: false, cursor: null, title: "测试", cwd: null, last_activity_at: null }),
+      sendMessage: async () => ({ status: "sent", external_ref: "ref" }),
+    },
+  ]);
+  const subscriptions = createSubscriptionService({
+    store,
+    adapters,
+    scheduler: { create: async () => { throw Error("暂不可用"); }, catalog: async () => [] },
+  });
+  const relay = createRelayService({
+    store,
+    adapters,
+    subscriptions,
+    checks: { check: async () => ({ status: "not_due" }) },
+    notifications: { drain: async () => {} },
+    listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
+    createDshSession: async () => "new-dsh",
+  });
+  const result = await relay.call(
+    "send",
+    { agent: "claude", external_session_id: "ext", content: "继续", subscribe_after_send: true },
+    "dsh",
+  );
+  assert.equal(result.ok, true);
+  // 消息确实已发送，不被订阅失败伪装成失败。
+  assert.equal(result.value.message.status, "sent");
+  assert.equal(result.value.subscription, null);
+  assert.equal(result.value.subscription_error, "存储写入失败");
+});

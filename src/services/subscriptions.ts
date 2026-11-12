@@ -18,6 +18,9 @@ export interface SubscribeInput {
   idle_timeout_seconds?: number;
   max_lifetime_seconds?: number;
   check_interval_seconds?: number;
+  // 服务间内部字段：发送服务传入发送前快照作为基线，避免订阅重新读取已发送后的历史。
+  // 不通过工具/RPC 暴露，仅供发送成功后创建订阅时使用。
+  baseline_snapshot?: Snapshot;
 }
 export interface PushSubscriptionInput {
   id: string;
@@ -160,7 +163,10 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       if (input.type === "poll" && !input.dsh_session_id && !input.create_dsh_session)
         return { ok: false, code: "invalid_input", message: "主动订阅必须指定接收通知的 DSH 会话" };
       // 先取一次快照作为基线，避免把订阅前已结束的轮次当成新结果。
-      const base: Snapshot = await adapter.snapshot(input.external_session_id);
+      // 发送后订阅传入了发送前快照，则直接沿用，不再读取已发送后的历史；
+      // cursor=null 是有效的发送前空历史基线，不得回退为发送后的当前位置。
+      const base: Snapshot =
+        input.baseline_snapshot ?? (await adapter.snapshot(input.external_session_id));
       if (base.closed)
         return { ok: false, code: "session_closed", message: "外部会话不存在或已归档" };
       const receiveSession = input.dsh_session_id ?? (input.create_dsh_session ? await input.create_dsh_session() : null);

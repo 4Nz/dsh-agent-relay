@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AdapterRegistry } from "../adapters/registry.js";
+import type { Snapshot } from "../adapters/types.js";
 import type {
   RelayStore,
   Agent,
@@ -243,6 +244,8 @@ export function createRelayService({
               | { status: "rejected"; reason: string }
               | { status: "failed"; error: string }
               | { status: "unknown"; error: string };
+            // 发送前快照：发送成功后作为订阅基线，避免重新读取已发送后的历史。
+            let baselineSnapshot: Snapshot | null = null;
             if (!adapter.capabilities().sendMessage)
               sendResult = { status: "rejected", reason: `${selected} 不支持发送消息` };
             else {
@@ -255,6 +258,7 @@ export function createRelayService({
                 } else if (snapshot.check_error) {
                   sendResult = { status: "rejected", reason: snapshot.check_error };
                 } else {
+                  baselineSnapshot = snapshot;
                   sendResult = await adapter.sendMessage(external, content);
                 }
               } catch (error) {
@@ -272,19 +276,31 @@ export function createRelayService({
             if (!transitioned) throw new Error("消息状态更新失败");
             const saved = store.messages.get(message.id)!;
             let createdSubscription = null;
+            let subscriptionError: string | null = null;
             if (saved.status === "sent") {
               subscriptions.touch(selected, external);
               if (subscribeAfterSend) {
-                const subscribed = await subscriptions.subscribe({
-                  type: "poll",
-                  agent: selected,
-                  external_session_id: external,
-                  dsh_session_id: receiveSession,
-                });
-                if (subscribed.ok) createdSubscription = subscribed.subscription;
+                try {
+                  const subscribed = await subscriptions.subscribe({
+                    type: "poll",
+                    agent: selected,
+                    external_session_id: external,
+                    dsh_session_id: receiveSession,
+                    ...(baselineSnapshot ? { baseline_snapshot: baselineSnapshot } : {}),
+                  });
+                  if (subscribed.ok) createdSubscription = subscribed.subscription;
+                  else subscriptionError = subscribed.message;
+                } catch (error) {
+                  // 消息已发送，订阅失败不能把整次发送伪装成失败，避免调用方误重发。
+                  subscriptionError = messageOf(error);
+                }
               }
             }
-            value = { message: saved, subscription: createdSubscription };
+            value = {
+              message: saved,
+              subscription: createdSubscription,
+              ...(subscriptionError ? { subscription_error: subscriptionError } : {}),
+            };
             break;
           }
           case "messages": {

@@ -285,3 +285,29 @@ test("自动接收会话只在外部会话有效时创建", async (t) => {
   assert.equal(result.code, "session_closed");
   assert.equal(created, 0);
 });
+
+test("发送后订阅传入 baseline_snapshot 时不再读取快照，cursor=null 空历史基线保留", async (t) => {
+  const { store, service, claude } = fixture(t);
+  const result = await service.subscribe({
+    ...poll,
+    baseline_snapshot: snapshot({ cursor: null, title: "发送前", cwd: "/发送前" }),
+  });
+  assert.equal(result.ok, true);
+  // 不重新读取外部会话快照。
+  assert.equal(claude.state.calls.length, 0);
+  // cursor=null 是有效的发送前空历史基线，不得回退为发送后的当前位置。
+  assert.equal(result.subscription.cursor, null);
+  assert.equal(result.subscription.external_session_title, "发送前");
+  assert.equal(result.subscription.external_cwd, "/发送前");
+  assert.equal(store.subscriptions.get(result.subscription.id).cursor, null);
+});
+
+test("baseline_snapshot 已关闭时返回 session_closed 且不读取快照", async (t) => {
+  const { service, claude } = fixture(t);
+  const result = await service.subscribe({
+    ...poll,
+    baseline_snapshot: snapshot({ closed: true }),
+  });
+  assert.equal(result.code, "session_closed");
+  assert.equal(claude.state.calls.length, 0);
+});
