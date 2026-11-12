@@ -33,6 +33,12 @@ export function registerTools(
       parameters: { agent, limit: { type: "integer" } },
     },
     {
+      name: "relay_inspect",
+      endpoint: "inspect",
+      description: "查阅指定外部会话快照与最后回复节选；成功查阅顺延有效期，发现会话关闭则生成通知。unknown 不代表任务完成。",
+      parameters: { agent, external_session_id: { type: "string", required: true } },
+    },
+    {
       name: "relay_subscribe",
       endpoint: "subscribe",
       description:
@@ -44,6 +50,7 @@ export function registerTools(
         dsh_session_id: { type: "string" },
         idle_timeout_seconds: { type: "integer" },
         check_interval_seconds: { type: "integer" },
+        max_consecutive_failures: { type: "integer" },
       },
     },
     {

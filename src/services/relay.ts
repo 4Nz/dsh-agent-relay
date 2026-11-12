@@ -20,6 +20,7 @@ export type RelayResponse =
 export const endpoints = [
   "agents",
   "sessions",
+  "inspect",
   "dsh_sessions",
   "subscribe",
   "send",
@@ -69,6 +70,7 @@ export function createRelayService({
   notifications,
   credentials,
   listDshSessions,
+  createDshSession,
 }: {
   store: RelayStore;
   adapters: AdapterRegistry;
@@ -77,6 +79,7 @@ export function createRelayService({
   notifications: NotificationService;
   credentials?: CredentialService;
   listDshSessions: () => Promise<DshSessionOption[]>;
+  createDshSession?: () => Promise<string>;
 }) {
   return {
     async call(
@@ -115,6 +118,14 @@ export function createRelayService({
             });
             break;
           }
+          case "inspect": {
+            const selected = agent(args.agent);
+            if (!adapters.get(selected).capabilities().snapshot)
+              throw new TypeError("该 Agent 不支持查阅会话");
+            value = await subscriptions.inspect(selected, text(args.external_session_id, "external_session_id"));
+            await notifications.drain();
+            break;
+          }
           case "dsh_sessions":
             value = await listDshSessions();
             break;
@@ -124,18 +135,25 @@ export function createRelayService({
               throw new TypeError("订阅类型无效");
             const selected = agent(args.agent),
               external = text(args.external_session_id, "external_session_id");
-            const session = type === "poll"
-              ? text(args.dsh_session_id ?? currentSession, "dsh_session_id")
+            let session = type === "poll"
+              ? (args.dsh_session_id === undefined || args.dsh_session_id === null
+                ? currentSession ?? null : text(args.dsh_session_id, "dsh_session_id"))
               : (args.dsh_session_id === undefined || args.dsh_session_id === null
                 ? null
                 : text(args.dsh_session_id, "dsh_session_id"));
+            if (session !== null) session = text(session, "dsh_session_id");
             if (session && !(await listDshSessions()).some((s) => s.id === session))
               throw new TypeError("接收通知的 DSH 会话不存在");
+            const maxFailures = args.max_consecutive_failures === undefined ? undefined
+              : integer(args.max_consecutive_failures, "max_consecutive_failures", 1, 100);
+            // 新建接收会话在所有配置校验后、取到有效基线后进行。
             const result = await subscriptions.subscribe({
               type,
               agent: selected,
               external_session_id: external,
               dsh_session_id: session,
+              create_dsh_session: type === "poll" && !session ? createDshSession : undefined,
+              max_consecutive_failures: maxFailures,
               ...(args.idle_timeout_seconds !== undefined
                 ? {
                     idle_timeout_seconds: integer(
@@ -229,7 +247,16 @@ export function createRelayService({
               sendResult = { status: "rejected", reason: `${selected} 不支持发送消息` };
             else {
               try {
-                sendResult = await adapter.sendMessage(external, content);
+                const snapshot = await adapter.snapshot(external);
+                if (snapshot.closed) {
+                  await subscriptions.closeSession(selected, external);
+                  await notifications.drain();
+                  sendResult = { status: "rejected", reason: "外部会话不存在或已归档" };
+                } else if (snapshot.check_error) {
+                  sendResult = { status: "rejected", reason: snapshot.check_error };
+                } else {
+                  sendResult = await adapter.sendMessage(external, content);
+                }
               } catch (error) {
                 sendResult = { status: "failed", error: messageOf(error) };
               }
@@ -281,6 +308,9 @@ export function createRelayService({
           case "update": {
             const id = text(args.subscription_id, "subscription_id");
             const result = await subscriptions.update(id, {
+              ...(args.max_consecutive_failures !== undefined
+                ? { max_consecutive_failures: integer(args.max_consecutive_failures, "max_consecutive_failures", 1, 100) }
+                : {}),
               ...(args.idle_timeout_seconds !== undefined
                 ? { idle_timeout_seconds: integer(args.idle_timeout_seconds, "idle_timeout_seconds", 60, 86400) }
                 : {}),

@@ -22,6 +22,7 @@ test("工具把 DSH 执行会话传入共用服务，注册所有 M2 工具", as
   );
   assert.deepEqual([...tools.keys()].sort(), [
     "relay_check",
+    "relay_inspect",
     "relay_list",
     "relay_list_sessions",
     "relay_ping",

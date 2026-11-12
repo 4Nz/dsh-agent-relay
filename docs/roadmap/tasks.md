@@ -91,7 +91,7 @@
 | `agent` | `claude` / `codex` |
 | `external_session_id` | 外部会话 ID，只按 ID 路由 |
 | `external_session_title`、`external_cwd` | 展示用，方便人工核对 |
-| `dsh_session_id` | 接收通知的 DSH 会话。poll 创建时必填；push 可在投递时新建并回填 |
+| `dsh_session_id` | 接收通知的 DSH 会话。poll 保存时必填，页面未选时先自动新建；push 可在投递时新建并回填 |
 | `status` | `active` / `paused` / `ended` |
 | `end_reason` | `completed` / `failed` / `idle_timeout` / `expired` / `session_closed` / `unreachable` / `delivered` / `user_stopped` |
 | `idle_timeout_seconds`、`max_lifetime_seconds` | 两种订阅都用；有效期默认 3600，最长存活默认 86400 |
@@ -191,7 +191,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | --- | --- | --- |
 | T6.1 | 订阅看板菜单 | 订阅列表：Agent、类型、外部会话标题、状态和结束原因、最近检查时间和结果、通知是否送达。有效期截止时间。操作按钮：暂停、恢复、停止、立即检查、跳转到对应的 DSH 会话。支持按 Agent、类型、状态筛选。检查失败和投递失败用醒目样式标出 |
 | T6.2 | 新建订阅 | 选 Agent、选外部会话、选接收通知的 DSH 会话（可选），设置有效期（默认 1 小时） |
-| T6.3 | 通知会话分组 | 在 DSH 会话列表里，把收到 Relay 通知的会话归到一个分组。具体做法取决于 T0.4 和 T0.5 |
+| T6.3 | 通知会话分组 | 在 DSH 会话列表里，把由 Relay 新建的通知会话归到一个分组；用户指定的已有会话保留原工作目录与分组，避免改变其后续执行环境。复用 T0.4/T0.5 确认的 workspace 机制。 |
 | T6.4 | 能力提示 | 不支持的操作置灰并说明原因，例如“Codex 暂不支持发送消息” |
 
 会话内的对话、回复和后续处理都用 DSH 原生能力，插件不另做聊天界面。
@@ -247,6 +247,17 @@ T7 最后做端到端验收
 
 ## M4 实施状态（2026-11-11）
 
-已实现 T2.6、T3.2、T3.3、T4 配置修改、T6.3 的新建通知会话归组和 T6.5 凭证管理：push HTTP 使用插件级共享 token。外部 Agent 可省略 `subscription_id` 直接 push，Relay 按稳定 `request_id` 创建一次性 push 订阅和 Agent Relay workspace 下的 DSH 接收会话；重复请求复用订阅并由通知记录防重。已有 push 订阅仍可指定接收会话。`skills/external-agent-notification/SKILL.md` 只负责外部 Agent 消息通知，Claude/Codex 共用协议并通过会话 ID 和能力提示区分差异；订阅可独立修改有效期和检查周期；页面抽屉已接入凭证生成与重置。T6.3 对已有会话不做迁移，T6.5 原生 DSH 设置页注册尚未在宿主中验证。
+已实现 T2.6、T3.2、T3.3、T4 配置修改、T6.3 的新建通知会话归组和 T6.5 凭证管理：push HTTP 使用插件级共享 token。外部 Agent 可省略 `subscription_id` 直接 push，Relay 按稳定 `request_id` 创建一次性 push 订阅和 Agent Relay workspace 下的 DSH 接收会话；重复请求复用订阅并由通知记录防重。已有 push 订阅仍可指定接收会话。`skills/external-agent-notification/SKILL.md` 只负责外部 Agent 消息通知，Claude/Codex 共用协议并通过会话 ID 和能力提示区分差异；订阅可独立修改有效期和检查周期；页面抽屉已接入凭证生成与重置。T6.3 对已有会话不做迁移，T6.5 原生 DSH 设置页注册在 2026-11-12 已补齐，真实宿主验收归 T7。
 
 T7 真实端到端验收仍单独保留，不能以本轮单元测试代替。
+
+## T2.3、T3、T4、T6 补齐状态（2026-11-12）
+
+- `relay_inspect`、认证 inspect RPC 与看板查阅入口共用订阅服务；成功查阅顺延有效期，实际查询失败不顺延，发现关闭立即登记通知。发送前确认会话关闭时拒绝发送并结束相应订阅。
+- 页面未选接收会话时先创建 Agent 通知 workspace 下的新会话，再保存 poll 订阅；工具仍默认当前 DSH 会话。已有接收会话保留原目录与分组。
+- 新建工具、RPC、页面开放 `max_consecutive_failures`（1～100，默认 3）；修改 RPC 与页面允许修改阈值、有效期及 poll 检查周期。
+- 列表直接显示结束原因；详情依据 capabilities 控制查阅、发送按钮，不支持的操作置灰并说明原因。发送抽屉显示目标 ID 与目录，明确已发送不代表已完成。
+- 凭证组件共用于看板抽屉和原生 `settings.section` 设置页。
+- 补齐 `skills/dsh-agent-relay/SKILL.md`（DSH 侧），外部通知 Skill 保持独立。`rtk npm run skills:install -- /绝对路径/项目` 显式安装到该项目的 `.agents/skills`，拒绝覆盖已有不同来源的 Skill。
+
+实现、验证和剩余边界见 `docs/superpowers/plans/T2.3-T3-T6-non-T7-completion.md`。T7 未在本轮执行。

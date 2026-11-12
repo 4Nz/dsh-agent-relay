@@ -76,6 +76,13 @@ export function apply(ctx: Context): void {
     store,
     transport: createDshDelivery(host),
   });
+  const createReceiveSession = async () => {
+    await mkdir(relayDir, { recursive: true, mode: 0o700 });
+    await host.workspaceRegistry.create(relayDir, RELAY_GROUP_TITLE);
+    const id = randomUUID();
+    await host.sessions.create(id, { meta: { cwd: relayDir } });
+    return id;
+  };
   const service = createRelayService({
     store,
     adapters,
@@ -83,6 +90,7 @@ export function apply(ctx: Context): void {
     checks,
     notifications,
     credentials,
+    createDshSession: createReceiveSession,
     listDshSessions: async () => {
       const sessions = await host.sessionQuery.listSessions();
       return Promise.all(
@@ -134,12 +142,7 @@ export function apply(ctx: Context): void {
     credentials,
     store,
     createSubscription: async (input) => subscriptions.createPush(input),
-    createSession: async () => {
-      await mkdir(relayDir, { recursive: true, mode: 0o700 });
-      const id = randomUUID();
-      await host.sessions.create(id, { meta: { cwd: relayDir } });
-      return id;
-    },
+    createSession: createReceiveSession,
     drain: () => notifications.drain(),
   });
   const pushServer = createPushServer({ handler: pushHandler });

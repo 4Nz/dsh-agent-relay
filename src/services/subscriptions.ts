@@ -12,6 +12,8 @@ export interface SubscribeInput {
   external_session_id: string;
   // poll 必填；push 不填时，投递时再新建 DSH 会话（T2.5），在此之前不建定时检查。
   dsh_session_id?: string | null;
+  create_dsh_session?: () => Promise<string>;
+  max_consecutive_failures?: number;
   owner?: string;
   idle_timeout_seconds?: number;
   max_lifetime_seconds?: number;
@@ -155,12 +157,13 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       const adapter = adapters.get(input.agent);
       if (!adapter.capabilities().snapshot)
         return { ok: false, code: "unsupported", message: `${input.agent} 不支持查阅会话` };
-      if (input.type === "poll" && !input.dsh_session_id)
+      if (input.type === "poll" && !input.dsh_session_id && !input.create_dsh_session)
         return { ok: false, code: "invalid_input", message: "主动订阅必须指定接收通知的 DSH 会话" };
       // 先取一次快照作为基线，避免把订阅前已结束的轮次当成新结果。
       const base: Snapshot = await adapter.snapshot(input.external_session_id);
       if (base.closed)
         return { ok: false, code: "session_closed", message: "外部会话不存在或已归档" };
+      const receiveSession = input.dsh_session_id ?? (input.create_dsh_session ? await input.create_dsh_session() : null);
       const time = now();
       const idle = input.idle_timeout_seconds ?? DEFAULT_IDLE_SECONDS;
       const draft = {
@@ -171,7 +174,8 @@ async function closeSession(agent: Agent, externalSessionId: string) {
         external_session_id: input.external_session_id,
         external_session_title: base.title,
         external_cwd: base.cwd,
-        dsh_session_id: input.dsh_session_id ?? null,
+        dsh_session_id: receiveSession,
+        ...(input.max_consecutive_failures === undefined ? {} : { max_consecutive_failures: input.max_consecutive_failures }),
         idle_timeout_seconds: idle,
         ...(input.max_lifetime_seconds ? { max_lifetime_seconds: input.max_lifetime_seconds } : {}),
         ...(input.type === "poll"
@@ -208,14 +212,15 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       idle_timeout_seconds?: number;
       check_interval_seconds?: number;
       expires_at?: number;
+      max_consecutive_failures?: number;
     }): Promise<ChangeResult> {
       const current = subs.get(id);
       if (!current) return { ok: false, code: "not_found", message: "订阅不存在" };
       if (current.status === "ended") return { ok: false, code: "conflict", message: "订阅已结束" };
       const patch: Record<string, number> = {};
       for (const [key, value] of Object.entries(input)) {
-        if (value !== undefined && (!Number.isSafeInteger(value) || value < 60))
-          throw new TypeError(`${key} 必须为不小于 60 的整数`);
+        if (value !== undefined && (!Number.isSafeInteger(value) || value < (key === "max_consecutive_failures" ? 1 : 60)))
+          throw new TypeError(`${key} 必须为合法正整数`);
         if (value !== undefined) patch[key] = value;
       }
       if (!Object.keys(patch).length)
@@ -260,6 +265,7 @@ async function closeSession(agent: Agent, externalSessionId: string) {
     // 通过 Relay 查阅会话内容：顺延该会话所有订阅的有效期；会话已关闭时结束这些订阅。
     async inspect(agent: Agent, externalSessionId: string): Promise<Snapshot> {
       const snapshot = await adapters.get(agent).snapshot(externalSessionId);
+      if (snapshot.check_error) throw new Error(snapshot.check_error);
       if (snapshot.closed) await closeSession(agent, externalSessionId);
       else subs.touchSession({ agent, external_session_id: externalSessionId, now: now() });
       return snapshot;

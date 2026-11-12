@@ -264,3 +264,24 @@ test("更新订阅周期和有效期会持久化并重建主动检查提醒", as
   assert.equal(sched.tasks.has(previousTask), false);
   assert.equal(store.subscriptions.get(sub.id).expires_at, 1000 + 7200 * 1000);
 });
+
+
+test("查阅失败不顺延、不生成完成通知", async (t) => {
+  const { store, service, clock, claude } = fixture(t);
+  const sub = (await service.subscribe(poll)).subscription;
+  clock.now += 1800000;
+  claude.state.snapshot = snapshot({ check_error: "查询失败", runtime: "unknown" });
+  await assert.rejects(service.inspect("claude", SESSION), /查询失败/);
+  assert.equal(store.subscriptions.get(sub.id).expires_at, sub.expires_at);
+  assert.equal(store.notifications.getBySubscription(sub.id), null);
+});
+
+test("自动接收会话只在外部会话有效时创建", async (t) => {
+  const { service, claude } = fixture(t);
+  let created = 0;
+  claude.state.snapshot = snapshot({ closed: true });
+  const result = await service.subscribe({ ...poll, dsh_session_id: null,
+    create_dsh_session: async () => { created++; return "new"; } });
+  assert.equal(result.code, "session_closed");
+  assert.equal(created, 0);
+});

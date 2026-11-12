@@ -7,7 +7,7 @@ import { openRelayStore } from "../../lib/storage/index.js";
 import { createRelayService } from "../../lib/services/relay.js";
 import { createAdapterRegistry } from "../../lib/adapters/registry.js";
 import { createSubscriptionService } from "../../lib/services/subscriptions.js";
-function setup(t) {
+function setup(t, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-api-"));
   const store = openRelayStore({ dataDir: dir });
   t.after(() => {
@@ -30,7 +30,7 @@ function setup(t) {
         return nextSendResult;
       },
       snapshot: async () => ({
-        closed: false,
+        closed: options.closed ?? false,
         cursor: null,
         title: "测试",
         cwd: null,
@@ -74,6 +74,7 @@ function setup(t) {
     notifications: { drain: async () => {} },
     credentials,
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
+    createDshSession: async () => "new-dsh",
   });
   return {
     relay,
@@ -215,4 +216,41 @@ test("凭证 RPC 只通过服务层暴露生成、查询和重置", async (t) =>
   assert.deepEqual((await relay.call("credential_get", {})).value.configured, true);
   assert.equal((await relay.call("credential_generate", {})).value.token, "token");
   assert.equal((await relay.call("credential_reset", {})).value.token, "new-token");
+});
+
+
+test("查阅快照顺延有效期，查询失败不伪造成功", async (t) => {
+  const { relay, store } = setup(t);
+  const created = await relay.call("subscribe", { agent: "claude", external_session_id: "ext" }, "dsh");
+  const sub = created.value.subscription;
+  store.subscriptions.update({ id: sub.id, expected_status: "active", patch: { expires_at: 1 } });
+  const result = await relay.call("inspect", { agent: "claude", external_session_id: "ext" });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.title, "测试");
+  assert.ok(store.subscriptions.get(sub.id).expires_at > Date.now());
+  assert.equal((await relay.call("inspect", { agent: "bad", external_session_id: "ext" })).ok, false);
+});
+
+test("无当前会话时新建接收会话，创建与修改失败阈值持久保存", async (t) => {
+  const { relay, store } = setup(t);
+  const result = await relay.call("subscribe", { agent: "claude", external_session_id: "ext", max_consecutive_failures: 5 });
+  assert.equal(result.ok, true);
+  const sub = result.value.subscription;
+  assert.equal(sub.dsh_session_id, "new-dsh");
+  assert.equal(sub.max_consecutive_failures, 5);
+  assert.equal((await relay.call("update", { subscription_id: sub.id, max_consecutive_failures: 2 })).ok, true);
+  assert.equal(store.subscriptions.get(sub.id).max_consecutive_failures, 2);
+  assert.equal((await relay.call("update", { subscription_id: sub.id, max_consecutive_failures: 0 })).ok, false);
+});
+
+
+test("发送时发现外部会话关闭，立即结束订阅并拒绝发送", async (t) => {
+  const options = {};
+  const { relay, store, sendResults } = setup(t, options);
+  const created = await relay.call("subscribe", { agent: "claude", external_session_id: "ext" }, "dsh");
+  options.closed = true;
+  const result = await relay.call("send", { agent: "claude", external_session_id: "ext", content: "继续" });
+  assert.equal(result.value.message.status, "rejected");
+  assert.equal(sendResults.length, 0);
+  assert.equal(store.subscriptions.get(created.value.subscription.id).end_reason, "session_closed");
 });
