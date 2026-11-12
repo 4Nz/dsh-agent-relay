@@ -12,7 +12,8 @@ import type { Scheduler } from "./scheduler.js";
 export function cursor(value: Json): SessionCursor | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return typeof value.uuid === "string" && typeof value.timestamp === "number"
-    ? { uuid: value.uuid, timestamp: value.timestamp }
+    ? { uuid: value.uuid, timestamp: value.timestamp,
+      ...(typeof value.target_turn_id === "string" && value.target_turn_id ? { target_turn_id: value.target_turn_id } : {}) }
     : null;
 }
 function observed(value: Json) {
@@ -145,12 +146,15 @@ export function createCheckService({
         });
         if (snap.closed)
           return await finish(sub, "session_closed", "外部会话已归档或删除");
+        const target = cursor(sub.cursor)?.target_turn_id;
+        if (target && snap.finished_turn?.external_ref === target)
+          return await finish(sub, snap.finished_turn.result, snap.last_reply?.slice(0, 3000) || "Codex 目标轮次已结束", target);
         const previous = observed(sub.cursor);
         const changed =
           snap.cursor !== null &&
           (previous?.uuid !== snap.cursor.uuid ||
             previous?.timestamp !== snap.cursor.timestamp);
-        if (snap.runtime === "busy" || changed) {
+        if (target || snap.runtime === "busy" || changed) {
           // 保留订阅原始基线供 Adapter 判定轮次，同时单独保存最近观察位置。
           const base = cursor(sub.cursor);
           store.subscriptions.update({

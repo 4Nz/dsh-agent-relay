@@ -151,3 +151,23 @@ test('Codex 写 RPC：审批明确拒绝、事件可接收，turn/start 超时�
   assert.equal(events[0][0], 'turn/completed');
   await assert.rejects(client.request('turn/start', {}), e => e instanceof CodexTransportError && e.dispatched === true);
 });
+
+
+for (const [method, expected] of [
+ ['item/fileChange/requestApproval', { decision: 'decline' }],
+ ['execCommandApproval', { decision: 'denied' }],
+ ['applyPatchApproval', { decision: 'denied' }],
+ ['item/permissions/requestApproval', { permissions: {} }],
+]) test(`Codex 写 RPC：${method} 不授予权限`, async t => {
+  const {connectCodex} = await import('../../lib/adapters/codex/rpc.js');
+  let original;
+  const path = await server(t,(req,socket)=>{
+    if(req.method==='thread/read') { original=req.id;socket.write(frame({id:900,method,params:{threadId:'dedicated'}})); }
+    else if(req.id===900) {
+      assert.deepEqual(req.result,expected);
+      socket.write(frame({id:original,result:{checked:true}}));
+    }
+  });
+  const c=await connectCodex({socketPath:path,writable:true,timeoutMs:500});t.after(()=>c.close());
+  assert.equal((await c.request('thread/read',{})).checked,true);
+});

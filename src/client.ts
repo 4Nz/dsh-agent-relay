@@ -199,8 +199,11 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     [candidateError, setCandidateError] = useState("");
   const [capabilities, setCapabilities] = useState<any[]>([]);
   const [snapshot, setSnapshot] = useState<any>(null);
+  const [inspecting, setInspecting] = useState(false);
   const [failures, setFailures] = useState("3"), [interval, setIntervalValue] = useState("60");
   const [message, setMessage] = useState("");
+  const [codexCwd, setCodexCwd] = useState("");
+  const createGen = useRef(0);
   const [installAgent, setInstallAgent] = useState("claude");
   const [installPreview, setInstallPreview] = useState<any>(null);
   const [installResult, setInstallResult] = useState<any>(null);
@@ -213,7 +216,9 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const creating = drawer === "create";
   const current = items.find((s) => s.id === selected);
   const close = () => {
+    createGen.current++;
     inspectGen.current++;
+    setInspecting(false);
     setDrawer("");
   };
   async function call(endpoint: string, payload: unknown = {}) {
@@ -298,12 +303,37 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       live = false;
     };
   }, [drawer, installAgent]);
+  useEffect(() => {
+    if (drawer === "detail" && current?.agent === "codex") void inspect(current);
+  }, [drawer, current?.id]);
   const capability = (agent: string, key: string) =>
     capabilities.find((a) => a.agent === agent)?.capabilities?.[key] === true;
+  function sendAllowed(sub: any) {
+    if (!capability(sub.agent, "sendMessage")) return false;
+    if (sub.agent !== "codex") return true;
+    return snapshot?.agent === sub.agent && snapshot?.external_session_id === sub.external_session_id && snapshot.value.send_allowed === true;
+  }
+  function sendReason(sub: any) {
+    if (sub.agent !== "codex") return "该 Agent 不支持发送消息或能力尚未加载";
+    return snapshot?.external_session_id === sub.external_session_id ? snapshot.value.send_reason || "请查阅最新状态后发送" : "请先查阅会话，核对是否支持发送";
+  }
+  async function createCodexSession() {
+    const gen = ++createGen.current;
+    setBusy(true); setCandidateError("");
+    try {
+      const session = await call("create_session", { agent: "codex", cwd: codexCwd });
+      setNotice(`Codex 专用会话已创建：${session.id}`);
+      if (gen === createGen.current) {
+        setCandidates((old) => [session, ...old.filter((s) => s.id !== session.id)]);
+        setExternal(session.id);
+      }
+    } catch (e) { if (gen === createGen.current) setCandidateError((e as Error).message); }
+    finally { setBusy(false); }
+  }
   async function inspect(sub: any) {
     const gen = ++inspectGen.current;
     const target = { agent: sub.agent, external_session_id: sub.external_session_id };
-    setBusy(true); setError(""); setSnapshot(null);
+    setInspecting(true); setError(""); setSnapshot(null);
     try {
       const value = await call("inspect", { agent: target.agent, external_session_id: target.external_session_id });
       // 过期响应（已关闭/切换/卸载）不更新快照、busy、error 或触发刷新。
@@ -312,7 +342,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         setRefreshVersion((v) => v + 1);
       }
     } catch (e) { if (gen === inspectGen.current) setError((e as Error).message); }
-    finally { if (gen === inspectGen.current) setBusy(false); }
+    finally { if (gen === inspectGen.current) setInspecting(false); }
   }
   async function saveConfig(sub: any) {
     setBusy(true); setError("");
@@ -598,6 +628,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           "Agent",
           agent,
           (v) => {
+            createGen.current++;
             setAgent(v);
             setExternal("");
           },
@@ -608,9 +639,16 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         ),
         agent === "codex" &&
           h(
-            "p",
+            "div",
             { className: "notice muted small" },
-            "Codex 支持会话发现与快照查阅，暂不支持发送消息；daemon 不代表桌面会话实时状态。",
+            "Codex 仅支持向 Relay 创建的专用后台会话发送消息；桌面及其他会话只读。专用会话请勿同时交给桌面或 CLI 执行。",
+            capability("codex", "createSession") && h("div", { className: "fields" },
+              h("label", null, "专用会话工作目录（绝对路径）", h("input", {
+                type: "text", value: codexCwd, placeholder: "/绝对路径/项目目录", disabled: busy,
+                onChange: (e: any) => setCodexCwd(e.target.value),
+              })),
+              h("button", { type: "button", disabled: busy || candidateLoading || !codexCwd.trim(),
+                onClick: () => void createCodexSession() }, "新建 Codex 专用会话")),
           ),
         fieldSelect(
           "外部会话",
@@ -635,6 +673,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
               h("strong", null, chosen.title ?? "未命名"),
               chosen.cwd && h("p", { className: "muted" }, chosen.cwd),
               h("p", { className: "muted" }, `ID：${chosen.id}`),
+              agent === "codex" && h("p", null, chosen.send_allowed ? "此专用会话支持发送消息" : chosen.send_reason ?? "此会话只读"),
             )
           );
         })(),
@@ -714,16 +753,17 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         ]),
       ),
       h("div", { className: "row" },
-        h("button", { disabled: busy || !capability(sub.agent, "snapshot"),
+        h("button", { disabled: busy || inspecting || !capability(sub.agent, "snapshot"),
           title: capability(sub.agent, "snapshot") ? "查阅成功将顺延有效期" : "该 Agent 不支持查阅或能力尚未加载",
           onClick: () => void inspect(sub) }, "查阅外部会话"),
-        h("button", { disabled: busy || !capability(sub.agent, "sendMessage"),
-          title: capability(sub.agent, "sendMessage") ? "核对目标后发送" : "该 Agent 不支持发送消息或能力尚未加载",
+        h("button", { disabled: busy || !sendAllowed(sub),
+          title: sendAllowed(sub) ? "核对目标后发送" : sendReason(sub),
           onClick: () => { setMessage(""); setDrawer("send"); } }, "发送消息"),
         sub.status !== "ended" && h("button", { disabled: busy, onClick: () => {
           setMinutes(String(sub.idle_timeout_seconds / 60)); setFailures(String(sub.max_consecutive_failures));
           setIntervalValue(String((sub.check_interval_seconds ?? 3600) / 60)); setDrawer("edit");
         } }, "修改配置")),
+      sub.agent === "codex" && !sendAllowed(sub) && h("p", { className: "muted small" }, inspecting ? "正在核对会话状态…" : sendReason(sub)),
       snapshot &&
         snapshot.agent === sub.agent &&
         snapshot.external_session_id === sub.external_session_id &&
@@ -806,7 +846,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     h("p", null, `会话 ID：${sub.external_session_id}`), h("p", null, `工作目录：${sub.external_cwd ?? "未知"}`),
     h("label", null, "消息", h("textarea", { value: message, rows: 5, maxLength: 500, onChange: (e: any) => setMessage(e.target.value) })),
     error && h("p", { role: "alert", className: "error" }, error),
-    h("button", { disabled: busy || !message.trim() || !capability(sub.agent, "sendMessage"), onClick: () => void send(sub) }, "确认目标并发送"));
+    h("button", { disabled: busy || !message.trim() || !sendAllowed(sub), onClick: () => void send(sub) }, "确认目标并发送"));
   const installStatusLabel = (status: string) =>
     status === "completed" ? "已完成" : status === "failed" ? "失败" : status === "rejected" ? "被拒绝" : status;
   const installDrawer = () => h(Drawer, { title: "安装通知 Skill", onClose: close },

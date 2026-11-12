@@ -33,7 +33,8 @@ function fixture(t) {
   const adapter = {
     agent: "claude",
     capabilities: () => ({ snapshot: true }),
-    snapshot: async () => {
+    snapshot: async (_id, baseline) => {
+      state.baseline = baseline;
       state.calls++;
       if (state.error) throw Error("读取失败");
       if (state.wait) await state.wait;
@@ -196,4 +197,17 @@ test("push 订阅到期用原子转换结束：已有通知保留，无通知登
   assert.equal((await service.check("p2")).status, "expired");
   assert.equal(store.notifications.getBySubscription("p2").result, "completed");
   assert.equal(store.subscriptions.get("p2").end_reason, "expired");
+});
+
+
+test('精确轮次订阅：目标完成立即通知，不被后续 busy 顺延，保留目标 ID', async t => {
+  const { store, state, service, sub } = fixture(t);
+  store.subscriptions.update({ id: sub.id, expected_status: 'active', patch: { cursor: { uuid: 'a', timestamp: 0, target_turn_id: 'target' }, updated_at: 1000 } });
+  state.snapshot.runtime = 'busy';
+  state.snapshot.finished_turn = { result: 'completed', external_ref: 'target' };
+  state.now = sub.expires_at;
+  const result = await service.check(sub.id);
+  assert.equal(state.baseline.target_turn_id, 'target');
+  assert.equal(result.status, 'notified');
+  assert.equal(store.notifications.getBySubscription(sub.id).external_ref, 'target');
 });

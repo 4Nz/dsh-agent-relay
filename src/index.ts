@@ -72,9 +72,10 @@ export function apply(ctx: Context): void {
     releaseLock();
     throw error;
   }
+  const codex = createCodexAdapter({ bindings: store.codexSessions });
   const adapters = createAdapterRegistry([
     createClaudeAdapter(),
-    createCodexAdapter(),
+    codex,
   ]);
   const scheduler = createDshScheduler(host.schedule);
   const subscriptions = createSubscriptionService({
@@ -118,6 +119,7 @@ export function apply(ctx: Context): void {
       ctx.logger.warn("[agent-relay] reconciliation failed: %s", error),
     beforeClose: async () => {
       await Promise.allSettled([...operations]);
+      await codex.dispose?.();
     },
   });
   const relay: RelayService = {

@@ -153,7 +153,7 @@ test('Codex 写入：新建专用会话登记后发送，接收即 sent 且不�
   assert.equal(closes(), 0);
 });
 test('Codex 写入：未登记、端点不符、忙碌和恢复后状态不明均拒绝', async t => {
-  const { adapter, store, calls } = await writable(t, { request: async method => method === 'thread/resume' ? { thread: { ...thread, status: { type: 'active' } } } : undefined });
+  const { adapter, store, calls } = await writable(t, { request: async method => method === 'thread/read' ? { thread } : method === 'thread/resume' ? { thread: { ...thread, status: { type: 'active' } } } : undefined });
   assert.equal((await adapter.sendMessage(ID, '继续')).status, 'rejected');
   assert.equal(calls.length, 0);
   store.codexSessions.register({ session_id: ID, endpoint: '/tmp/other.sock', created_at: 1 });
@@ -165,7 +165,7 @@ test('Codex 写入：未登记、端点不符、忙碌和恢复后状态不明�
 });
 test('Codex 写入：turn/start 响应丢失为 unknown，明确协议拒绝为 failed', async t => {
   const { CodexTransportError, CodexRpcError } = await import('../../lib/adapters/codex/rpc.js');
-  for (const [error, status] of [[new CodexTransportError('响应丢失', true), 'unknown'], [new CodexRpcError(-32600, '拒绝'), 'failed']]) {
+  for (const [error, status] of [[new CodexTransportError('响应丢失', true), 'unknown'], [new CodexRpcError(-32600, '拒绝'), 'failed'], [new CodexRpcError(-32603, '内部错误'), 'unknown']]) {
     const { adapter, store } = await writable(t, { request: async method => { if (method === 'turn/start') throw error; } });
     store.codexSessions.register({ session_id: ID, endpoint: '/tmp/relay-test.sock', created_at: 1 });
     assert.equal((await adapter.sendMessage(ID, '继续')).status, status);
@@ -183,4 +183,23 @@ test('Codex：精确目标轮次可跨分页找到，同秒开始及后续轮次
   const s = await adapter.snapshot(ID, { uuid: 'codex:before:hash', timestamp: 200000, target_turn_id: 'target' });
   assert.deepEqual(s.finished_turn, { result: 'completed', external_ref: 'target' });
   assert.equal(s.last_reply, '目标回复');
+});
+
+
+test('Codex 新建空会话：仅明确 not materialized 历史错误视为空，首条消息仍可发送', async t => {
+  const {CodexRpcError} = await import('../../lib/adapters/codex/rpc.js');
+  const {adapter,dir} = await writable(t,{request:async method=>{
+    if(method==='thread/turns/list')throw new CodexRpcError(-32600, `thread ${ID} is not materialized yet; thread/turns/list is unavailable before first user message`);
+  }});
+  await adapter.createSession({cwd:dir});
+  const base=await adapter.snapshot(ID);
+  assert.equal(base.closed,false);assert.equal(base.cursor,null);
+  assert.equal((await adapter.sendMessage(ID,'第一条消息')).status,'sent');
+});
+
+
+test('Codex 会话级能力：后台 systemError 不允许发送', async t => {
+  const {adapter,store}=await writable(t,{request:async method=>method==='thread/read'?{thread:{...thread,status:{type:'systemError'}}}:undefined});
+  store.codexSessions.register({session_id:ID,endpoint:'/tmp/relay-test.sock',created_at:1});
+  const s=await adapter.snapshot(ID);assert.equal(s.send_allowed,false);
 });

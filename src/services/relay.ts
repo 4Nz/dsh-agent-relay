@@ -22,6 +22,7 @@ export type RelayResponse =
 export const endpoints = [
   "agents",
   "sessions",
+  "create_session",
   "inspect",
   "dsh_sessions",
   "subscribe",
@@ -91,6 +92,7 @@ export function createRelayService({
   hasDshSession?: (id: string) => Promise<boolean>;
   createDshSession?: () => Promise<string>;
 }) {
+  const sending = new Set<string>();
   return {
     async call(
       endpoint: string,
@@ -122,6 +124,13 @@ export function createRelayService({
           case "install_skill":
             value = await skillInstall.install(agent(args.agent));
             break;
+          case "create_session": {
+            const adapter = adapters.get(agent(args.agent));
+            if (!adapter.capabilities().createSession || !adapter.createSession)
+              throw new TypeError("该 Agent 不支持新建专用会话");
+            value = await adapter.createSession({ cwd: text(args.cwd, "cwd") });
+            break;
+          }
           case "sessions": {
             const adapter = adapters.get(agent(args.agent));
             if (!adapter.capabilities().listSessions)
@@ -245,77 +254,84 @@ export function createRelayService({
                 throw new TypeError("订阅与消息目标不匹配");
             }
 
-            const message = store.messages.create({
-              id: randomUUID(),
-              agent: selected,
-              external_session_id: external,
-              subscription_id: subscriptionId,
-              content,
-              created_at: Date.now(),
-            });
-            const adapter = adapters.get(selected);
-            let sendResult:
-              | { status: "sent"; external_ref: string | null }
-              | { status: "rejected"; reason: string }
-              | { status: "failed"; error: string }
-              | { status: "unknown"; error: string };
-            // 发送前快照：发送成功后作为订阅基线，避免重新读取已发送后的历史。
-            let baselineSnapshot: Snapshot | null = null;
-            if (!adapter.capabilities().sendMessage)
-              sendResult = { status: "rejected", reason: `${selected} 不支持发送消息` };
-            else {
-              try {
-                const snapshot = await adapter.snapshot(external);
-                if (snapshot.closed) {
-                  await subscriptions.closeSession(selected, external);
-                  await notifications.drain();
-                  sendResult = { status: "rejected", reason: "外部会话不存在或已归档" };
-                } else if (snapshot.check_error) {
-                  sendResult = { status: "rejected", reason: snapshot.check_error };
-                } else {
-                  baselineSnapshot = snapshot;
-                  sendResult = await adapter.sendMessage(external, content);
-                }
-              } catch (error) {
-                sendResult = { status: "failed", error: messageOf(error) };
-              }
-            }
-            const transitioned = store.messages.transition({
-              id: message.id,
-              expected_status: "sending",
-              status: sendResult.status,
-              ...(sendResult.status === "sent"
-                ? { external_ref: sendResult.external_ref, sent_at: Date.now() }
-                : { error: "reason" in sendResult ? sendResult.reason : sendResult.error }),
-            });
-            if (!transitioned) throw new Error("消息状态更新失败");
-            const saved = store.messages.get(message.id)!;
-            let createdSubscription = null;
-            let subscriptionError: string | null = null;
-            if (saved.status === "sent") {
-              subscriptions.touch(selected, external);
-              if (subscribeAfterSend) {
+            const route = JSON.stringify([selected, external]);
+            const ownsLock = !sending.has(route);
+            if (ownsLock) sending.add(route);
+            try {
+              const message = store.messages.create({
+                id: randomUUID(),
+                agent: selected,
+                external_session_id: external,
+                subscription_id: subscriptionId,
+                content,
+                created_at: Date.now(),
+              });
+              const adapter = adapters.get(selected);
+              let sendResult:
+                | { status: "sent"; external_ref: string | null }
+                | { status: "rejected"; reason: string }
+                | { status: "failed"; error: string }
+                | { status: "unknown"; error: string };
+              // 发送前快照：发送成功后作为订阅基线，避免重新读取已发送后的历史。
+              let baselineSnapshot: Snapshot | null = null;
+              if (!ownsLock) sendResult = { status: "rejected", reason: "此会话正在发送消息，请等待当前发送结束" };
+              else if (!adapter.capabilities().sendMessage)
+                sendResult = { status: "rejected", reason: `${selected} 不支持发送消息` };
+              else {
                 try {
-                  const subscribed = await subscriptions.subscribe({
-                    type: "poll",
-                    agent: selected,
-                    external_session_id: external,
-                    dsh_session_id: receiveSession,
-                    ...(baselineSnapshot ? { baseline_snapshot: baselineSnapshot } : {}),
-                  });
-                  if (subscribed.ok) createdSubscription = subscribed.subscription;
-                  else subscriptionError = subscribed.message;
+                  const snapshot = await adapter.snapshot(external);
+                  if (snapshot.closed) {
+                    await subscriptions.closeSession(selected, external);
+                    await notifications.drain();
+                    sendResult = { status: "rejected", reason: "外部会话不存在或已归档" };
+                  } else if (snapshot.check_error) {
+                    sendResult = { status: "rejected", reason: snapshot.check_error };
+                  } else {
+                    baselineSnapshot = snapshot;
+                    sendResult = await adapter.sendMessage(external, content);
+                  }
                 } catch (error) {
-                  // 消息已发送，订阅失败不能把整次发送伪装成失败，避免调用方误重发。
-                  subscriptionError = messageOf(error);
+                  sendResult = { status: "failed", error: messageOf(error) };
                 }
               }
-            }
-            value = {
-              message: saved,
-              subscription: createdSubscription,
-              ...(subscriptionError ? { subscription_error: subscriptionError } : {}),
-            };
+              const transitioned = store.messages.transition({
+                id: message.id,
+                expected_status: "sending",
+                status: sendResult.status,
+                ...(sendResult.status === "sent"
+                  ? { external_ref: sendResult.external_ref, sent_at: Date.now() }
+                  : { error: "reason" in sendResult ? sendResult.reason : sendResult.error }),
+              });
+              if (!transitioned) throw new Error("消息状态更新失败");
+              const saved = store.messages.get(message.id)!;
+              let createdSubscription = null;
+              let subscriptionError: string | null = null;
+              if (saved.status === "sent") {
+                subscriptions.touch(selected, external);
+                if (subscribeAfterSend) {
+                  try {
+                    const subscribed = await subscriptions.subscribe({
+                      type: "poll",
+                      agent: selected,
+                      external_session_id: external,
+                      dsh_session_id: receiveSession,
+                      ...(baselineSnapshot ? { baseline_snapshot: baselineSnapshot } : {}),
+                      ...(selected === "codex" && saved.external_ref ? { target_turn_id: saved.external_ref } : {}),
+                    });
+                    if (subscribed.ok) createdSubscription = subscribed.subscription;
+                    else subscriptionError = subscribed.message;
+                  } catch (error) {
+                    // 消息已发送，订阅失败不能把整次发送伪装成失败，避免调用方误重发。
+                    subscriptionError = messageOf(error);
+                  }
+                }
+              }
+              value = {
+                message: saved,
+                subscription: createdSubscription,
+                ...(subscriptionError ? { subscription_error: subscriptionError } : {}),
+              };
+            } finally { if (ownsLock) sending.delete(route); }
             break;
           }
           case "messages": {

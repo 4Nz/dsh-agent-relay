@@ -107,6 +107,7 @@ function setup(t, options = {}) {
       nextSendResult = result;
     },
     credentials,
+    adapters,
   };
 }
 test("订阅使用调用上下文，定时任务未创建时明确返回未就绪", async (t) => {
@@ -483,4 +484,40 @@ test("subscribe 用 hasDshSession 验证存在性，不读取标题", async (t) 
   assert.equal(missing.ok, false);
   assert.match(missing.error.message, /不存在/);
   assert.equal(hasCalls, 2);
+});
+
+
+test('Codex 创建入口与发送后订阅保留精确目标轮次，空历史有效', async t => {
+  const { relay, adapters } = setup(t);
+  const codex = adapters.get('codex');
+  codex.capabilities = () => ({ snapshot: true, listSessions: true, sendMessage: true, runPrompt: false, createSession: true });
+  codex.createSession = async ({cwd}) => ({ id: 'dedicated', cwd, send_allowed: true });
+  codex.sendMessage = async () => ({ status: 'sent', external_ref: 'target-turn' });
+  const created = await relay.call('create_session', { agent: 'codex', cwd: '/tmp' });
+  assert.equal(created.ok, true);
+  assert.equal(created.value.id, 'dedicated');
+  const sent = await relay.call('send', { agent: 'codex', external_session_id: 'dedicated', content: '继续', subscribe_after_send: true }, 'dsh');
+  assert.equal(sent.value.message.status, 'sent');
+  assert.equal(sent.value.subscription.cursor.target_turn_id, 'target-turn');
+});
+test('发送服务：同目标并发拒绝，其他目标可发送，锁在失败后释放', async t => {
+  const { relay, adapters } = setup(t);
+  let release;
+  const gate = new Promise(r => { release = r; });
+  let entered;
+  const ready = new Promise(r => { entered = r; });
+  adapters.get('claude').sendMessage = async (id) => {
+    if (id === 'held') { entered(); await gate; }
+    return { status: 'sent', external_ref: id };
+  };
+  const first = relay.call('send', { agent: 'claude', external_session_id: 'held', content: 'a' });
+  await ready;
+  const pendingSecond = relay.call('send', { agent: 'claude', external_session_id: 'held', content: 'b' });
+  const second = await Promise.race([pendingSecond, new Promise(r => setTimeout(() => r(null), 50))]);
+  if (!second) { release(); await Promise.all([first, pendingSecond]); assert.fail('同目标并发必须立即拒绝'); }
+  assert.equal(second.value.message.status, 'rejected');
+  const other = await relay.call('send', { agent: 'claude', external_session_id: 'other', content: 'c' });
+  assert.equal(other.value.message.status, 'sent');
+  release(); assert.equal((await first).value.message.status, 'sent');
+  assert.equal((await relay.call('send', { agent: 'claude', external_session_id: 'held', content: 'd' })).value.message.status, 'sent');
 });

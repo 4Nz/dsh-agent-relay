@@ -22,6 +22,7 @@ export interface SubscribeInput {
   // 服务间内部字段：发送服务传入发送前快照作为基线，避免订阅重新读取已发送后的历史。
   // 不通过工具/RPC 暴露，仅供发送成功后创建订阅时使用。
   baseline_snapshot?: Snapshot;
+  target_turn_id?: string;
 }
 export interface PushSubscriptionInput {
   id: string;
@@ -195,7 +196,11 @@ async function closeSession(agent: Agent, externalSessionId: string) {
         ...(input.type === "poll"
           ? { check_interval_seconds: input.check_interval_seconds ?? idle }
           : {}),
-        cursor: base.cursor ? { uuid: base.cursor.uuid, timestamp: base.cursor.timestamp } : null,
+        cursor: input.target_turn_id ? {
+          uuid: base.cursor?.uuid ?? `codex:target:${input.target_turn_id}`,
+          timestamp: base.cursor?.timestamp ?? 0,
+          target_turn_id: input.target_turn_id,
+        } : base.cursor ? { ...base.cursor } : null,
         last_activity_at: base.last_activity_at,
         created_at: time,
         updated_at: time,

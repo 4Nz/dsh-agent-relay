@@ -34,8 +34,8 @@ function info(value: unknown, writable = false): SessionInfo {
     last_activity_at: millis(t.updatedAt),
     // daemon 不是桌面执行实例，idle/notLoaded 都不能证明原会话空闲。
     runtime: status === 'active' ? 'busy' : writable && status === 'idle' ? 'idle' : 'unknown', held: true,
-    send_allowed: writable && status !== 'active',
-    send_reason: !writable ? '仅 Relay 创建的专用后台会话支持发送；桌面及其他会话只读' : status === 'active' ? '会话处理中' : '',
+    send_allowed: writable && (status === 'idle' || status === 'notLoaded'),
+    send_reason: !writable ? '仅 Relay 创建的专用后台会话支持发送；桌面及其他会话只读' : status === 'active' ? '会话处理中' : status === 'idle' || status === 'notLoaded' ? '' : '无法确认后台会话状态',
   };
 }
 function page(value: unknown): { data: unknown[]; nextCursor: string | null } {
@@ -77,7 +77,8 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
     if (string(current.id) !== id) bad();
     const status = string(object(current.status).type);
     if (status === 'active') return '会话处理中';
-    if (status !== 'idle' && status !== 'notLoaded') return '无法确认后台会话状态';
+    if (status === 'idle') return null;
+    if (status !== 'notLoaded') return '无法确认后台会话状态';
     // 只恢复由 Relay 创建且登记到此端点的专用会话，不恢复任意历史会话。
     const resumed = object(object(await client.request('thread/resume', { threadId: id, excludeTurns: true })).thread);
     if (string(resumed.id) !== id) bad();
@@ -154,7 +155,8 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
       } catch (error) {
         if (error instanceof CodexTransportError) writeConnection = undefined;
         // 请求已经发出却缺少可靠回执（包括畸形响应），不能当作未发送。
-        const unknown = starting && !(error instanceof CodexRpcError) &&
+        const rejected = error instanceof CodexRpcError && [-32600, -32601, -32602, -32001].includes(error.code);
+        const unknown = starting && !rejected &&
           (!(error instanceof CodexTransportError) || error.dispatched);
         return unknown ? { status: 'unknown', error: 'Codex 接收结果未知，请核对目标轮次；不要重复发送' }
           : { status: 'failed', error: 'Codex 连接、会话恢复或发送被拒绝，请检查后台实例和原权限配置' };
@@ -199,9 +201,18 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
         let next: string | null = null;
         const seen = new Set<string>();
         for (let n = 0; n < 1000; n++) {
-          const turns = page(await client.request('thread/turns/list', {
-            threadId: sessionId, limit: target ? 50 : 1, cursor: next, sortDirection: 'desc', itemsView: 'full',
-          }));
+          let turns: { data: unknown[]; nextCursor: string | null };
+          try {
+            turns = page(await client.request('thread/turns/list', {
+              threadId: sessionId, limit: target ? 50 : 1, cursor: next, sortDirection: 'desc', itemsView: 'full',
+            }));
+          } catch (error) {
+            // daemon 在首条消息前尚未物化历史；仅对已登记且确认为 idle 的空会话接受这一精确错误。
+            if (bound(sessionId) && metadata.runtime === 'idle' && !target && error instanceof CodexRpcError &&
+                error.code === -32600 && error.message.startsWith(`thread ${sessionId} is not materialized yet;`))
+              turns = { data: [], nextCursor: null };
+            else throw error;
+          }
           const found = target ? turns.data.find(t => object(t).id === target) : turns.data[0];
           if (found != null) { latest = object(found); break; }
           if (!target || !turns.nextCursor) break;

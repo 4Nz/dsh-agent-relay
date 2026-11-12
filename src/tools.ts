@@ -26,6 +26,12 @@ export function registerTools(
     parameters: ParameterSchemaSpec;
   }[] = [
     {
+      name: "relay_create_session",
+      endpoint: "create_session",
+      description: "新建供 Relay 专用的 Codex 后台会话并返回 ID；须指定绝对工作目录。后续可用 relay_send 发送；请勿同时在桌面或 CLI 接管此会话。",
+      parameters: { agent, cwd: { type: "string", required: true } },
+    },
+    {
       name: "relay_list_sessions",
       endpoint: "sessions",
       description:
@@ -57,7 +63,7 @@ export function registerTools(
       name: "relay_send",
       endpoint: "send",
       description:
-        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，Codex 第一版不支持发送。可选发送成功后创建一次 poll 订阅。",
+        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，Codex 仅向 Relay 创建登记的专用后台会话发送；其他会话只读。可选发送成功后创建一次 poll 订阅。",
       parameters: {
         agent,
         external_session_id: { type: "string", required: true },
