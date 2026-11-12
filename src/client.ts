@@ -107,6 +107,11 @@ const css = `
 .ar .state-active{color:var(--dsw-alias-state-business-primary,#a4b7ff);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#a4b7ff) 12%,transparent)}.ar .state-paused{color:var(--dsw-alias-state-warn-label,#e8bd75);background:color-mix(in srgb,var(--dsw-alias-state-warn-label,#e8bd75) 10%,transparent)}.ar .state-ended{color:var(--dsw-alias-label-secondary,#aaa);background:var(--dsw-alias-bg-layer-1,#252525)}
 .ar .subscription-state{white-space:nowrap}.ar .start-time{font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--dsw-alias-label-secondary,#aaa)}.ar .expiry{white-space:nowrap}.ar .message-cell{min-width:100px}
 .ar .drawer select{width:100%;min-height:40px}.ar .drawer option{background:var(--dsw-alias-bg-layer-1,#202020);color:var(--dsw-alias-label-primary,#eee)}
+.ar .credential-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 8px}
+.ar .credential-summary{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;background:var(--dsw-alias-bg-layer-1,#202020);border:1px solid var(--dsw-alias-border-l2,#49494d);border-radius:8px;padding:6px 10px}
+.ar .credential-token{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+.ar .credential-token textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;resize:vertical}
+.ar .copy-btn{font-size:12px;padding:4px 10px}
 @media(max-width:700px){.ar header{padding:18px 16px;align-items:flex-start}.ar .body{padding:16px}.ar .drawer{padding:20px}.ar .detail{grid-template-columns:90px minmax(0,1fr)}}
 `;
 
@@ -834,7 +839,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         ),
       ),
     );
-  const settingsDrawer = () => h(Drawer, { title: "共享通知凭证", onClose: close }, h(CredentialSettings, { rpc }));
+  const settingsDrawer = () => h(Drawer, { title: "共享通知凭证", onClose: close }, h(CredentialSettings, { rpc, embedded: true }));
   const editDrawer = (sub: any) => h(Drawer, { title: "修改订阅配置", onClose: close },
     fieldInput("有效期（分钟）", minutes, setMinutes, { min: 1, max: 1440 }),
     fieldInput("连续失败阈值", failures, setFailures, { min: 1, max: 100 }),
@@ -891,7 +896,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         "div",
         null,
         h("h1", null, "任务跟踪"),
-        h("p", { className: "muted" }, "关注外部 Agent 会话，接收一次结果通知。"),
+        h("p", { className: "muted" }, "订阅外部 Agent 会话任务进度。"),
       ),
       h(
         "div",
@@ -1174,9 +1179,10 @@ function AgentRelayIcon({ rpc }: { rpc: Rpc }) {
     ),
   );
 }
-export function CredentialSettings({ rpc }: { rpc: Rpc }) {
+export function CredentialSettings({ rpc, embedded = false }: { rpc: Rpc; embedded?: boolean }) {
   const [credential, setCredential] = useState<any>(null), [token, setToken] = useState("");
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const [copied, setCopied] = useState("");
   async function call(endpoint: string) {
     const result = await rpc.call("/api", `agent-relay/${endpoint}`, {});
     if (!result.ok) throw Error(result.error?.message ?? "操作失败");
@@ -1188,9 +1194,13 @@ export function CredentialSettings({ rpc }: { rpc: Rpc }) {
       .catch((e) => { if (live) setError(e.message); });
     return () => { live = false; };
   }, []);
-  async function generate(reset: boolean) {
+  async function generate() {
+    // 已配置时等同重置：重新生成并失效旧凭证，不再需要单独的「重置」按钮。
     setBusy(true); setError(""); setToken("");
-    try { const value = await call(reset ? "credential_reset" : "credential_generate"); setCredential(value); setToken(value.token); }
+    try {
+      const value = await call(credential?.configured ? "credential_reset" : "credential_generate");
+      setCredential(value); setToken(value.token);
+    }
     catch (e) {
       setError((e as Error).message);
       // 出现冲突（他处已生成凭证）时重新读取配置状态，不展示其他页面生成的明文。
@@ -1199,14 +1209,43 @@ export function CredentialSettings({ rpc }: { rpc: Rpc }) {
     }
     finally { setBusy(false); }
   }
+  async function copy(value: string, key: string) {
+    let done = false;
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      try { await navigator.clipboard.writeText(value); done = true; } catch { done = false; }
+    }
+    if (!done && typeof document !== "undefined") {
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      try { done = document.execCommand("copy"); } catch { done = false; }
+      document.body.removeChild(ta);
+    }
+    if (!done) { setError("复制失败，请手动选择复制"); return; }
+    setCopied(key);
+    setTimeout(() => setCopied(""), 1600);
+  }
+  const summary = credential
+    ? (credential.configured ? `已配置 · 摘要 ${credential.digest.slice(0, 12)}…` : "尚未配置")
+    : "正在读取…";
   return h("section", { className: "ar" }, h("style", null, css),
-    h("div", { className: "body" }, h("h2", null, "共享通知凭证"),
-      h("p", null, "本机 Claude、Codex 共用；只保存摘要，明文仅在本次生成时展示。重置后旧凭证失效。"),
+    h("div", { className: "body" },
+      !embedded && h("h2", null, "共享通知凭证"),
+      h("p", { className: "muted" }, "本机 Claude、Codex 共用；只保存摘要，明文仅在本次生成时展示。重新生成后旧凭证失效。"),
       error && h("p", { role: "alert", className: "error" }, error),
-      h("p", null, credential ? (credential.configured ? `已配置 · 摘要 ${credential.digest.slice(0, 12)}…` : "尚未配置") : "正在读取…"),
-      token && h("label", null, "本次凭证（关闭后无法再次查看）", h("textarea", { readOnly: true, value: token, rows: 3 })),
-      h("button", { disabled: busy || !credential || credential.configured, onClick: () => void generate(false) }, "生成凭证"),
-      credential?.configured && h("button", { disabled: busy, onClick: () => void generate(true) }, "重置凭证")));
+      h("div", { className: "credential-status" },
+        h("span", { className: "credential-summary" }, summary),
+        credential?.configured && h("button", { className: "copy-btn", onClick: () => void copy(credential.digest, "digest") }, copied === "digest" ? "已复制" : "复制摘要")),
+      token && h("div", { className: "credential-token" },
+        h("label", null, "本次凭证（关闭后无法再次查看）",
+          h("textarea", { readOnly: true, value: token, rows: 3, onFocus: (e: any) => e.target.select() })),
+        h("button", { className: "primary", onClick: () => void copy(token, "token") }, copied === "token" ? "已复制" : "复制")),
+      h("button", { className: "primary", disabled: busy || !credential, onClick: () => void generate() },
+        credential?.configured ? "重新生成凭证" : "生成凭证")));
 }
 
 interface RelayClientContext {
