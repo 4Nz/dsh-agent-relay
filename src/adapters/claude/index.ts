@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -12,7 +12,8 @@ import type {
   Snapshot,
 } from "../types.js";
 import { createRunner, type ClaudeRunner, type RunResult } from "./runner.js";
-import { findPrompt, finishedTurn, parseTranscript } from "./transcript.js";
+import { findPrompt, finishedTurn, type Transcript } from "./transcript.js";
+import { TranscriptReader } from "./transcript-reader.js";
 
 export interface ClaudeAdapterOptions {
   // 会话记录目录，默认 $CLAUDE_CONFIG_DIR/projects 或 ~/.claude/projects。
@@ -58,14 +59,13 @@ export function createClaudeAdapter(
     }
     return null;
   }
-  async function readTranscript(file: string) {
-    let text: string;
+  async function readTranscript(file: string): Promise<Transcript> {
     try {
-      text = await readFile(file, "utf8");
+      return await new TranscriptReader(file).scan();
     } catch (error) {
+      if (error instanceof AdapterError) throw error;
       throw new AdapterError("unavailable", `无法读取会话记录：${message(error)}`);
     }
-    return parseTranscript(text);
   }
   // `claude agents --json` 只列出有进程持有的会话；不在列表中表示无进程持有。
   async function runtimes(): Promise<Map<string, Runtime> | string> {
@@ -104,7 +104,14 @@ export function createClaudeAdapter(
   async function send(sessionId: string, text: string): Promise<SendResult> {
     const file = await findFile(sessionId);
     if (!file) return { status: "rejected", reason: "会话不存在" };
-    const before = await readTranscript(file);
+    // 发送前扫描一次，取得文件身份与读至的字节偏移；之后轮询只读新增字节。
+    const reader = new TranscriptReader(file);
+    let before: Transcript;
+    try {
+      before = await reader.scan();
+    } catch (error) {
+      throw new AdapterError("unavailable", `无法读取会话记录：${message(error)}`);
+    }
     const state = await runtimeOf(sessionId);
     const refusal = refuse(state);
     if (refusal) return { status: "rejected", reason: refusal };
@@ -120,17 +127,21 @@ export function createClaudeAdapter(
     let exited: Awaited<typeof child> | null = null;
     void child.then((x) => (exited = x));
     while (true) {
-      const ref = await accepted(file, before.cursor, text);
+      const ref = await accepted(reader, before.cursor, text);
       if (ref) return { status: "sent", external_ref: ref };
-      if (exited) return afterExit(exited, await accepted(file, before.cursor, text));
+      if (exited) return afterExit(exited, await accepted(reader, before.cursor, text));
       if (Date.now() >= deadline)
         return { status: "unknown", error: "等待消息写入会话记录超时，结果未知" };
       await sleep(pollIntervalMs);
     }
   }
-  async function accepted(file: string, baseline: SessionCursor | null, text: string) {
+  async function accepted(
+    reader: TranscriptReader,
+    baseline: SessionCursor | null,
+    text: string,
+  ) {
     try {
-      return findPrompt(await readTranscript(file), baseline, text.trim());
+      return findPrompt(await reader.readMore(), baseline, text.trim());
     } catch {
       return null;
     }
@@ -269,7 +280,14 @@ function checkId(sessionId: string) {
     throw new AdapterError("invalid_input", "Claude 会话 ID 格式无效");
 }
 async function exists(file: string) {
-  return (await stat(file).catch(() => null))?.isFile() ?? false;
+  try {
+    return (await stat(file)).isFile();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // 仅对确实不存在返回 false；权限/IO 错误向上抛出，检查器按连续失败处理。
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw new AdapterError("unavailable", `无法访问文件：${message(error)}`);
+  }
 }
 function message(error: unknown) {
   return error instanceof Error ? error.message : String(error);

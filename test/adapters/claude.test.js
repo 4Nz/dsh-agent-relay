@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClaudeAdapter } from "../../lib/adapters/claude/index.js";
@@ -180,4 +180,18 @@ test("listSessions：按修改时间倒序，带标题和运行状态，忽略�
   assert.equal(sessions[0].runtime, "busy");
   assert.equal(sessions[0].held, true);
   assert.deepEqual(await adapter(join(dir, "missing"), r.run).listSessions(), []);
+});
+
+test("会话目录不可读时抛检查失败而非视为不存在；真实缺失仍 closed", async (t) => {
+  const { dir, file } = fixture(t);
+  // 真实缺失：返回 closed。
+  assert.equal((await adapter(dir, runner().run).snapshot(ID)).closed, true);
+  // 目录不可读：readdir 抛 EACCES，snapshot 抛 AdapterError（检查失败），不当作 closed。
+  writeFileSync(file, prompt("任务", 1));
+  chmodSync(dir, 0o000);
+  try {
+    await assert.rejects(adapter(dir, runner().run).snapshot(ID), /无法读取会话目录/);
+  } finally {
+    chmodSync(dir, 0o755);
+  }
 });
