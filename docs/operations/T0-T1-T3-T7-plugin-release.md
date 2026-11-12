@@ -62,6 +62,8 @@ rtk proxy node node_modules/dsh-agent-relay/scripts/install-skills.mjs /绝对�
 4. 安装指定新 tgz，更新 Skill 链接，重启宿主并刷新浏览器；确认原订阅、凭证、定时任务对账以及通知防重状态。
 5. 本包数据位于 home 目录，与 node_modules 分离，升级不重置凭证。多 profile 共用 home 时只有一个实例能持有 Relay 锁，不应同时启动两个 Relay。
 
+本次 Codex 专用会话发送将数据库升级为 `user_version=2`，新增专用会话与 daemon socket 绑定；原消息、通知和订阅保留。仅升级程序而不备份数据，之后不能直接换回只支持第一版数据库的旧包。
+
 插件版本与 `PRAGMA user_version` 独立。迁移在事务内完成，失败拒绝启动；旧插件拒绝更高版本数据库。没有结构变化时可安装旧包回退程序；结构变化后不能仅换回旧包，应停止宿主并配套恢复同一时点的插件数据与相关 DSH 状态。恢复旧快照会丢失备份后的变更，必须人工核对已投递通知及外部请求，不能盲目重放。不要自动降级 schema、清库或重新生成凭证。
 
 ## 停用与卸载

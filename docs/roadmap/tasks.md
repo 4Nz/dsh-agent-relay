@@ -183,7 +183,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | 编号 | 任务 | 第一版能力 |
 | --- | --- | --- |
 | T5.1 | Claude Adapter | 列出会话、`snapshot`、发送消息。会话处理中或开在终端里时拒绝发送 |
-| T5.2 | Codex Adapter | 已实现并注册独立只读 Adapter：列出会话、`snapshot`，发送消息声明为“不支持”；真实专用会话冒烟通过，见 `docs/superpowers/plans/T5.2-codex-adapter-design.md` |
+| T5.2 | Codex Adapter | 列出会话、`snapshot`；新增 Relay 专用 daemon 会话创建、持久绑定和受限发送，其他会话只读。发送后订阅按 `turnId` 跟踪。真实 DSH 宿主专项验证通过，见 `docs/research/T2.7-T5.2-T6-T7-codex-daemon-send-validation.md`；历史只读设计见 `docs/superpowers/plans/T5.2-codex-adapter-design.md` |
 
 每个 Adapter 都要有针对真实会话的冒烟测试，测试会话和业务会话分开。
 
@@ -194,7 +194,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | T6.1 | 订阅看板菜单 | 订阅列表：Agent、类型、外部会话标题、状态和结束原因、最近检查时间和结果、通知是否送达。有效期截止时间。操作按钮：暂停、恢复、停止、立即检查、跳转到对应的 DSH 会话。支持按 Agent、类型、状态筛选。检查失败和投递失败用醒目样式标出 |
 | T6.2 | 新建订阅 | 选 Agent、选外部会话、选接收通知的 DSH 会话（可选），设置有效期（默认 1 小时） |
 | T6.3 | 通知会话分组 | 在 DSH 会话列表里，把由 Relay 新建的通知会话归到一个分组；用户指定的已有会话保留原工作目录与分组，避免改变其后续执行环境。复用 T0.4/T0.5 确认的 workspace 机制。 |
-| T6.4 | 能力提示 | 不支持的操作置灰并说明原因，例如“Codex 暂不支持发送消息” |
+| T6.4 | 能力提示 | 不支持的操作置灰并说明原因，例如“仅 Relay 创建的 Codex 专用后台会话支持发送” |
 | T6.6 | 一键安装通知 Skill | 页面按钮：向 Claude 开新会话执行安装提示词，把 `external-agent-notification` 写入 `~/.claude/skills`；Codex 只读，预留接口并给可复制提示词 |
 
 会话内的对话、回复和后续处理都用 DSH 原生能力，插件不另做聊天界面。
@@ -268,3 +268,11 @@ T7 真实端到端验收仍单独保留，不能以本轮单元测试代替。
 - 补齐 `skills/dsh-agent-relay/SKILL.md`（DSH 侧），外部通知 Skill 保持独立。`rtk npm run skills:install -- /绝对路径/项目` 显式安装到该项目的 `.agents/skills`，拒绝覆盖已有不同来源的 Skill。
 
 实现、验证和剩余边界见 `docs/superpowers/plans/T2.3-T3-T6-non-T7-completion.md`。T7 未在本轮执行。
+
+### T2.7 / T5.2 / T6 / T7 Codex 后台会话发送增量（2026-11-12）
+
+本轮扩大此前 Codex 只读边界：仅 Relay 通过 `relay_create_session` 或页面创建并持久登记到当前 daemon socket 的专用会话支持发送。不会接管任意桌面/CLI 历史会话，不实现排队或 steer，不自动审批或提升权限。绑定记录不是跨实例全局锁，专用会话不能同时交给其他执行实例。
+
+复用 `relay_send` 与消息状态，写入后回执丢失或内部错误保留 `unknown`。`subscribe_after_send` 创建的订阅保存目标 `turnId`，跨重启、同秒及后续轮次仍跟踪该目标。原历史游标保持兼容。数据库只追加第二版迁移 `relay_codex_session`，降级须恢复配套备份。
+
+已通过真实 DSH 宿主工具 → Codex 两轮上下文 → DSH 唯一通知、DSH 重启恢复和只读 `pwd`；具体版本、脚本和剩余项见专项验证记录。本结论不覆盖其余 T7 场景，也不证明桌面原实例转发可用。

@@ -1,5 +1,7 @@
 # Codex 指定会话查阅与消息转发方案
 
+后续进展（2026-11-12）：已实现并验证 Relay 专用 daemon 会话发送、两轮上下文、DSH 重启恢复和唯一通知。桌面原实例及未登记会话仍只读。详见 [T2.7 / T5.2 / T6 / T7 专项验证记录](T2.7-T5.2-T6-T7-codex-daemon-send-validation.md)。以下为 2026-11-11 历史探测，不代表当前全部实现状态。
+
 验证日期：2026-11-11（Asia/Shanghai）。依据：本仓库 README、本机 CLI/daemon、Codex 桌面工具及官方 App Server 文档。本文是方案与验证报告，尚未实现 DSH 插件。
 
 ## 1. 结论
@@ -96,7 +98,7 @@ DSH 和 Codex 不在同一主机时，在 Codex 主机运行轻量桥接服务�
 
 ## 6. 数据保存与权限
 
-使用 README 指定的 `dsh-storage-sqlite`，建议四类记录：
+历史建议现已调整：T0 确认使用 `node:sqlite` 自建数据库，不存在 `dsh-storage-sqlite`。下列记录分类仅作历史设计参考：
 
 - `subscriptions`：目标绑定、DSH 会话、状态、检查周期、调度任务 ID。
 - `observations`：观察时间、来源实例、最近轮次、摘要、错误。
