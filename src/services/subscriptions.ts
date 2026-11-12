@@ -3,7 +3,8 @@ import type { AdapterRegistry } from "../adapters/registry.js";
 import type { Snapshot } from "../adapters/types.js";
 import type { RelayStore } from "../storage/index.js";
 import type { Agent, Subscription, SubscriptionType } from "../storage/types.js";
-import type { Scheduler } from "./scheduler.js";
+import type { Scheduler, ScheduledTask } from "./scheduler.js";
+import { v2Marker, parseV2Marker, hasLegacyMarker } from "./schedule-marker.js";
 
 export interface SubscribeInput {
   id?: string;
@@ -18,6 +19,9 @@ export interface SubscribeInput {
   idle_timeout_seconds?: number;
   max_lifetime_seconds?: number;
   check_interval_seconds?: number;
+  // 服务间内部字段：发送服务传入发送前快照作为基线，避免订阅重新读取已发送后的历史。
+  // 不通过工具/RPC 暴露，仅供发送成功后创建订阅时使用。
+  baseline_snapshot?: Snapshot;
 }
 export interface PushSubscriptionInput {
   id: string;
@@ -45,9 +49,6 @@ export interface SubscriptionServiceOptions {
 }
 
 const DEFAULT_IDLE_SECONDS = 3600;
-// 定时提醒正文中的标记，用于对账时识别本插件建立的定时任务。
-const MARKER = /\[agent-relay:([^\]\s]+)\]/;
-const marker = (id: string) => `[agent-relay:${id}]`;
 
 export function createSubscriptionService({
   store,
@@ -62,7 +63,7 @@ export function createSubscriptionService({
     const label = sub.external_session_title ?? sub.external_session_id;
     return {
       title: `Agent Relay 检查：${label}`.slice(0, 120),
-      prompt: `${marker(sub.id)} 调用 relay_check 工具检查外部会话，参数 subscription_id=${sub.id}。只执行这一次检查，不做其他操作。`,
+      prompt: `${v2Marker(sub.id)} 调用 relay_check 工具检查外部会话，参数 subscription_id=${JSON.stringify(sub.id)}。只执行这一次检查，不做其他操作。`,
     };
   }
   async function schedule(sub: Subscription) {
@@ -132,6 +133,16 @@ async function closeSession(agent: Agent, externalSessionId: string) {
     return closed;
   }
 
+  // 删除任务失败只记录错误并保留任务，供下次对账重试。
+  async function removeTask(task: ScheduledTask, report: ReconcileReport) {
+    try {
+      return await scheduler.delete({ sessionId: task.sessionId, id: task.id });
+    } catch (error) {
+      report.errors.push(`删除定时任务 ${task.id} 失败：${message(error)}`);
+      return false;
+    }
+  }
+
   return {
     // 外部 Agent 直接 push 时，通知请求本身就是任务完成的证据，不能要求
     // Relay 先重新读取外部会话；否则外部任务已结束但历史不可读时会被错误拒绝。
@@ -160,7 +171,10 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       if (input.type === "poll" && !input.dsh_session_id && !input.create_dsh_session)
         return { ok: false, code: "invalid_input", message: "主动订阅必须指定接收通知的 DSH 会话" };
       // 先取一次快照作为基线，避免把订阅前已结束的轮次当成新结果。
-      const base: Snapshot = await adapter.snapshot(input.external_session_id);
+      // 发送后订阅传入了发送前快照，则直接沿用，不再读取已发送后的历史；
+      // cursor=null 是有效的发送前空历史基线，不得回退为发送后的当前位置。
+      const base: Snapshot =
+        input.baseline_snapshot ?? (await adapter.snapshot(input.external_session_id));
       if (base.closed)
         return { ok: false, code: "session_closed", message: "外部会话不存在或已归档" };
       const receiveSession = input.dsh_session_id ?? (input.create_dsh_session ? await input.create_dsh_session() : null);
@@ -259,7 +273,11 @@ async function closeSession(agent: Agent, externalSessionId: string) {
         end_reason: "user_stopped",
         ended_at: time,
       });
-      if (result.ok) await unscheduleQuietly(result.subscription);
+      if (result.ok) {
+        // 停止后不再发起新的通知投递：取消未开始的 pending/待重试 failed 通知。
+        store.notifications.cancelDeliveries(id, time, "订阅已停止，取消投递");
+        await unscheduleQuietly(result.subscription);
+      }
       return result;
     },
     // 通过 Relay 查阅会话内容：顺延该会话所有订阅的有效期；会话已关闭时结束这些订阅。
@@ -275,7 +293,8 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       return subs.touchSession({ agent, external_session_id: externalSessionId, now: now() });
     },
     closeSession,
-    // 启动时对账：为缺少定时任务的未结束订阅补建，删除没有对应订阅的本插件定时任务。
+    // 启动时对账：为缺少定时任务的未结束订阅补建 v2 任务，识别并接管 v2 任务，
+    // 删除孤儿 v2 任务，并清理历史遗留旧版任务（未结束订阅的旧任务已被 v2 接管）。
     async reconcile(): Promise<ReconcileReport> {
       const report: ReconcileReport = { created: 0, deleted: 0, errors: [] };
       const tasks = await scheduler.catalog();
@@ -284,7 +303,7 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       for (const sub of [...unfinished()]) {
         if (!sub.dsh_session_id) continue;
         const existing = sub.schedule_task_id ? live.get(sub.schedule_task_id) : undefined;
-        if (existing && existing.sessionId === sub.dsh_session_id && MARKER.exec(existing.prompt)?.[1] === sub.id) {
+        if (existing && existing.sessionId === sub.dsh_session_id && parseV2Marker(existing.prompt) === sub.id) {
           wanted.add(existing.id);
           continue;
         }
@@ -302,12 +321,16 @@ async function closeSession(agent: Agent, externalSessionId: string) {
         }
       }
       for (const task of tasks) {
-        if (!MARKER.test(task.prompt) || wanted.has(task.id)) continue;
-        try {
-          if (await scheduler.delete({ sessionId: task.sessionId, id: task.id })) report.deleted++;
-        } catch (error) {
-          report.errors.push(`删除定时任务 ${task.id} 失败：${message(error)}`);
+        if (wanted.has(task.id)) continue;
+        if (parseV2Marker(task.prompt) !== null) {
+          // v2 任务但不在期望集合：订阅已结束或失去接收会话，属孤儿任务。
+          if (await removeTask(task, report)) report.deleted++;
+          continue;
         }
+        if (!hasLegacyMarker(task.prompt)) continue;
+        // 历史遗留旧版任务：未结束订阅的旧任务已被 v2 接管（重复），已结束或
+        // 已清理订阅的旧任务不再需要；统一删除。删除失败保留待下次对账重试，幂等。
+        if (await removeTask(task, report)) report.deleted++;
       }
       return report;
     },

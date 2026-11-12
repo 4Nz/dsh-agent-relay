@@ -143,6 +143,20 @@ const app = await runProfile({
 const ctx = app.ctx;
 let modelToolCalls = 0;
 let store;
+// 从定时提醒正文提取 subscription_id：优先解析 v2 base64url 标记，兼容旧版标记。
+function relaySubscriptionId(content) {
+  const text = JSON.stringify(content);
+  const v2 = text.match(/\[agent-relay-v2:([A-Za-z0-9_-]+)\]/);
+  if (v2) {
+    try {
+      return Buffer.from(v2[1], "base64url").toString("utf8");
+    } catch {
+      return null;
+    }
+  }
+  const legacy = text.match(/\[agent-relay:([^\]\s]+)\]/);
+  return legacy?.[1] ?? null;
+}
 class FixtureModel extends LlmAdapter {
   async listModels() {
     return [
@@ -162,11 +176,9 @@ class FixtureModel extends LlmAdapter {
       (message) => message.role === "tool",
     );
     const last = userIndex > toolIndex ? options.messages[userIndex] : null;
-    const match =
-      last?.role === "user"
-        ? JSON.stringify(last.content).match(/\[agent-relay:([^\]\s]+)\]/)
-        : null;
-    if (match) {
+    const subscriptionId =
+      last?.role === "user" ? relaySubscriptionId(last.content) : null;
+    if (subscriptionId) {
       modelToolCalls++;
       const native = options.tools?.some((tool) => tool.name === "relay_check");
       const block = {
@@ -175,10 +187,10 @@ class FixtureModel extends LlmAdapter {
         name: native ? "relay_check" : "run_code",
         arguments: JSON.stringify(
           native
-            ? { subscription_id: match[1] }
+            ? { subscription_id: subscriptionId }
             : {
                 description: "执行 Relay 到期检查",
-                code: `return await tools.relay_check({subscription_id:${JSON.stringify(match[1])}});`,
+                code: `return await tools.relay_check({subscription_id:${JSON.stringify(subscriptionId)}});`,
               },
         ),
       };

@@ -179,7 +179,15 @@ export function createPushServer({
   port?: number;
 }) {
   const server = createServer((request, response) => {
-    void serve(request, response, handler);
+    // serve 内部捕获全部异常；这里的 catch 仅作为最后兜底，避免任何 unhandled rejection。
+    serve(request, response, handler).catch(() => {
+      try {
+        if (!response.destroyed && !response.writableEnded)
+          response.writeHead(500).end("内部错误");
+      } catch {
+        /* 连接已关闭，交给 Node 清理。 */
+      }
+    });
   });
   return {
     server,
@@ -195,34 +203,79 @@ export function createPushServer({
   };
 }
 
+// 固定本地 origin，不依赖用户 Host 构造请求 URL，避免 Host 头伪造影响解析。
+const REQUEST_ORIGIN = "http://127.0.0.1";
+
+function writeResponse(
+  response: ServerResponse,
+  status: number,
+  body: Buffer | string,
+  headers?: Headers,
+) {
+  if (response.destroyed || response.writableEnded) return;
+  const flat: Record<string, string> = {};
+  if (headers) for (const [key, value] of headers.entries()) flat[key.toLowerCase()] = value;
+  if (!("content-type" in flat)) flat["content-type"] = "text/plain; charset=utf-8";
+  response.writeHead(status, flat);
+  response.end(body);
+}
+
+// 拒绝型响应显式关闭连接，避免未读的请求体（尤其 GET/chunked body）在
+// keep-alive 下遗留脏连接，被后续请求复用导致协议错乱。
+const CLOSE = new Headers({ connection: "close" });
+
 async function serve(
   request: IncomingMessage,
   response: ServerResponse,
   handler: (request: Request) => Promise<Response>,
 ) {
-  if (request.url !== "/api/agent-relay/notifications") {
-    response.writeHead(404).end("Not Found");
-    return;
-  }
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const data = Buffer.from(chunk as Buffer);
-    size += data.length;
-    if (size > 1_000_000) {
-      response.writeHead(413).end("请求过大");
+  try {
+    // 读取请求体与构造 WHATWG Request 之前先校验路径和方法，错误分别 404/405。
+    if (request.url !== "/api/agent-relay/notifications") {
+      writeResponse(response, 404, "Not Found", CLOSE);
+      request.resume();
       return;
     }
-    chunks.push(data);
+    if (request.method !== "POST") {
+      writeResponse(response, 405, "方法不支持", CLOSE);
+      request.resume();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      const data = Buffer.from(chunk as Buffer);
+      size += data.length;
+      if (size > 1_000_000) {
+        writeResponse(response, 413, "请求过大", CLOSE);
+        request.destroy();
+        return;
+      }
+      chunks.push(data);
+    }
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(request.headers))
+      if (typeof value === "string") headers.set(key, value);
+    const result = await handler(new Request(`${REQUEST_ORIGIN}${request.url}`, {
+      method: request.method,
+      headers,
+      body: chunks.length ? Buffer.concat(chunks) : undefined,
+    }));
+    writeResponse(
+      response,
+      result.status,
+      Buffer.from(await result.arrayBuffer()),
+      result.headers,
+    );
+  } catch {
+    // handler、凭证读取、请求流中断等异常统一在此处理；未返回响应时给通用 500，
+    // 不向调用者暴露堆栈或凭证内容。已断开的请求只清理资源，不再写响应。
+    if (!response.destroyed && !response.writableEnded) {
+      try {
+        writeResponse(response, 500, "内部错误");
+      } catch {
+        /* 忽略。 */
+      }
+    }
   }
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(request.headers))
-    if (typeof value === "string") headers.set(key, value);
-  const result = await handler(new Request(`http://${request.headers.host ?? "localhost"}${request.url}`, {
-    method: request.method,
-    headers,
-    body: chunks.length ? Buffer.concat(chunks) : undefined,
-  }));
-  response.writeHead(result.status, Object.fromEntries(result.headers.entries()));
-  response.end(Buffer.from(await result.arrayBuffer()));
 }

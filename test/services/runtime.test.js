@@ -13,6 +13,11 @@ test("启动先恢复再对账；卸载等待在途任务后关闭存储", async
       close() {
         events.push("close");
       },
+      notifications: {
+        expirePushSubscriptions() {
+          events.push("expire");
+        },
+      },
     },
     subscriptions: {
       async reconcile() {
@@ -33,7 +38,7 @@ test("启动先恢复再对账；卸载等待在途任务后关闭存储", async
     intervalMs: 100000,
   });
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(events, ["recover", "reconcile", "drain"]);
+  assert.deepEqual(events, ["recover", "expire", "reconcile", "drain"]);
   const stopping = runtime.stop();
   assert.equal(events.includes("close"), false);
   release();
@@ -45,7 +50,11 @@ test("首次对账失败后仍继续工作，后续驱动重试对账", async ()
   let drains = 0;
   const errors = [];
   const runtime = startRelayRuntime({
-    store: { recoverInterrupted() {}, close() {} },
+    store: {
+      recoverInterrupted() {},
+      close() {},
+      notifications: { expirePushSubscriptions() {} },
+    },
     subscriptions: {
       async reconcile() {
         if (++reconciles === 1) throw Error("暂不可用");
@@ -67,4 +76,35 @@ test("首次对账失败后仍继续工作，后续驱动重试对账", async ()
   assert.ok(reconciles >= 2);
   assert.ok(drains >= 1);
   assert.equal(errors.length, 1);
+});
+
+test("每轮对账前执行到期扫描", async () => {
+  let expires = 0;
+  let reconciles = 0;
+  const runtime = startRelayRuntime({
+    store: {
+      recoverInterrupted() {},
+      close() {},
+      notifications: {
+        expirePushSubscriptions() {
+          expires++;
+        },
+      },
+    },
+    subscriptions: {
+      async reconcile() {
+        reconciles++;
+        return { errors: [] };
+      },
+    },
+    notifications: { async drain() {} },
+    onError: () => {},
+    intervalMs: 5,
+  });
+  await runtime.ready;
+  for (const end = Date.now() + 1000; reconciles < 2 && Date.now() < end;)
+    await new Promise((r) => setTimeout(r, 5));
+  await runtime.stop();
+  assert.ok(expires >= 2);
+  assert.ok(reconciles >= 2);
 });

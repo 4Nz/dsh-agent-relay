@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { openRelayStore } from "../../lib/storage/index.js";
 import { createAdapterRegistry } from "../../lib/adapters/registry.js";
 import { createSubscriptionService } from "../../lib/services/subscriptions.js";
+import { v2Marker } from "../../lib/services/schedule-marker.js";
 import { startHistoryCleanup } from "../../lib/services/cleanup.js";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -114,7 +115,8 @@ test("创建 poll 订阅：以快照为基线，写入有效期并建定时检�
   const task = sched.tasks.get(sub.schedule_task_id);
   assert.equal(task.sessionId, "dsh-1");
   assert.equal(task.everySeconds, 3600);
-  assert.match(task.prompt, new RegExp(`\\[agent-relay:${sub.id}\\]`));
+  assert.ok(task.prompt.includes(v2Marker(sub.id)));
+  assert.ok(task.prompt.includes(JSON.stringify(sub.id)));
   assert.match(task.prompt, /relay_check/);
   assert.equal(store.subscriptions.get(sub.id).status, "active");
 });
@@ -284,4 +286,112 @@ test("自动接收会话只在外部会话有效时创建", async (t) => {
     create_dsh_session: async () => { created++; return "new"; } });
   assert.equal(result.code, "session_closed");
   assert.equal(created, 0);
+});
+
+test("发送后订阅传入 baseline_snapshot 时不再读取快照，cursor=null 空历史基线保留", async (t) => {
+  const { store, service, claude } = fixture(t);
+  const result = await service.subscribe({
+    ...poll,
+    baseline_snapshot: snapshot({ cursor: null, title: "发送前", cwd: "/发送前" }),
+  });
+  assert.equal(result.ok, true);
+  // 不重新读取外部会话快照。
+  assert.equal(claude.state.calls.length, 0);
+  // cursor=null 是有效的发送前空历史基线，不得回退为发送后的当前位置。
+  assert.equal(result.subscription.cursor, null);
+  assert.equal(result.subscription.external_session_title, "发送前");
+  assert.equal(result.subscription.external_cwd, "/发送前");
+  assert.equal(store.subscriptions.get(result.subscription.id).cursor, null);
+});
+
+test("baseline_snapshot 已关闭时返回 session_closed 且不读取快照", async (t) => {
+  const { service, claude } = fixture(t);
+  const result = await service.subscribe({
+    ...poll,
+    baseline_snapshot: snapshot({ closed: true }),
+  });
+  assert.equal(result.code, "session_closed");
+  assert.equal(claude.state.calls.length, 0);
+});
+
+test("含空格、方括号、Unicode 的订阅 ID 连续对账只保留一个 v2 任务", async (t) => {
+  const { store, sched, service } = fixture(t);
+  const specialId = "push:req with space ] [ 中文";
+  store.subscriptions.create({
+    id: specialId,
+    owner: "local",
+    type: "poll",
+    agent: "claude",
+    external_session_id: SESSION,
+    dsh_session_id: "dsh-1",
+    check_interval_seconds: 60,
+    created_at: 1000,
+    updated_at: 1000,
+  });
+  for (let i = 0; i < 3; i++) {
+    const report = await service.reconcile();
+    assert.deepEqual(report.errors, []);
+    const mine = [...sched.tasks.values()].filter((task) =>
+      task.prompt.includes(v2Marker(specialId)),
+    );
+    assert.equal(mine.length, 1, `第 ${i + 1} 次对账后应只保留一个任务`);
+  }
+  assert.equal(sched.tasks.size, 1);
+  assert.ok(store.subscriptions.get(specialId).schedule_task_id);
+});
+
+test("旧版任务对账升级为 v2 并清理重复，其他插件提醒保留", async (t) => {
+  const { store, sched, service } = fixture(t);
+  const sub = (await service.subscribe(poll)).subscription;
+  const legacyText = `[agent-relay:${sub.id}] 调用 relay_check 工具检查外部会话，参数 subscription_id=${sub.id}。只执行这一次检查，不做其他操作。`;
+  // 模拟历史遗留：清空现有 v2 任务，塞入三个重复旧版任务和一个其他插件任务。
+  sched.tasks.clear();
+  store.subscriptions.update({ id: sub.id, expected_status: "active", patch: { schedule_task_id: null } });
+  for (const id of ["old1", "old2", "old3"])
+    sched.tasks.set(id, { id, sessionId: "dsh-1", prompt: legacyText, status: "active" });
+  sched.tasks.set("other", { id: "other", sessionId: "dsh-1", prompt: "别的提醒", status: "active" });
+  const report = await service.reconcile();
+  assert.equal(report.created, 1);
+  assert.equal(report.deleted, 3);
+  assert.deepEqual(report.errors, []);
+  // 只剩一个 v2 任务和其他插件任务。
+  assert.equal(sched.tasks.size, 2);
+  assert.ok(sched.tasks.has("other"));
+  for (const id of ["old1", "old2", "old3"]) assert.ok(!sched.tasks.has(id));
+  const v2 = [...sched.tasks.values()].find((task) => task.id !== "other");
+  assert.ok(v2.prompt.includes(v2Marker(sub.id)));
+  // 幂等：再次对账无变化。
+  const again = await service.reconcile();
+  assert.deepEqual({ created: again.created, deleted: again.deleted }, { created: 0, deleted: 0 });
+});
+
+test("已结束订阅的旧版任务在对账时被清理，不补建任务", async (t) => {
+  const { store, sched, service } = fixture(t);
+  const sub = (await service.subscribe(poll)).subscription;
+  await service.stop(sub.id);
+  const legacyText = `[agent-relay:${sub.id}] 调用 relay_check 工具检查外部会话，参数 subscription_id=${sub.id}。只执行这一次检查，不做其他操作。`;
+  sched.tasks.set("legacy-ended", { id: "legacy-ended", sessionId: "dsh-1", prompt: legacyText, status: "active" });
+  const report = await service.reconcile();
+  assert.equal(report.deleted, 1);
+  assert.equal(report.created, 0);
+  assert.equal(sched.tasks.size, 0);
+  assert.equal(store.subscriptions.get(sub.id).status, "ended");
+});
+
+test("停止订阅取消未开始的投递通知，不改写任务结果", async (t) => {
+  const { store, service } = fixture(t);
+  const push = service.createPush({ id: "push:req-stop", agent: "claude", external_session_id: "ext" });
+  store.notifications.record({
+    notification: { id: "stop-n", subscription_id: push.subscription.id, source: "push", result: "completed", summary: "完成" },
+    now: 1000,
+  });
+  assert.equal(store.notifications.getBySubscription(push.subscription.id).delivery_status, "pending");
+  const stopped = await service.stop(push.subscription.id);
+  assert.equal(stopped.ok, true);
+  const notif = store.notifications.getBySubscription(push.subscription.id);
+  assert.equal(notif.delivery_status, "failed");
+  assert.equal(notif.delivery_error, "订阅已停止，取消投递");
+  assert.equal(notif.next_attempt_at, null);
+  // 任务结果仍为 completed，不因停止改写。
+  assert.equal(notif.result, "completed");
 });

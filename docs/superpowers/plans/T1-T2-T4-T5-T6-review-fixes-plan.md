@@ -2,7 +2,7 @@
 
 日期：2026-11-12（Asia/Shanghai）。评审基线：main `92f06a3`。
 
-状态：方案待审阅，尚未开始产品代码修改。执行时使用 superpowers:executing-plans，逐项先写失败测试，再修复和验证。
+状态：已实施（A→F 六组全部完成，对应 review #1～#11）。实现分支 `codex/review-fix-plan`，提交 22dea0d～9259a07，`rtk npm run typecheck`、`rtk npm test`（129 例）、`rtk npm pack --dry-run`、`rtk git diff --check` 全部通过。T7 真实宿主及收费外部 Agent 验收仍未执行，本轮修复不替代 T7。
 
 ## 目标与边界
 
@@ -178,12 +178,12 @@
 
 建议按 A → B → C → D → E → F 执行：先封住进程崩溃，再修核心通知语义，最后优化 I/O 与前端。每项均先验证回归测试失败，再实现并验证通过。
 
-- [ ] 开始实现前，确认当前工作区无无关改动；在独立修复分支进行，主目录保持 main。
-- [ ] `rtk npm ci --cache ./.npm-cache`；记录基线检查结果。
-- [ ] 完成六组修复及其回归测试。
-- [ ] `rtk npm run typecheck`、`rtk npm test` 全部通过。
-- [ ] `rtk npm pack --dry-run --json` 验证新模块和既有 Skill 正确打包。
-- [ ] `rtk git diff --check`，自审状态转换、旧任务兼容、跨文件接口及测试是否真覆盖原复现。
-- [ ] 更新 tasks.md、AGENTS.md、对应实施文档及停止提示；将本次修复映射到 11 项 review，记录实际验证结果与未执行的 T7。
+- [x] 开始实现前，确认当前工作区无无关改动；在独立修复分支（`codex/review-fix-plan`）进行，主目录保持 main。
+- [x] 依赖就绪（`node_modules` 已存在，未重跑 ci）；记录基线检查结果（typecheck 通过，95 例测试全绿）。
+- [x] 完成六组修复及其回归测试（新增 34 例测试，全量 129 例通过）。
+- [x] `rtk npm run typecheck`、`rtk npm test` 全部通过。
+- [x] `rtk npm pack --dry-run --json` 验证新模块（transcript-reader、dsh-sessions、schedule-marker）和既有 Skill 正确打包。
+- [x] `rtk git diff --check`，自审状态转换、旧任务兼容、跨文件接口及测试覆盖原复现。
+- [x] 更新本方案状态与验收勾选；将修复映射到 11 项 review（A=#1/#11、B=#2、C=#3、D=#4/#5、E=#6/#7/#9、F=#8/#10），T7 仍未执行。
 
 本方案只定义实施与自动化验证标准，不将它们当作 T7 已通过。

@@ -25,20 +25,26 @@ export function createNotificationService({
   let running: Promise<void> | undefined;
   async function run() {
     for (const notification of store.notifications.listUnknown()) {
-      const session = store.subscriptions.get(
-        notification.subscription_id,
-      )?.dsh_session_id;
+      const sub = store.subscriptions.get(notification.subscription_id);
+      const session = sub?.dsh_session_id;
       if (!session) continue;
       try {
         const confirmation = await transport.confirm(session, notification);
-        if (confirmation !== "unknown")
+        if (confirmation !== "unknown") {
+          // 确认未送达时，已停止/过期订阅不得重新进入重试队列，保持不再调度。
+          const stoppedOrExpired =
+            sub?.end_reason === "user_stopped" ||
+            (sub?.type === "push" && (sub?.hard_expires_at ?? 0) <= now());
           store.notifications.reconcileUnknown({
             id: notification.id,
             confirmation,
             now: now(),
             next_attempt_at:
-              confirmation === "not_delivered" ? now() + 60000 : null,
+              confirmation === "not_delivered" && !stoppedOrExpired
+                ? now() + 60000
+                : null,
           });
+        }
       } catch {
         /* 无法核对时保持未知。 */
       }

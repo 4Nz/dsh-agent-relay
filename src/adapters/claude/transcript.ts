@@ -2,7 +2,7 @@ import { AdapterError } from "../types.js";
 import type { SessionCursor, TurnResult } from "../types.js";
 
 // 会话 JSONL 不是公开接口，只读取下列字段，其余记录类型忽略。
-interface RawRecord {
+export interface RawRecord {
   type?: string;
   uuid?: string;
   timestamp?: string;
@@ -13,7 +13,7 @@ interface RawRecord {
   aiTitle?: string;
   message?: { content?: unknown; stop_reason?: string | null };
 }
-interface Entry {
+export interface Entry {
   record: RawRecord;
   uuid: string;
   time: number;
@@ -124,7 +124,7 @@ function isPrompt(record: RawRecord) {
     (Array.isArray(content) && content.some((b) => b?.type === "text"))
   );
 }
-function textOf(content: unknown): string | null {
+export function textOf(content: unknown): string | null {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return null;
   const text = content

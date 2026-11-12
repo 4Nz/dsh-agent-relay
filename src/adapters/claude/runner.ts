@@ -19,6 +19,8 @@ export type ClaudeRunner = (
 ) => Promise<RunResult>;
 
 const OUTPUT_LIMIT = 4 * 1024 * 1024;
+const KILL_GRACE_MS = 1000;
+const SETTLE_GRACE_MS = 1000;
 
 // 不经过 shell，参数原样作为 argv 传入。
 export function createRunner(bin = "claude"): ClaudeRunner {
@@ -31,13 +33,42 @@ export function createRunner(bin = "claude"): ClaudeRunner {
       let stdout = "",
         stderr = "",
         timedOut = false;
-      const timer =
-        timeoutMs === undefined
-          ? null
-          : setTimeout(() => {
-              timedOut = true;
-              child.kill("SIGTERM");
-            }, timeoutMs);
+      let settled = false;
+      const timers: ReturnType<typeof setTimeout>[] = [];
+      const clearTimers = () => {
+        for (const t of timers) clearTimeout(t);
+        timers.length = 0;
+      };
+      // 只结算一次：close 与强制收尾竞争时以先到为准。
+      const settle = (result: RunResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        resolve(result);
+      };
+      if (timeoutMs !== undefined) {
+        // 先 TERM，1 秒宽限后 KILL 自己启动的 child；KILL 后最多再等 1 秒收尾。
+        timers.push(
+          setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGTERM");
+            timers.push(
+              setTimeout(() => {
+                child.kill("SIGKILL");
+                timers.push(
+                  setTimeout(() => {
+                    // 不依赖继承管道关闭：关闭自己持有的 stdio 后强制结算。
+                    child.stdout?.destroy();
+                    child.stderr?.destroy();
+                    child.stdin?.destroy();
+                    settle({ code: null, stdout, stderr, timedOut: true });
+                  }, SETTLE_GRACE_MS),
+                );
+              }, KILL_GRACE_MS),
+            );
+          }, timeoutMs),
+        );
+      }
       child.stdout!.setEncoding("utf8").on("data", (chunk: string) => {
         if (stdout.length < OUTPUT_LIMIT) stdout += chunk;
       });
@@ -45,12 +76,13 @@ export function createRunner(bin = "claude"): ClaudeRunner {
         if (stderr.length < OUTPUT_LIMIT) stderr += chunk;
       });
       child.once("error", (error) => {
-        if (timer) clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        clearTimers();
         reject(error);
       });
       child.once("close", (code) => {
-        if (timer) clearTimeout(timer);
-        resolve({ code, stdout, stderr, timedOut });
+        settle({ code, stdout, stderr, timedOut });
       });
       if (input !== undefined) child.stdin!.end(input);
     });

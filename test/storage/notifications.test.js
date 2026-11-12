@@ -168,3 +168,82 @@ test("listRecent 按时间游标升序返回 after 之后的通知", (t) => {
   assert.equal(n.listRecent({ after: 0, limit: 1 }).length, 1);
   assert.throws(() => n.listRecent({ after: -1 }));
 });
+
+test("到期 push 批量扫描标记 ended/expired，保留原通知与防重标记且幂等", (t) => {
+  const { db } = fixture(t);
+  const s = createSubscriptions(db),
+    n = createNotifications(db);
+  s.create(subscription("s", "push"));
+  n.record({ notification: notice("push"), now: 200 });
+  const hard = s.get("s").hard_expires_at;
+  assert.equal(n.expirePushSubscriptions({ now: hard }), 1);
+  const sub = s.get("s");
+  assert.equal(sub.status, "ended");
+  assert.equal(sub.end_reason, "expired");
+  assert.equal(sub.ended_at, hard);
+  // 原 result/summary/防重标记保留，无第二条通知。
+  assert.equal(n.getBySubscription("s").result, "completed");
+  assert.equal(
+    db.prepare("SELECT count(*) c FROM relay_notification WHERE subscription_id='s'").get().c,
+    1,
+  );
+  // 幂等：重复扫描不再转换。
+  assert.equal(n.expirePushSubscriptions({ now: hard }), 0);
+});
+
+test("到期且无通知的 push 登记一条 expired 通知作为可查结果", (t) => {
+  const { db } = fixture(t);
+  const s = createSubscriptions(db),
+    n = createNotifications(db);
+  s.create(subscription("s", "push"));
+  const hard = s.get("s").hard_expires_at;
+  assert.equal(n.expirePush("s", hard), 1);
+  const sub = s.get("s");
+  assert.equal(sub.status, "ended");
+  assert.equal(sub.end_reason, "expired");
+  assert.equal(sub.notification_recorded_at, hard);
+  const notif = n.getBySubscription("s");
+  assert.equal(notif.result, "expired");
+  assert.match(notif.summary, /已达到最长订阅时间/);
+});
+
+test("claim 拒绝已停止或已到期 push，poll 正常结束仍可投递", (t) => {
+  const { db } = fixture(t);
+  const s = createSubscriptions(db),
+    n = createNotifications(db);
+  // user_stopped 的 push 不允许投递。
+  s.create(subscription("stopped", "push"));
+  n.record({ notification: notice("push", "sn", "stopped"), now: 200 });
+  s.update({
+    id: "stopped",
+    expected_status: "active",
+    patch: { status: "ended", end_reason: "user_stopped", ended_at: 201 },
+  });
+  assert.equal(n.claim({ id: "sn", now: 202 }), false);
+  // 已到期 push（仍 active 但 hard_expires_at 已到）不允许投递。
+  s.create(subscription("exp", "push"));
+  n.record({ notification: notice("push", "en", "exp"), now: 200 });
+  const hard = s.get("exp").hard_expires_at;
+  assert.equal(n.claim({ id: "en", now: hard }), false);
+  // poll 正常结束（completed）仍允许投递。
+  s.create(subscription("poll", "poll"));
+  n.record({ notification: notice("poll", "pn", "poll"), now: 200 });
+  assert.equal(s.get("poll").status, "ended");
+  assert.equal(n.claim({ id: "pn", now: 202 }), true);
+});
+
+test("cancelDeliveries 取消未开始的 pending 通知并停止调度", (t) => {
+  const { db } = fixture(t);
+  const s = createSubscriptions(db),
+    n = createNotifications(db);
+  s.create(subscription("s", "push"));
+  n.record({ notification: notice("push"), now: 200 });
+  assert.equal(n.getBySubscription("s").delivery_status, "pending");
+  assert.equal(n.cancelDeliveries("s", 300, "订阅已停止，取消投递"), 1);
+  const notif = n.getBySubscription("s");
+  assert.equal(notif.delivery_status, "failed");
+  assert.equal(notif.delivery_error, "订阅已停止，取消投递");
+  assert.equal(notif.next_attempt_at, null);
+  assert.equal(n.listDue({ now: 999 }).length, 0);
+  assert.equal(n.claim({ id: "n", now: 999 }), false);
+});
