@@ -405,10 +405,16 @@ export function createRelayService({
         }
         return { ok: true, value };
       } catch (error) {
+        const code =
+          error instanceof TypeError
+            ? "invalid_input"
+            : isConflict(error)
+              ? "conflict"
+              : "unavailable";
         return {
           ok: false,
           error: {
-            code: error instanceof TypeError ? "invalid_input" : "unavailable",
+            code,
             message:
               error instanceof Error
                 ? error.message.slice(0, 1000)
@@ -423,4 +429,13 @@ export type RelayService = ReturnType<typeof createRelayService>;
 
 function messageOf(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+// 携带 code="conflict" 的错误（如凭证已存在）映射为 conflict，而不是笼统的 unavailable。
+function isConflict(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code: unknown }).code === "conflict"
+  );
 }

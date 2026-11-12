@@ -967,7 +967,12 @@ export function CredentialSettings({ rpc }: { rpc: Rpc }) {
   async function generate(reset: boolean) {
     setBusy(true); setError(""); setToken("");
     try { const value = await call(reset ? "credential_reset" : "credential_generate"); setCredential(value); setToken(value.token); }
-    catch (e) { setError((e as Error).message); }
+    catch (e) {
+      setError((e as Error).message);
+      // 出现冲突（他处已生成凭证）时重新读取配置状态，不展示其他页面生成的明文。
+      try { setCredential(await call("credential_get")); }
+      catch { /* 刷新失败时保留错误提示。 */ }
+    }
     finally { setBusy(false); }
   }
   return h("section", { className: "ar" }, h("style", null, css),

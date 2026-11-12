@@ -14,6 +14,15 @@ export interface CredentialService {
   verify(token: string): boolean;
 }
 
+// 已存在凭证时再次 generate 的专用错误；只有 reset 能替换已有凭证。
+export class CredentialConflictError extends Error {
+  readonly code = "conflict" as const;
+  constructor() {
+    super("通知凭证已存在，如需更换请使用重置");
+    this.name = "CredentialConflictError";
+  }
+}
+
 export function createCredentialService({
   dataDir,
   now = Date.now,
@@ -71,7 +80,10 @@ export function createCredentialService({
         ? { configured: true, digest: value.digest, created_at: value.created_at }
         : { configured: false, digest: null, created_at: null };
     },
-    generate: create,
+    generate() {
+      if (load()) throw new CredentialConflictError();
+      return create();
+    },
     reset: create,
     verify(value) {
       if (typeof value !== "string" || !value) return false;
