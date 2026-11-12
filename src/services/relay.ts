@@ -71,6 +71,7 @@ export function createRelayService({
   notifications,
   credentials,
   listDshSessions,
+  hasDshSession,
   createDshSession,
 }: {
   store: RelayStore;
@@ -80,6 +81,8 @@ export function createRelayService({
   notifications: NotificationService;
   credentials?: CredentialService;
   listDshSessions: () => Promise<DshSessionOption[]>;
+  // 仅用于存在性验证，不读取标题/正文；失败向上抛 unavailable，不当作不存在。
+  hasDshSession?: (id: string) => Promise<boolean>;
   createDshSession?: () => Promise<string>;
 }) {
   return {
@@ -143,7 +146,7 @@ export function createRelayService({
                 ? null
                 : text(args.dsh_session_id, "dsh_session_id"));
             if (session !== null) session = text(session, "dsh_session_id");
-            if (session && !(await listDshSessions()).some((s) => s.id === session))
+            if (session && hasDshSession && !(await hasDshSession(session)))
               throw new TypeError("接收通知的 DSH 会话不存在");
             const maxFailures = args.max_consecutive_failures === undefined ? undefined
               : integer(args.max_consecutive_failures, "max_consecutive_failures", 1, 100);
@@ -214,7 +217,7 @@ export function createRelayService({
                 args.dsh_session_id ?? currentSession,
                 "dsh_session_id",
               );
-              if (!(await listDshSessions()).some((s) => s.id === receiveSession))
+              if (hasDshSession && !(await hasDshSession(receiveSession)))
                 throw new TypeError("接收通知的 DSH 会话不存在");
             }
 

@@ -18,6 +18,7 @@ import {
   type DshDeliveryContext,
 } from "./services/delivery.js";
 import { createRelayService, type RelayService } from "./services/relay.js";
+import { createDshSessions } from "./services/dsh-sessions.js";
 import { acquireRuntimeLock } from "./services/lock.js";
 import { startRelayRuntime } from "./services/runtime.js";
 import { registerRelayApi, type RelayConnection } from "./api.js";
@@ -35,7 +36,15 @@ interface RelayHost extends DshDeliveryContext {
   workspaceRegistry: { create(path: string, title?: string): Promise<unknown> };
   sessionQuery: DshDeliveryContext["sessionQuery"] & {
     listSessions(): Promise<{ header: { id: string } }[]>;
-    readTitle(id: string): Promise<{ title: string } | undefined>;
+    readTitleSnapshots(
+      ids: string[],
+    ): Promise<
+      {
+        sessionId: string;
+        status: "fulfilled";
+        value: { session: { id: string }; title?: { title: string } };
+      }[]
+    >;
   };
 }
 export const inject = [
@@ -84,6 +93,7 @@ export function apply(ctx: Context): void {
     await host.sessions.create(id, { meta: { cwd: relayDir } });
     return id;
   };
+  const dshSessions = createDshSessions(host.sessionQuery);
   const service = createRelayService({
     store,
     adapters,
@@ -92,20 +102,8 @@ export function apply(ctx: Context): void {
     notifications,
     credentials,
     createDshSession: createReceiveSession,
-    listDshSessions: async () => {
-      const sessions = await host.sessionQuery.listSessions();
-      return Promise.all(
-        sessions.map(async (record) => ({
-          id: record.header.id,
-          title:
-            (
-              await host.sessionQuery
-                .readTitle(record.header.id)
-                .catch(() => undefined)
-            )?.title ?? record.header.id,
-        })),
-      );
-    },
+    listDshSessions: () => dshSessions.list(),
+    hasDshSession: (id) => dshSessions.has(id),
   });
   let stopping = false;
   const operations = new Set<Promise<unknown>>();

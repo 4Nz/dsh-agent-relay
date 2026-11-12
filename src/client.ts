@@ -203,9 +203,14 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const [message, setMessage] = useState("");
   const revision = useRef(0);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  // 查阅代次：关闭/切换/卸载时递增，过期响应不得更新界面。
+  const inspectGen = useRef(0);
   const creating = drawer === "create";
   const current = items.find((s) => s.id === selected);
-  const close = () => setDrawer("");
+  const close = () => {
+    inspectGen.current++;
+    setDrawer("");
+  };
   async function call(endpoint: string, payload: unknown = {}) {
     const response = await rpc.call("/api", `agent-relay/${endpoint}`, payload);
     if (!response.ok) throw Error(response.error?.message ?? "操作失败");
@@ -237,6 +242,10 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       revision.current++;
     };
   }, [filter, cursor, refreshVersion]);
+  useEffect(() => () => {
+    // 卸载时使在途查阅响应失效。
+    inspectGen.current++;
+  }, []);
   useEffect(() => {
     if (!creating) return;
     let live = true;
@@ -270,13 +279,18 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const capability = (agent: string, key: string) =>
     capabilities.find((a) => a.agent === agent)?.capabilities?.[key] === true;
   async function inspect(sub: any) {
+    const gen = ++inspectGen.current;
+    const target = { agent: sub.agent, external_session_id: sub.external_session_id };
     setBusy(true); setError(""); setSnapshot(null);
     try {
-      const value = await call("inspect", { agent: sub.agent, external_session_id: sub.external_session_id });
-      setSnapshot(value);
-      setRefreshVersion((v) => v + 1);
-    } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+      const value = await call("inspect", { agent: target.agent, external_session_id: target.external_session_id });
+      // 过期响应（已关闭/切换/卸载）不更新快照、busy、error 或触发刷新。
+      if (gen === inspectGen.current) {
+        setSnapshot({ agent: target.agent, external_session_id: target.external_session_id, value });
+        setRefreshVersion((v) => v + 1);
+      }
+    } catch (e) { if (gen === inspectGen.current) setError((e as Error).message); }
+    finally { if (gen === inspectGen.current) setBusy(false); }
   }
   async function saveConfig(sub: any) {
     setBusy(true); setError("");
@@ -461,6 +475,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           {
             className: "link title",
             onClick: () => {
+              inspectGen.current++;
               setSelected(sub.id);
               setSnapshot(null);
               setDrawer("detail");
@@ -665,10 +680,13 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           setMinutes(String(sub.idle_timeout_seconds / 60)); setFailures(String(sub.max_consecutive_failures));
           setIntervalValue(String((sub.check_interval_seconds ?? 3600) / 60)); setDrawer("edit");
         } }, "修改配置")),
-      snapshot && h("div", { className: "notice" },
-        h("p", null, snapshot.closed ? "外部会话已关闭" : `运行状态：${snapshot.runtime ?? "unknown"}`),
-        snapshot.runtime_error && h("p", null, snapshot.runtime_error),
-        h("p", { style: { whiteSpace: "pre-wrap" } }, snapshot.last_reply ?? "暂无回复节选")),
+      snapshot &&
+        snapshot.agent === sub.agent &&
+        snapshot.external_session_id === sub.external_session_id &&
+        h("div", { className: "notice" },
+          h("p", null, snapshot.value.closed ? "外部会话已关闭" : `运行状态：${snapshot.value.runtime ?? "unknown"}`),
+          snapshot.value.runtime_error && h("p", null, snapshot.value.runtime_error),
+          h("p", { style: { whiteSpace: "pre-wrap" } }, snapshot.value.last_reply ?? "暂无回复节选")),
       error && h("p", { role: "alert", className: "error" }, error),
       sub.last_check_error &&
         h("p", { className: "error" }, `检查失败：${sub.last_check_error}`),
