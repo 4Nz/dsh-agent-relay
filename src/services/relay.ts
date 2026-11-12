@@ -9,6 +9,7 @@ import type {
 import type { SubscriptionService } from "./subscriptions.js";
 import type { CheckService } from "./checks.js";
 import type { NotificationService } from "./notifications.js";
+import type { CredentialService } from "./credentials.js";
 export interface DshSessionOption {
   id: string;
   title: string;
@@ -23,6 +24,10 @@ export const endpoints = [
   "subscribe",
   "send",
   "messages",
+  "update",
+  "credential_get",
+  "credential_generate",
+  "credential_reset",
   "list",
   "get",
   "pause",
@@ -62,6 +67,7 @@ export function createRelayService({
   subscriptions,
   checks,
   notifications,
+  credentials,
   listDshSessions,
 }: {
   store: RelayStore;
@@ -69,6 +75,7 @@ export function createRelayService({
   subscriptions: SubscriptionService;
   checks: CheckService;
   notifications: NotificationService;
+  credentials?: CredentialService;
   listDshSessions: () => Promise<DshSessionOption[]>;
 }) {
   return {
@@ -81,6 +88,18 @@ export function createRelayService({
         const args = object(payload);
         let value: unknown;
         switch (endpoint) {
+          case "credential_get":
+            if (!credentials) throw new Error("凭证服务未就绪");
+            value = credentials.get();
+            break;
+          case "credential_generate":
+            if (!credentials) throw new Error("凭证服务未就绪");
+            value = credentials.generate();
+            break;
+          case "credential_reset":
+            if (!credentials) throw new Error("凭证服务未就绪");
+            value = credentials.reset();
+            break;
           case "agents":
             value = adapters.list();
             break;
@@ -100,18 +119,20 @@ export function createRelayService({
             value = await listDshSessions();
             break;
           case "subscribe": {
-            if (args.type !== undefined && args.type !== "poll")
-              throw new TypeError("M2 仅开放 poll 订阅");
+            const type = args.type === undefined ? "poll" : args.type;
+            if (type !== "poll" && type !== "push")
+              throw new TypeError("订阅类型无效");
             const selected = agent(args.agent),
               external = text(args.external_session_id, "external_session_id");
-            const session = text(
-              args.dsh_session_id ?? currentSession,
-              "dsh_session_id",
-            );
-            if (!(await listDshSessions()).some((s) => s.id === session))
+            const session = type === "poll"
+              ? text(args.dsh_session_id ?? currentSession, "dsh_session_id")
+              : (args.dsh_session_id === undefined || args.dsh_session_id === null
+                ? null
+                : text(args.dsh_session_id, "dsh_session_id"));
+            if (session && !(await listDshSessions()).some((s) => s.id === session))
               throw new TypeError("接收通知的 DSH 会话不存在");
             const result = await subscriptions.subscribe({
-              type: "poll",
+              type,
               agent: selected,
               external_session_id: external,
               dsh_session_id: session,
@@ -125,7 +146,7 @@ export function createRelayService({
                     ),
                   }
                 : {}),
-              ...(args.check_interval_seconds !== undefined
+              ...(type === "poll" && args.check_interval_seconds !== undefined
                 ? {
                     check_interval_seconds: integer(
                       args.check_interval_seconds,
@@ -255,6 +276,24 @@ export function createRelayService({
             if (args.subscription_id !== undefined)
               options.subscription_id = text(args.subscription_id, "subscription_id");
             value = store.messages.list(options);
+            break;
+          }
+          case "update": {
+            const id = text(args.subscription_id, "subscription_id");
+            const result = await subscriptions.update(id, {
+              ...(args.idle_timeout_seconds !== undefined
+                ? { idle_timeout_seconds: integer(args.idle_timeout_seconds, "idle_timeout_seconds", 60, 86400) }
+                : {}),
+              ...(args.check_interval_seconds !== undefined
+                ? { check_interval_seconds: integer(args.check_interval_seconds, "check_interval_seconds", 60, 86400) }
+                : {}),
+              ...(args.expires_at !== undefined
+                ? { expires_at: integer(args.expires_at, "expires_at", 0, Number.MAX_SAFE_INTEGER) }
+                : {}),
+            });
+            if (!result.ok)
+              return { ok: false, error: { code: result.code, message: result.message } };
+            value = result.subscription;
             break;
           }
           case "list": {

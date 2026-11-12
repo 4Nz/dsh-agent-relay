@@ -26,6 +26,7 @@ logs/
 
 # 常见依赖、构建产物与覆盖率报告
 node_modules/
+node_modules
 .npm-cache/
 dist/
 build/

@@ -6,6 +6,7 @@ import type { Agent, Subscription, SubscriptionType } from "../storage/types.js"
 import type { Scheduler } from "./scheduler.js";
 
 export interface SubscribeInput {
+  id?: string;
   type: SubscriptionType;
   agent: Agent;
   external_session_id: string;
@@ -15,6 +16,12 @@ export interface SubscribeInput {
   idle_timeout_seconds?: number;
   max_lifetime_seconds?: number;
   check_interval_seconds?: number;
+}
+export interface PushSubscriptionInput {
+  id: string;
+  agent: Agent;
+  external_session_id: string;
+  owner?: string;
 }
 export type SubscribeResult =
   | { ok: true; subscription: Subscription }
@@ -124,6 +131,26 @@ async function closeSession(agent: Agent, externalSessionId: string) {
   }
 
   return {
+    // 外部 Agent 直接 push 时，通知请求本身就是任务完成的证据，不能要求
+    // Relay 先重新读取外部会话；否则外部任务已结束但历史不可读时会被错误拒绝。
+    createPush(input: PushSubscriptionInput): SubscribeResult {
+      const time = now();
+      const created = subs.create({
+        id: input.id,
+        owner: input.owner ?? "local",
+        type: "push",
+        agent: input.agent,
+        external_session_id: input.external_session_id,
+        external_session_title: null,
+        external_cwd: null,
+        dsh_session_id: null,
+        cursor: null,
+        last_activity_at: null,
+        created_at: time,
+        updated_at: time,
+      });
+      return { ok: true, subscription: subs.get(created.id)! };
+    },
     async subscribe(input: SubscribeInput): Promise<SubscribeResult> {
       const adapter = adapters.get(input.agent);
       if (!adapter.capabilities().snapshot)
@@ -137,7 +164,7 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       const time = now();
       const idle = input.idle_timeout_seconds ?? DEFAULT_IDLE_SECONDS;
       const draft = {
-        id: newId(),
+        id: input.id ?? newId(),
         owner: input.owner ?? "local",
         type: input.type,
         agent: input.agent,
@@ -176,6 +203,45 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       const result = await change(id, "paused", { status: "active" });
       if (result.ok) subs.extend({ id, now: now() });
       return result.ok ? { ok: true, subscription: subs.get(id)! } : result;
+    },
+    async update(id: string, input: {
+      idle_timeout_seconds?: number;
+      check_interval_seconds?: number;
+      expires_at?: number;
+    }): Promise<ChangeResult> {
+      const current = subs.get(id);
+      if (!current) return { ok: false, code: "not_found", message: "订阅不存在" };
+      if (current.status === "ended") return { ok: false, code: "conflict", message: "订阅已结束" };
+      const patch: Record<string, number> = {};
+      for (const [key, value] of Object.entries(input)) {
+        if (value !== undefined && (!Number.isSafeInteger(value) || value < 60))
+          throw new TypeError(`${key} 必须为不小于 60 的整数`);
+        if (value !== undefined) patch[key] = value;
+      }
+      if (!Object.keys(patch).length)
+        throw new TypeError("至少指定一个订阅配置");
+      if (patch.expires_at !== undefined && patch.expires_at > current.hard_expires_at)
+        throw new TypeError("expires_at 不能超过最长存活时间");
+      if (patch.idle_timeout_seconds !== undefined && patch.expires_at === undefined)
+        patch.expires_at = Math.min(now() + patch.idle_timeout_seconds * 1000, current.hard_expires_at);
+      const intervalChanged = patch.check_interval_seconds !== undefined &&
+        patch.check_interval_seconds !== current.check_interval_seconds;
+      if (intervalChanged) await unscheduleQuietly(current);
+      if (!subs.update({ id, expected_status: current.status, patch: { ...patch, updated_at: now() } }))
+        return { ok: false, code: "conflict", message: "订阅状态已被修改" };
+      let updated = subs.get(id)!;
+      if (intervalChanged && updated.status === "active") {
+        try {
+          const taskId = await schedule(updated);
+          if (taskId) {
+            subs.update({ id, expected_status: "active", patch: { schedule_task_id: taskId, updated_at: now() } });
+            updated = subs.get(id)!;
+          }
+        } catch {
+          // 后台对账会补建定时任务，配置变更本身已经持久化。
+        }
+      }
+      return { ok: true, subscription: updated };
     },
     async stop(id: string): Promise<ChangeResult> {
       const current = subs.get(id);

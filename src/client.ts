@@ -195,6 +195,9 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     [targets, setTargets] = useState<any[]>([]),
     [candidateLoading, setCandidateLoading] = useState(false),
     [candidateError, setCandidateError] = useState("");
+  const [credential, setCredential] = useState<any>(null),
+    [credentialToken, setCredentialToken] = useState(""),
+    [credentialBusy, setCredentialBusy] = useState(false);
   const revision = useRef(0);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const creating = drawer === "create";
@@ -258,6 +261,23 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       live = false;
     };
   }, [creating, agent]);
+  useEffect(() => {
+    if (drawer !== "settings") return;
+    setCredentialToken("");
+    void call("credential_get").then(setCredential).catch((e) => setError(e.message));
+  }, [drawer]);
+  async function generateCredential(reset = false) {
+    setCredentialBusy(true);
+    try {
+      const result = await call(reset ? "credential_reset" : "credential_generate");
+      setCredential(result);
+      setCredentialToken(result.token);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCredentialBusy(false);
+    }
+  }
   async function action(endpoint: string, id: string) {
     setBusy(true);
     setError("");
@@ -677,16 +697,17 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     h(
       Drawer,
       { title: "共享通知凭证", onClose: close },
-      h("p", null, "本地 Agent 共用一份通知凭证。正式接入后在 DSH 设置页面管理。"),
+      h("p", null, "本地 Claude、Codex 等 Agent 共用一份通知凭证。"),
       h(
         "p",
         { className: "muted" },
         "服务端只保存摘要，生成时一次展示明文；重置后旧凭证失效。",
       ),
-      h(
-        "button",
-        { disabled: true, title: "TODO(T2.6/T6.5)：接入凭证生成与重置服务" },
-        "生成凭证（待接入）",
+      credentialToken && h("label", null, "本次生成的凭证（只显示一次）", h("textarea", { readOnly: true, value: credentialToken, rows: 3 })),
+      h("p", { className: "muted" }, credential?.configured ? `已配置 · 摘要 ${credential.digest.slice(0, 12)}…` : "尚未配置"),
+      h("div", { className: "row" },
+        h("button", { className: "primary", disabled: credentialBusy, onClick: () => void generateCredential(false) }, credentialBusy ? "处理中…" : "生成凭证"),
+        credential?.configured && h("button", { disabled: credentialBusy, onClick: () => void generateCredential(true) }, "重置凭证"),
       ),
       h("footer", null, h("button", { onClick: close }, "关闭")),
     );

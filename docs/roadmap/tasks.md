@@ -156,7 +156,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | --- | --- | --- |
 | T3.1 | 工具 | `relay_list_sessions`：列出某个 Agent 的候选会话。`relay_subscribe`：创建主动订阅。`relay_list`：查看订阅及状态。`relay_stop`：停止订阅。`relay_check`：执行一次到期检查，未到期或暂停时跳过。`relay_send`：转发消息，支持“发送后订阅” |
 | T3.2 | DSH 侧 Skill | 什么时候订阅；有多个候选会话时先让用户确认；发送前复述目标会话；区分“已发送”和“已完成” |
-| T3.3 | 外部 Agent 侧通知 Skill | 给 Claude、Codex 用：用户说“完成后通知 DSH”时，先登记 `push` 订阅，使用 DSH 设置页面统一配置的共享 token，任务结束时调用 T2.6 的入口发送结果摘要。具体调用方式取决于 T0.6 |
+| T3.3 | 外部 Agent 侧通知 Skill | 给 Claude、Codex 用：用户说“完成后通知 DSH”时，读取共享 token，携带稳定 `request_id` 调用 T2.6 的入口发送结果摘要。可省略 `subscription_id`，由 Relay 按请求自动创建一次性 push 订阅和接收会话；也可带已有 push 订阅指定接收会话 |
 
 工具与 T4 的 HTTP 接口共用 T2 的服务层，不重复实现业务逻辑。
 
@@ -171,7 +171,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | `PATCH /subscriptions/:id` | 修改检查周期和有效期，暂停、恢复 |
 | `POST /subscriptions/:id/stop` | 手动停止 |
 | `POST /subscriptions/:id/check` | 立即检查一次 |
-| `POST /notifications` | 外部通知入口，见 T2.6 |
+| `POST /notifications` | 外部通知入口，见 T2.6；可直接 push，也可带预注册 `subscription_id` |
 | `POST /messages`、`GET /messages` | 转发消息，查看转发记录 |
 
 路径只是示意，实际形式以 T0.5 确认的前后端通信方式为准。
@@ -181,7 +181,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | 编号 | 任务 | 第一版能力 |
 | --- | --- | --- |
 | T5.1 | Claude Adapter | 列出会话、`snapshot`、发送消息。会话处理中或开在终端里时拒绝发送 |
-| T5.2 | Codex Adapter | 已实现独立只读 Adapter：列出会话、`snapshot`，发送消息声明为“不支持”；真实专用会话冒烟通过，尚待服务层注册，见 `docs/superpowers/plans/T5.2-codex-adapter-design.md` |
+| T5.2 | Codex Adapter | 已实现并注册独立只读 Adapter：列出会话、`snapshot`，发送消息声明为“不支持”；真实专用会话冒烟通过，见 `docs/superpowers/plans/T5.2-codex-adapter-design.md` |
 
 每个 Adapter 都要有针对真实会话的冒烟测试，测试会话和业务会话分开。
 
@@ -235,12 +235,18 @@ T7 最后做端到端验收
 
 ## M2 实施状态（2026-11-11）
 
-T2.4、T2.5、插件入口接线及启动对账、T3.1 订阅相关工具、T6.1/T6.2/T6.4 已实现。工具包含 relay_list_sessions、relay_subscribe、relay_list、relay_stop、relay_check。T4 已提供页面所需的 Agent 能力、候选会话、订阅创建/分页/详情/暂停/恢复/停止/到期检查 RPC；外部 push HTTP、转发接口仍未实现。周期及有效期的独立修改接口尚未开放。
+（历史记录，2026-11-11）M2 已实现 T2.4、T2.5、插件入口接线及启动对账、T3.1 订阅相关工具、T6.1/T6.2/T6.4；后续 M3/M4 已补充转发、push、共享凭证和配置修改。
 
-两类 Adapter 都已注册，Codex 保持只读。M2 创建入口只开放 poll；push 投递时新建会话、外部通知入口、DSH Skill 和共享凭证设置留给后续任务。M3 转发核心已在下节记录。
+两类 Adapter 都已注册，Codex 保持只读。M2 创建入口只开放 poll；push 入口和外部通知能力在 M4 实现。
 
 ## M3 实施状态（2026-11-11）
 
-已实现转发核心：`relay_send` 工具、`send`/`messages` 认证 RPC、`relay_message` 状态落库、Adapter 能力拒绝、发送结果为 `unknown` 时的保留，以及发送成功后的有效期顺延和可选 poll 订阅。Codex 仍明确不支持发送。push HTTP、共享凭证、外部 Agent Skill 和 push 投递时新建接收会话仍未实现；T6.3 目前只完成 Agent Relay 工作区前置创建，尚未迁移已有会话。
+（历史记录，2026-11-11）M3 已实现转发核心：`relay_send` 工具、`send`/`messages` 认证 RPC、`relay_message` 状态落库、Adapter 能力拒绝、发送结果为 `unknown` 时的保留，以及发送成功后的有效期顺延和可选 poll 订阅。Codex 仍明确不支持发送。push 与会话分组的后续工作在 M4 完成。
 
 实际验证及未验证项见 `T2.4-T2.5-T3.1-T4-T6-M2-implementation.md`，不以单元测试替代真实投递验收。
+
+## M4 实施状态（2026-11-11）
+
+已实现 T2.6、T3.2、T3.3、T4 配置修改、T6.3 的新建通知会话归组和 T6.5 凭证管理：push HTTP 使用插件级共享 token。外部 Agent 可省略 `subscription_id` 直接 push，Relay 按稳定 `request_id` 创建一次性 push 订阅和 Agent Relay workspace 下的 DSH 接收会话；重复请求复用订阅并由通知记录防重。已有 push 订阅仍可指定接收会话。`skills/external-agent-notification/SKILL.md` 只负责外部 Agent 消息通知，Claude/Codex 共用协议并通过会话 ID 和能力提示区分差异；订阅可独立修改有效期和检查周期；页面抽屉已接入凭证生成与重置。T6.3 对已有会话不做迁移，T6.5 原生 DSH 设置页注册尚未在宿主中验证。
+
+T7 真实端到端验收仍单独保留，不能以本轮单元测试代替。

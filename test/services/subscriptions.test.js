@@ -134,6 +134,21 @@ test("创建失败：会话已关闭、poll 缺 DSH 会话；push 不建定时�
   assert.equal((await service.subscribe(poll)).code, "session_closed");
 });
 
+test("直接 push 创建一次性订阅时不读取外部会话", async (t) => {
+  const { store, service, claude } = fixture(t);
+  const result = service.createPush({
+    id: "push:req-1",
+    agent: "claude",
+    external_session_id: "external-only",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(claude.state.calls.length, 0);
+  assert.equal(result.subscription.type, "push");
+  assert.equal(result.subscription.dsh_session_id, null);
+  assert.equal(result.subscription.schedule_task_id, null);
+  assert.equal(store.subscriptions.get("push:req-1").external_session_id, "external-only");
+});
+
 test("暂停、恢复、停止：状态冲突返回 conflict，恢复顺延有效期，停止删除定时任务", async (t) => {
   const { sched, service, clock } = fixture(t);
   const { subscription: sub } = await service.subscribe(poll);
@@ -232,4 +247,20 @@ test('对账不采纳属于其他会话或其他插件的 task id',async t=>{
  const{store,sched,service}=fixture(t);const sub=(await service.subscribe(poll)).subscription;
  sched.tasks.set(sub.schedule_task_id,{id:sub.schedule_task_id,sessionId:'another',prompt:'其他插件提醒',status:'active'});
  const result=await service.reconcile();assert.equal(result.created,1);assert.notEqual(store.subscriptions.get(sub.id).schedule_task_id,sub.schedule_task_id);assert.ok(sched.tasks.has(sub.schedule_task_id));
+});
+
+test("更新订阅周期和有效期会持久化并重建主动检查提醒", async (t) => {
+  const { store, sched, service } = fixture(t);
+  const sub = (await service.subscribe(poll)).subscription;
+  const previousTask = sub.schedule_task_id;
+  const result = await service.update(sub.id, {
+    idle_timeout_seconds: 7200,
+    check_interval_seconds: 1800,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.subscription.idle_timeout_seconds, 7200);
+  assert.equal(result.subscription.check_interval_seconds, 1800);
+  assert.notEqual(result.subscription.schedule_task_id, previousTask);
+  assert.equal(sched.tasks.has(previousTask), false);
+  assert.equal(store.subscriptions.get(sub.id).expires_at, 1000 + 7200 * 1000);
 });

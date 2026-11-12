@@ -61,12 +61,18 @@ function setup(t) {
       catalog: async () => [],
     },
   });
+  const credentials = {
+    get: () => ({ configured: true, digest: "digest", created_at: 1 }),
+    generate: () => ({ token: "token", digest: "digest", created_at: 2 }),
+    reset: () => ({ token: "new-token", digest: "new-digest", created_at: 3 }),
+  };
   const relay = createRelayService({
     store,
     adapters,
     subscriptions,
     checks: { check: async () => ({ status: "not_due" }) },
     notifications: { drain: async () => {} },
+    credentials,
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
   });
   return {
@@ -76,6 +82,7 @@ function setup(t) {
     setSendResult(result) {
       nextSendResult = result;
     },
+    credentials,
   };
 }
 test("订阅使用调用上下文，定时任务未创建时明确返回未就绪", async (t) => {
@@ -96,7 +103,6 @@ test("非法 Agent、过短周期、push 及不存在的接收会话在业务边
   for (const args of [
     { agent: "bad" },
     { idle_timeout_seconds: 1 },
-    { type: "push" },
     { dsh_session_id: "missing" },
   ]) {
     const r = await relay.call(
@@ -107,6 +113,13 @@ test("非法 Agent、过短周期、push 及不存在的接收会话在业务边
     assert.equal(r.ok, false);
   }
   assert.equal(store.subscriptions.list().items.length, 0);
+  const push = await relay.call("subscribe", {
+    agent: "claude",
+    external_session_id: "ext",
+    type: "push",
+  });
+  assert.equal(push.ok, true);
+  assert.equal(push.value.subscription.type, "push");
 });
 test("分页和筛选输入校验，不存在订阅明确返回失败", async (t) => {
   const { relay } = setup(t);
@@ -195,4 +208,11 @@ test("消息 RPC 按 Agent 和外部会话分页查询", async (t) => {
   assert.equal(result.ok, true);
   assert.equal(result.value.items.length, 1);
   assert.equal(result.value.items[0].content, "查询我");
+});
+
+test("凭证 RPC 只通过服务层暴露生成、查询和重置", async (t) => {
+  const { relay } = setup(t);
+  assert.deepEqual((await relay.call("credential_get", {})).value.configured, true);
+  assert.equal((await relay.call("credential_generate", {})).value.token, "token");
+  assert.equal((await relay.call("credential_reset", {})).value.token, "new-token");
 });

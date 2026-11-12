@@ -4,7 +4,7 @@
 
 DSH Agent Relay 是 DSH 的外部 Agent 任务订阅、通知与消息转发插件，目标是在 DSH 中关注指定外部会话，并向原会话补充消息。
 
-当前已实现 T1 SQLite 存储、Claude 与 Codex Adapter、T2.2 注册表、T2.3 订阅服务、T2.4 检查执行器、T2.5 通知服务、T2.7 转发核心和 T2.8 历史清理，并已接入插件入口。提供 M2 订阅工具、M3 `relay_send`、消息 RPC、认证 RPC、订阅看板与新建订阅；Codex 仅支持只读。实现与验收边界见 `docs/superpowers/plans/T2.4-T2.5-T3.1-T4-T6-M2-implementation.md` 和 `docs/superpowers/plans/2026-11-11-M3-relay-forward.md`。尚未实现 push HTTP 入口、外部通知 Skill、通知凭证设置和 push 投递时新建接收会话，不能描述为已支持。Node.js >=24，TypeScript（ESM），运行依赖为 DSH 官方包和 Node.js 内置模块。先运行 `rtk npm ci --cache ./.npm-cache`；`rtk npm run typecheck` 检查服务端与前端类型，`rtk npm test` 构建并运行单元测试。真实冒烟单独运行 `rtk proxy node test/smoke/claude-smoke.js` 或 `rtk proxy node test/smoke/m2-smoke.js`，会新建专用 Claude 会话并产生费用。
+当前已实现 T1 SQLite 存储、Claude 与 Codex Adapter、T2.2～T2.8、T3.1～T3.3、T4、T6.1～T6.5，并已接入插件入口。提供 M2 订阅工具、M3 `relay_send`、外部 Agent 通知 Skill、push HTTP、共享凭证、消息与订阅 RPC、订阅看板与新建通知会话；直接 push 不要求外部 Agent 预先创建订阅，Relay 会按 `request_id` 自动创建一次性 push 订阅和接收会话；Codex 仅支持只读。已有接收会话不会迁移到 Agent Relay 分组，T6.5 原生 DSH 设置页注册尚未在宿主中验证。实现与验收边界见 `docs/superpowers/plans/T2.4-T2.5-T3.1-T4-T6-M2-implementation.md`、`docs/superpowers/plans/2026-11-11-M3-relay-forward.md` 和 `docs/superpowers/plans/T2.6-T3.2-T3.3-T4-T6.3-T6.5-M4-implementation.md`。T7 真实端到端验收尚未完成，不能以单元测试代替。Node.js >=24，TypeScript（ESM），运行依赖为 DSH 官方包和 Node.js 内置模块。先运行 `rtk npm ci --cache ./.npm-cache`；`rtk npm run typecheck` 检查服务端与前端类型，`rtk npm test` 构建并运行单元测试。真实冒烟单独运行 `rtk proxy node test/smoke/claude-smoke.js` 或 `rtk proxy node test/smoke/m2-smoke.js`，会新建专用 Claude 会话并产生费用。
 
 ## 开发语言与插件形态
 
