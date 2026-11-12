@@ -8,11 +8,13 @@ export interface AdapterCapabilities {
   sendMessage: boolean;
   // 开新会话执行一次性提示词（如安装通知 Skill）；不支持时声明 false。
   runPrompt: boolean;
+  createSession?: boolean;
 }
 // 外部会话中的位置，存入订阅的 cursor 作为基线。
 export interface SessionCursor {
   uuid: string;
   timestamp: number;
+  target_turn_id?: string;
 }
 export interface SessionInfo {
   id: string;
@@ -21,6 +23,8 @@ export interface SessionInfo {
   last_activity_at: number | null;
   runtime: RuntimeStatus;
   held: boolean;
+  send_allowed?: boolean;
+  send_reason?: string;
 }
 export interface Snapshot {
   // 会话已归档或删除，其余字段无意义。
@@ -34,6 +38,8 @@ export interface Snapshot {
   held: boolean;
   // 运行状态查询失败的原因；此时 runtime 为 unknown。
   runtime_error: string | null;
+  send_allowed?: boolean;
+  send_reason?: string;
   // 实际查询失败；与 Codex 正常的实时状态 unknown 说明分开。
   check_error: string | null;
   // 基线之后开始、且已经结束的最近一轮。
@@ -68,6 +74,8 @@ export interface AgentAdapter {
     sessionId: string,
     baseline?: SessionCursor | null,
   ): Promise<Snapshot>;
+  createSession?(input: { cwd: string }): Promise<SessionInfo>;
+  dispose?(): void | Promise<void>;
   sendMessage(sessionId: string, text: string): Promise<SendResult>;
   runPrompt(
     text: string,

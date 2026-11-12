@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { PLUGIN_VERSION } from '../../version.js';
 import type { Duplex } from 'node:stream';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, resolve, join } from 'node:path';
 import { AdapterError } from '../types.js';
 
 export interface CodexClient {
@@ -13,11 +13,23 @@ export interface CodexClient {
 export interface CodexConnectionOptions {
   socketPath?: string;
   timeoutMs?: number;
+  writable?: boolean;
+  onNotification?: (method: string, params: unknown) => void;
+  onClose?: () => void;
+}
+export function codexEndpoint(options: CodexConnectionOptions = {}): string {
+  const path = options.socketPath ?? join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'app-server-control', 'app-server-control.sock');
+  if (!isAbsolute(path)) throw new AdapterError('invalid_input', 'Codex socket 必须为绝对路径');
+  return resolve(path);
+}
+export class CodexTransportError extends AdapterError {
+  constructor(message: string, readonly dispatched: boolean) { super('unavailable', message); }
 }
 export class CodexRpcError extends Error {
   constructor(readonly code: number, message: string) { super(message); this.name = 'CodexRpcError'; }
 }
 const METHODS = new Set(['thread/list', 'thread/read', 'thread/turns/list']);
+const WRITE_METHODS = new Set(['thread/start', 'thread/resume', 'turn/start']);
 const MAX_MESSAGE = 16 * 1024 * 1024;
 const failure = (message: string) => new AdapterError('unavailable', message);
 
@@ -26,7 +38,7 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
   const timeoutMs = options.timeoutMs ?? 15_000;
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0)
     throw new AdapterError('invalid_input', 'Codex 查询超时必须为正整数');
-  const socketPath = options.socketPath ?? join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'app-server-control', 'app-server-control.sock');
+  const socketPath = codexEndpoint(options);
   const key = randomBytes(16).toString('base64');
   const accept = createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   let socket: Duplex | undefined;
@@ -35,12 +47,14 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
   let fragmentSize = 0;
   let ended = false;
   let sequence = 0;
-  const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
+  const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; dispatched: boolean }>();
   function stop(error: Error = failure('Codex 连接已断开')) {
+    if (ended) return;
     ended = true;
     socket?.destroy();
-    for (const request of pending.values()) { clearTimeout(request.timer); request.reject(error); }
+    for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new CodexTransportError(error.message, request.dispatched)); }
     pending.clear();
+    options.onClose?.();
   }
   function send(value: unknown, opcode = 1) {
     if (ended || !socket) throw failure('Codex 连接已断开');
@@ -60,8 +74,16 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
     const data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload));
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw failure('Codex JSON-RPC 格式无效');
     if (typeof data.method === 'string') {
-      // 不参与授权、执行或服务端工具调用。
-      if (data.id != null) send({ id: data.id, error: { code: -32601, message: '只读客户端不支持服务端请求' } });
+      if (data.id != null) {
+        // 不授予权限；按协议返回拒绝，不接受命令或文件规则修订。
+        if (options.writable && ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(data.method))
+          send({ id: data.id, result: { decision: 'decline' } });
+        else if (options.writable && ['execCommandApproval', 'applyPatchApproval'].includes(data.method))
+          send({ id: data.id, result: { decision: 'denied' } });
+        else if (options.writable && data.method === 'item/permissions/requestApproval')
+          send({ id: data.id, result: { permissions: {} } });
+        else send({ id: data.id, error: { code: -32601, message: 'Relay 尚不支持此交互，请回到 Codex 处理' } });
+      } else options.onNotification?.(data.method, data.params);
       return;
     }
     const request = pending.get(data.id);
@@ -129,8 +151,9 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
     return new Promise((resolve, reject) => {
       const id = ++sequence;
       const timer = setTimeout(() => stop(failure('Codex 请求超时')), timeoutMs);
-      pending.set(id, { resolve, reject, timer });
-      try { send({ id, method, params }); } catch { stop(); }
+      const entry = { resolve, reject, timer, dispatched: false };
+      pending.set(id, entry);
+      try { send({ id, method, params }); entry.dispatched = true; } catch { stop(); }
     });
   }
   try {
@@ -142,7 +165,7 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
   } catch (error) { stop(); throw error; }
   return {
     request(method, params) {
-      if (!METHODS.has(method)) return Promise.reject(new AdapterError('invalid_input', 'Codex 客户端仅允许只读历史查询'));
+      if (!METHODS.has(method) && !(options.writable && WRITE_METHODS.has(method))) return Promise.reject(new AdapterError('invalid_input', 'Codex 客户端仅允许只读历史查询'));
       return request(method, params);
     },
     close: () => stop(),

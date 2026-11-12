@@ -55,4 +55,9 @@ CREATE INDEX notification_cleanup ON relay_notification(created_at);
 CREATE INDEX message_list ON relay_message(created_at DESC,id DESC);
 CREATE INDEX message_route ON relay_message(agent,external_session_id,subscription_id);
 `,
+  `CREATE TABLE relay_codex_session (
+ session_id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(session_id))>0),
+ endpoint TEXT NOT NULL CHECK(length(trim(endpoint))>0),
+ created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991)
+) STRICT;`,
 ];

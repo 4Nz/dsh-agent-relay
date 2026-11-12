@@ -1,3 +1,4 @@
+import { createCodexSessions } from "./codex-sessions.js";
 import { openDatabase } from "./database.js";
 import { createSubscriptions } from "./subscriptions.js";
 import { createMessages } from "./messages.js";
@@ -8,6 +9,7 @@ export function openRelayStore({ dataDir }: { dataDir: string }) {
   const db = openDatabase({ dataDir });
   return {
     subscriptions: createSubscriptions(db),
+    codexSessions: createCodexSessions(db),
     messages: createMessages(db),
     notifications: createNotifications(db),
     recoverInterrupted: (options: { now: number }) =>

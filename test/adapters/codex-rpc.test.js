@@ -129,3 +129,25 @@ test('Codex RPC：畸形 JSON 和超大帧立即拒绝，关闭后的请求不�
   }
   await assert.rejects(connectCodex({ socketPath: `${path}-missing`, timeoutMs: 100 }), /无法连接/);
 });
+
+
+test('Codex 写 RPC：审批明确拒绝、事件可接收，turn/start 超时标记已发出', async t => {
+  const { connectCodex, CodexTransportError } = await import('../../lib/adapters/codex/rpc.js');
+  let reply;
+  const path = await server(t, (req, socket) => {
+    if (req.method === 'thread/read') {
+      socket.write(frame({ id: 900, method: 'item/commandExecution/requestApproval', params: { threadId: '专用会话' } }));
+      socket.write(frame({ method: 'turn/completed', params: { turn: { id: 'done' } } }));
+    } else if (req.id === 900) {
+      reply = req.result;
+      socket.write(frame({ id: 2, result: { thread: {} } }));
+    }
+  });
+  const events = [];
+  const client = await connectCodex({ socketPath: path, writable: true, timeoutMs: 100, onNotification: (m,p) => events.push([m,p]) });
+  t.after(() => client.close());
+  await client.request('thread/read', {});
+  assert.deepEqual(reply, { decision: 'decline' });
+  assert.equal(events[0][0], 'turn/completed');
+  await assert.rejects(client.request('turn/start', {}), e => e instanceof CodexTransportError && e.dispatched === true);
+});

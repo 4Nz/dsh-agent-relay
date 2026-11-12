@@ -15,7 +15,7 @@ test("建库重开、版本与事务回滚", () => {
   let db;
   try {
     db = openDatabase({ dataDir });
-    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 1);
+    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
     assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
     assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
     assert.equal(
@@ -24,7 +24,7 @@ test("建库重开、版本与事务回滚", () => {
           "SELECT count(*) n FROM sqlite_master WHERE type='table' AND name LIKE 'relay_%'",
         )
         .get().n,
-      3,
+      4,
     );
     assert.throws(() =>
       transaction(db, () => {
@@ -50,7 +50,7 @@ test("建库重开、版本与事务回滚", () => {
     );
     db.close();
     db = openDatabase({ dataDir });
-    db.exec("PRAGMA user_version=2");
+    db.exec("PRAGMA user_version=3");
     db.close();
     db = null;
     assert.throws(() => openDatabase({ dataDir }), /版本/);

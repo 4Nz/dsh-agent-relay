@@ -113,3 +113,74 @@ test('Codex：缺失轮次时间保守处理；回复节选；无效基线拒绝
   assert.equal(s.last_reply.length, 1000);
   await assert.rejects(missing.adapter.snapshot(ID, { uuid: 12, timestamp: 0 }), e => e.code === 'invalid_input');
 });
+
+// 新增回归：未登记会话不得写；专用会话必须保留目标和发送的不确定性。
+async function writable(t, overrides = {}) {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { openRelayStore } = await import('../../lib/storage/index.js');
+  const { createCodexAdapter } = await import('../../lib/adapters/codex/index.js');
+  const dir = mkdtempSync(join(tmpdir(), 'codex-send-test-'));
+  const store = openRelayStore({ dataDir: dir });
+  const calls = [];
+  let closes = 0;
+  const adapter = createCodexAdapter({ socketPath: '/tmp/relay-test.sock', bindings: store.codexSessions,
+    connect: async () => ({ close() { closes++; }, async request(method, params) {
+      calls.push({ method, params });
+      if (overrides.request) { const v = await overrides.request(method, params); if (v !== undefined) return v; }
+      if (method === 'thread/start') return { thread: { ...thread, cwd: dir, status: { type: 'idle' } } };
+      if (method === 'thread/list') return { data: [], nextCursor: null };
+      if (method === 'thread/read' || method === 'thread/resume') return { thread: { ...thread, status: { type: 'idle' } } };
+      if (method === 'thread/turns/list') return { data: [turn()], nextCursor: null };
+      if (method === 'turn/start') return { turn: { id: 'accepted-turn', status: 'inProgress' } };
+      assert.fail(method);
+    } }),
+  });
+  t.after(async () => { await adapter.dispose?.(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+  return { adapter, store, calls, dir, closes: () => closes };
+}
+test('Codex 写入：新建专用会话登记后发送，接收即 sent 且不关闭写连接', async t => {
+  const { adapter, store, calls, dir, closes } = await writable(t);
+  assert.equal(adapter.capabilities().createSession, true);
+  const created = await adapter.createSession({ cwd: dir });
+  assert.equal(store.codexSessions.has(ID, '/tmp/relay-test.sock'), true);
+  assert.equal(created.send_allowed, true);
+  const sent = await adapter.sendMessage(ID, '继续');
+  assert.deepEqual(sent, { status: 'sent', external_ref: 'accepted-turn' });
+  const started = calls.find(c => c.method === 'turn/start');
+  assert.deepEqual(started.params, { threadId: ID, input: [{ type: 'text', text: '继续' }] });
+  assert.equal(closes(), 0);
+});
+test('Codex 写入：未登记、端点不符、忙碌和恢复后状态不明均拒绝', async t => {
+  const { adapter, store, calls } = await writable(t, { request: async method => method === 'thread/resume' ? { thread: { ...thread, status: { type: 'active' } } } : undefined });
+  assert.equal((await adapter.sendMessage(ID, '继续')).status, 'rejected');
+  assert.equal(calls.length, 0);
+  store.codexSessions.register({ session_id: ID, endpoint: '/tmp/other.sock', created_at: 1 });
+  assert.equal((await adapter.sendMessage(ID, '继续')).status, 'rejected');
+  assert.equal(calls.length, 0);
+  store.codexSessions.register({ session_id: ID, endpoint: '/tmp/relay-test.sock', created_at: 2 });
+  assert.equal((await adapter.sendMessage(ID, '继续')).status, 'rejected');
+  assert.equal(calls.some(c => c.method === 'turn/start'), false);
+});
+test('Codex 写入：turn/start 响应丢失为 unknown，明确协议拒绝为 failed', async t => {
+  const { CodexTransportError, CodexRpcError } = await import('../../lib/adapters/codex/rpc.js');
+  for (const [error, status] of [[new CodexTransportError('响应丢失', true), 'unknown'], [new CodexRpcError(-32600, '拒绝'), 'failed']]) {
+    const { adapter, store } = await writable(t, { request: async method => { if (method === 'turn/start') throw error; } });
+    store.codexSessions.register({ session_id: ID, endpoint: '/tmp/relay-test.sock', created_at: 1 });
+    assert.equal((await adapter.sendMessage(ID, '继续')).status, status);
+  }
+});
+test('Codex：精确目标轮次可跨分页找到，同秒开始及后续轮次不影响完成与回复', async () => {
+  const target = turn({ id: 'target', startedAt: 200, completedAt: 201, items: [{ type: 'agentMessage', text: '目标回复' }] });
+  const { createCodexAdapter } = await import('../../lib/adapters/codex/index.js');
+  const adapter = createCodexAdapter({ connect: async () => ({ close() {}, async request(method, params) {
+    if (method === 'thread/list') return { data: [], nextCursor: null };
+    if (method === 'thread/read') return { thread };
+    if (method === 'thread/turns/list') return params.cursor ? { data: [target], nextCursor: null } : { data: [turn({ id: 'later' })], nextCursor: 'older' };
+    assert.fail(method);
+  } }) });
+  const s = await adapter.snapshot(ID, { uuid: 'codex:before:hash', timestamp: 200000, target_turn_id: 'target' });
+  assert.deepEqual(s.finished_turn, { result: 'completed', external_ref: 'target' });
+  assert.equal(s.last_reply, '目标回复');
+});
