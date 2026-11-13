@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
+
+// 假连接不创建 socket，但登记端点必须与 Adapter 规范化后的本机路径一致。
+const ENDPOINT = resolve('/tmp/relay-test.sock');
 
 const ID = '11111111-2222-3333-4444-555555555555';
 const thread = { id: ID, name: '测试会话', cwd: '/tmp/relay-test', updatedAt: 200, status: { type: 'notLoaded' } };
@@ -125,7 +129,7 @@ async function writable(t, overrides = {}) {
   const store = openRelayStore({ dataDir: dir });
   const calls = [];
   let closes = 0;
-  const adapter = createCodexAdapter({ socketPath: '/tmp/relay-test.sock', bindings: store.codexSessions,
+  const adapter = createCodexAdapter({ socketPath: ENDPOINT, bindings: store.codexSessions,
     connect: async () => ({ close() { closes++; }, async request(method, params) {
       calls.push({ method, params });
       if (overrides.request) { const v = await overrides.request(method, params); if (v !== undefined) return v; }
@@ -145,7 +149,7 @@ test('Codex 写入：新建专用会话登记后发送，接收即 sent 且不�
   const { adapter, store, calls, dir, closes } = await writable(t);
   assert.equal(adapter.capabilities().createSession, true);
   const created = await adapter.createSession({ cwd: dir });
-  assert.equal(store.codexSessions.has(ID, '/tmp/relay-test.sock'), true);
+  assert.equal(store.codexSessions.has(ID, ENDPOINT), true);
   assert.equal(created.send_allowed, true);
   const sent = await adapter.sendMessage(ID, '继续');
   assert.deepEqual(sent, { status: 'sent', external_ref: 'accepted-turn' });
@@ -168,7 +172,7 @@ test('Codex 写入：未登记与端点不符走 queue/add 排队，忙碌和恢
   assert.equal(calls.some(c => c.method === 'thread/queue/add'), true);
   // 端点匹配（专用会话）→ 恢复后 active，拒绝且不走 turn/start。
   calls.length = 0;
-  store.codexSessions.register({ session_id: ID, endpoint: '/tmp/relay-test.sock', created_at: 2 });
+  store.codexSessions.register({ session_id: ID, endpoint: ENDPOINT, created_at: 2 });
   assert.equal((await adapter.sendMessage(ID, '继续')).status, 'rejected');
   assert.equal(calls.some(c => c.method === 'turn/start'), false);
 });
@@ -176,7 +180,7 @@ test('Codex 写入：turn/start 响应丢失为 unknown，明确协议拒绝为 
   const { CodexTransportError, CodexRpcError } = await import('../../lib/adapters/codex/rpc.js');
   for (const [error, status] of [[new CodexTransportError('响应丢失', true), 'unknown'], [new CodexRpcError(-32600, '拒绝'), 'failed'], [new CodexRpcError(-32603, '内部错误'), 'unknown']]) {
     const { adapter, store } = await writable(t, { request: async method => { if (method === 'turn/start') throw error; } });
-    store.codexSessions.register({ session_id: ID, endpoint: '/tmp/relay-test.sock', created_at: 1 });
+    store.codexSessions.register({ session_id: ID, endpoint: ENDPOINT, created_at: 1 });
     assert.equal((await adapter.sendMessage(ID, '继续')).status, status);
   }
 });
@@ -209,6 +213,6 @@ test('Codex 新建空会话：仅明确 not materialized 历史错误视为空�
 
 test('Codex 会话级能力：后台 systemError 不允许发送', async t => {
   const {adapter,store}=await writable(t,{request:async method=>method==='thread/read'?{thread:{...thread,status:{type:'systemError'}}}:undefined});
-  store.codexSessions.register({session_id:ID,endpoint:'/tmp/relay-test.sock',created_at:1});
+  store.codexSessions.register({session_id:ID,endpoint:ENDPOINT,created_at:1});
   const s=await adapter.snapshot(ID);assert.equal(s.send_allowed,false);
 });

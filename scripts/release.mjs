@@ -21,6 +21,12 @@ export function validatePackage(pkg, files, tag) {
 }
 
 function run(command, args, cwd, capture = false) {
+  // release:prepare 由 npm 启动，沿用同一个 npm CLI，不经过 Windows cmd.exe。
+  if (command === "npm") {
+    if (!process.env.npm_execpath) throw new Error("请通过 npm run release:prepare 执行发布检查");
+    args = [process.env.npm_execpath, ...args];
+    command = process.execPath;
+  }
   const result = spawnSync(command, args, { cwd, encoding: "utf8", stdio: capture ? "pipe" : "inherit", timeout: 180_000 });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} 执行失败\n${result.stdout ?? ""}\n${result.stderr ?? ""}`);

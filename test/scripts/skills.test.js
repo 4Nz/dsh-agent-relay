@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 async function fixture(t) {
-  const dir = await mkdtemp(join(tmpdir(), "relay-skills-"));
+  const dir = await mkdtemp(join(tmpdir(), "relay skills 中文-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   for (const [name, version] of [["v1", "0.1.0"], ["v2", "0.2.0"]]) {
     await mkdir(join(dir, name, "scripts"), { recursive: true });
@@ -56,7 +56,7 @@ test("Skill 更新拒绝覆盖用户修改的链接和同名目录", async (t) =
   const own = join(dir, "user-skill");
   await mkdir(own);
   await writeFile(join(own, "SKILL.md"), "用户内容");
-  await symlink(own, link, "dir");
+  await symlink(own, link, process.platform === "win32" ? "junction" : "dir");
   assert.equal(run("v2", "--update").status, 1);
   assert.equal(await readFile(join(link, "SKILL.md"), "utf8"), "用户内容");
   await rm(link);

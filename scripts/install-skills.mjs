@@ -56,13 +56,26 @@ async function install() {
         if (!update) throw new Error("已安装旧版本，请使用 --update 刷新链接");
         const temporary = `${link}.${randomUUID()}.tmp`;
         try {
-          await symlink(source, temporary, "dir");
-          await rename(temporary, link);
+          await symlink(source, temporary, process.platform === "win32" ? "junction" : "dir");
+          if (process.platform === "win32") {
+            // Windows 不能用 rename 覆盖现有目录 junction，先移走自有链接，失败时恢复。
+            const backup = `${link}.${randomUUID()}.bak`;
+            await rename(link, backup);
+            try {
+              await rename(temporary, link);
+            } catch (error) {
+              await rename(backup, link);
+              throw error;
+            }
+            await rm(backup, { force: true });
+          } else {
+            await rename(temporary, link);
+          }
         } finally {
           await rm(temporary, { force: true });
         }
       } else if (!stat) {
-        await symlink(source, link, "dir");
+        await symlink(source, link, process.platform === "win32" ? "junction" : "dir");
       }
       // 兼容旧脚本创建的、仍指向当前包的链接，首次执行补记所有权。
       record.links[name] = { target: same ? current : source, version: pkg.version };

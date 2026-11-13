@@ -212,7 +212,9 @@ test("listSessions：按修改时间倒序，带标题和运行状态，忽略�
   assert.deepEqual(await adapter(join(dir, "missing"), r.run).listSessions(), []);
 });
 
-test("会话目录不可读时抛检查失败而非视为不存在；真实缺失仍 closed", async (t) => {
+test("会话目录不可读时抛检查失败而非视为不存在；真实缺失仍 closed", {
+  skip: process.platform === "win32" ? "Windows chmod 不支持 POSIX 目录读取权限，无法构造 EACCES" : false,
+}, async (t) => {
   const { dir, file } = fixture(t);
   // 真实缺失：返回 closed。
   assert.equal((await adapter(dir, runner().run).snapshot(ID)).closed, true);

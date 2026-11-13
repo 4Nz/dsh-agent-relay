@@ -12,10 +12,10 @@ test("干净构建移除已删除模块，所有客户端导出都有实际产�
   t.after(() => rm(dir, { recursive: true, force: true }));
   for (const name of ["src", "scripts", "package.json", "tsconfig.json", "tsconfig.client.json", "tsdown.config.mjs"])
     await cp(join(root, name), join(dir, name), { recursive: true });
-  await symlink(join(root, "node_modules"), join(dir, "node_modules"), "dir");
+  await symlink(join(root, "node_modules"), join(dir, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   await mkdir(join(dir, "lib"));
   await writeFile(join(dir, "lib/removed.js"), "旧模块");
-  const result = spawnSync("npm", ["run", "build"], { cwd: dir, encoding: "utf8" });
+  const result = spawnSync(process.execPath, [join(dir, "scripts/build.mjs")], { cwd: dir, encoding: "utf8" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   await assert.rejects(access(join(dir, "lib/removed.js")), { code: "ENOENT" });
   const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));

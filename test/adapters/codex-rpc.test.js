@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,7 +18,9 @@ function frame(value, opcode = 1) {
 }
 async function server(t, handler, onInitialize = () => {}) {
   const dir = await mkdtemp(join(tmpdir(), 'relay-rpc-'));
-  const path = join(dir, 'test.sock');
+  const path = process.platform === 'win32'
+    ? `\\\\.\\pipe\\relay-rpc-${randomUUID()}`
+    : join(dir, 'test.sock');
   const http = createServer();
   const sockets = new Set();
   http.on('connection', s => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
@@ -66,7 +68,7 @@ test('Codex RPC：安装包版本变化后握手同步版本', async t => {
   assert.equal(initialize.clientInfo.version, '0.9.9-test.1');
 });
 
-test('Codex RPC：真实 Unix socket 握手、并发响应与分段帧', async t => {
+test('Codex RPC：本地 IPC 握手、并发响应与分段帧', async t => {
   const { connectCodex } = await import('../../lib/adapters/codex/rpc.js');
   const path = await server(t, (req, socket) => {
     const response = frame({ id: req.id, result: { method: req.method, text: '测'.repeat(200) } });

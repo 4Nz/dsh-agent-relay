@@ -89,7 +89,8 @@ test("首次安装一次配好全部项，并提示新开终端与连通测试",
   assert.equal(readFileSync(files.rule, "utf8"), ruleText());
   assert.equal(readFileSync(files.claudeMd, "utf8"), "@agent-relay.md\n");
   assert.equal(readFileSync(files.zshrc, "utf8"), shellBlock());
-  assert.equal(statSync(files.token).mode & 0o777, 0o600);
+  // Windows 不实现 POSIX 权限位；其余安装断言仍在所有平台执行。
+  if (process.platform !== "win32") assert.equal(statSync(files.token).mode & 0o777, 0o600);
   assert.deepEqual(skillCalls, ["claude"]);
   assert.ok(report.next_steps.some((s) => /新开终端/.test(s)));
   assert.ok(report.next_steps.some((s) => /连通测试/.test(s)));

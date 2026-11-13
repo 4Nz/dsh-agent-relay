@@ -32,6 +32,27 @@ rtk proxy dsh plugin --profile web add --save-exact /绝对路径/dsh-agent-rela
 
 命令依据本机 DSH `dsh plugin` 转发 pnpm 的接口；上述完整安装/启用/重启流程仍需在目标宿主验收。Desktop 应使用其安装自带的插件管理入口，npm 安装的 CLI 不能直接管理保留的 desktop profile。不要安装到当前运行的业务 profile 来做交付测试。
 
+### Windows 安装
+
+使用 Node.js 24 或更新的受支持版本。Windows PowerShell 中校验下载包并安装到专用测试 profile（路径含空格时保留引号）：
+
+```powershell
+Get-FileHash -Algorithm SHA256 ".\dsh-agent-relay-0.1.0.tgz"
+dsh plugin --profile web add --save-exact "C:\Downloads\dsh-agent-relay-0.1.0.tgz"
+```
+
+将哈希与 SHA256SUMS 对照；启用、重启及 Desktop 限制与上文相同。安装预编译 tgz 不需要 Git Bash、Python、编译工具链或 RTK。源码开发与发布仍需安装 devDependencies；没有 RTK 时直接运行 `npm ci --cache ./.npm-cache` 和 `npm run release:prepare`。构建直接以 Node 启动本地工具入口，发布检查沿用 npm 提供的 CLI，避免 Windows `.cmd` 启动差异。
+
+Windows 安装 Skill 的示例（在 profile 根目录执行）：
+
+```powershell
+node node_modules/dsh-agent-relay/scripts/install-skills.mjs "C:\Projects\我的项目" --scope dsh
+```
+
+Windows Skill 目录使用 junction，不要求管理员或开发者模式；其他平台保留目录符号链接。更新只处理安装记录对应的自有链接，Windows 替换失败会尝试恢复旧链接。数据目录和凭证依赖 Windows 用户目录继承的文件权限保护；POSIX 的 0600/0700 不等价于 Windows 权限设置，应避免放在共享可读写目录。
+
+本轮仅适配基础构建、打包和安装，不代表 Windows 上 Claude/Codex 发送、Unix socket 或 shell/channel 自动配置已兼容；完整 DSH 启用流程仍需专用 profile 的 T7 实测。
+
 ## Skill 安装与升级
 
 在 profile 根目录执行安装包内脚本，例如：
