@@ -169,18 +169,24 @@ export function createPushHandler({
   };
 }
 
+export const NOTIFICATION_PATH = "/api/agent-relay/notifications";
+
 export function createPushServer({
   handler,
+  routes = {},
   host = "127.0.0.1",
   port = Number(process.env.DSH_AGENT_RELAY_PORT ?? 37421),
 }: {
   handler: (request: Request) => Promise<Response>;
+  // 其他 POST 路径，如 Claude channel 的取消息与 ack。
+  routes?: Record<string, (request: Request) => Promise<Response>>;
   host?: string;
   port?: number;
 }) {
+  const table = { ...routes, [NOTIFICATION_PATH]: handler };
   const server = createServer((request, response) => {
     // serve 内部捕获全部异常；这里的 catch 仅作为最后兜底，避免任何 unhandled rejection。
-    serve(request, response, handler).catch(() => {
+    serve(request, response, table).catch(() => {
       try {
         if (!response.destroyed && !response.writableEnded)
           response.writeHead(500).end("内部错误");
@@ -227,11 +233,12 @@ const CLOSE = new Headers({ connection: "close" });
 async function serve(
   request: IncomingMessage,
   response: ServerResponse,
-  handler: (request: Request) => Promise<Response>,
+  routes: Record<string, (request: Request) => Promise<Response>>,
 ) {
   try {
     // 读取请求体与构造 WHATWG Request 之前先校验路径和方法，错误分别 404/405。
-    if (request.url !== "/api/agent-relay/notifications") {
+    const handler = request.url ? routes[request.url] : undefined;
+    if (!handler) {
       writeResponse(response, 404, "Not Found", CLOSE);
       request.resume();
       return;

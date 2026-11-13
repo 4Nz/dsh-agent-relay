@@ -27,12 +27,15 @@ export function createCredentialService({
   dataDir,
   now = Date.now,
   randomBytes = systemRandomBytes,
+  // 凭证文件名；Claude channel 使用独立凭证，与共享通知凭证互不影响。
+  name = "notification-credential.json",
 }: {
   dataDir: string;
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
+  name?: string;
 }): CredentialService {
-  const file = join(dataDir, "notification-credential.json");
+  const file = join(dataDir, name);
   let cached: StoredCredential | null | undefined;
 
   function digest(token: string) {

@@ -95,6 +95,24 @@ export function createMessages(db: DatabaseSync) {
         .all(agent, external_session_id)
         .map((row) => decode<Message>(row)!);
     },
+    // 某会话已推送、未 ack 且未超时的 channel 消息；存在时不推送下一条。
+    inFlight(agent: string, external_session_id: string) {
+      text(external_session_id, "external_session_id");
+      return db
+        .prepare(
+          `SELECT * FROM ${table} WHERE status='sent' AND acked_at IS NULL AND external_ref LIKE 'channel:%' AND agent=? AND external_session_id=? ORDER BY sent_at`,
+        )
+        .all(agent, external_session_id)
+        .map((row) => decode<Message>(row)!);
+    },
+    // 入队早于 before 仍未推送的消息，用于等待超时判定。
+    queuedBefore(before: number) {
+      validate({ created_at: before });
+      return db
+        .prepare(`SELECT * FROM ${table} WHERE status='queued' AND created_at<=? ORDER BY created_at,id`)
+        .all(before)
+        .map((row) => decode<Message>(row)!);
+    },
     // 已推送但尚未 ack 的消息，用于 ack 超时判定。
     awaitingAck(before: number) {
       validate({ sent_at: before });
