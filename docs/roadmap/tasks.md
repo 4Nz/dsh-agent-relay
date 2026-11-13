@@ -195,7 +195,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | T6.2 | 新建订阅 | 选 Agent、选外部会话、选接收通知的 DSH 会话（可选），设置有效期（默认 1 小时） |
 | T6.3 | 通知会话分组 | 在 DSH 会话列表里，把由 Relay 新建的通知会话归到一个分组；用户指定的已有会话保留原工作目录与分组，避免改变其后续执行环境。复用 T0.4/T0.5 确认的 workspace 机制。 |
 | T6.4 | 能力提示 | 不支持的操作置灰并说明原因，例如“仅 Relay 创建的 Codex 专用后台会话支持发送” |
-| T6.6 | 一键安装通知 Skill | 页面按钮：向 Claude 开新会话执行安装提示词，把 `external-agent-notification` 写入 `~/.claude/skills`；Codex 只读，预留接口并给可复制提示词。Claude 另需由插件一次配好 channel：MCP 登记、`~/.claude/agent-relay.md` 规则及 `CLAUDE.md` 引用、`claude` shell 函数；重复安装先自检，逐项返回 `ok` / `missing` / `outdated` / `conflict` / `unavailable` 和下一步提示 |
+| T6.6 | 前置安装接入 | 页面入口「前置安装接入」，分 Claude 和 Codex 两部分。通知 Skill：向 Claude 开新会话执行安装提示词，把 `external-agent-notification` 写入 `~/.claude/skills`；Codex 只读，预留接口并给可复制提示词。Claude 另由插件一次配好 channel：MCP 登记、`~/.claude/agent-relay.md` 规则及 `CLAUDE.md` 引用、`claude` shell 函数；重复安装先自检，逐项返回 `ok` / `missing` / `outdated` / `conflict` / `unavailable` 和下一步提示 |
 
 会话内的对话、回复和后续处理都用 DSH 原生能力，插件不另做聊天界面。
 
@@ -203,9 +203,9 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 
 DSH 设置页面统一配置和重置插件级共享 token；本机所有 Agent 共用。只保存摘要，生成时一次展示明文，重置后旧凭证失效。不再为每条订阅生成 token。
 
-### T6.6 一键安装通知 Skill
+### T6.6 前置安装接入
 
-订阅看板提供「安装通知 Skill」按钮：向 Claude 开新会话执行安装提示词，把随包 `external-agent-notification` 通知 Skill 写入 `~/.claude/skills/external-agent-notification/SKILL.md`；Codex 第一版只读，预留接口并给可复制提示词。实现见 `docs/superpowers/plans/T2.1-T3.1-T3.3-T5.1-T6.6-skill-install.md`。
+订阅看板的「安装通知 Skill」按钮改为「前置安装接入」，内分 Claude 和 Codex 两部分，各自安装和自检。Claude 部分包含通知 Skill 和 channel 配置，见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md` 第 3.3、3.4 节；Codex 部分只有通知 Skill。以下为现有通知 Skill 的安装方式，channel 部分尚未实施：向 Claude 开新会话执行安装提示词，把随包 `external-agent-notification` 通知 Skill 写入 `~/.claude/skills/external-agent-notification/SKILL.md`；Codex 第一版只读，预留接口并给可复制提示词。实现见 `docs/superpowers/plans/T2.1-T3.1-T3.3-T5.1-T6.6-skill-install.md`。
 
 ## T7 验收
 
