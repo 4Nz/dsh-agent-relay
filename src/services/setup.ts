@@ -307,13 +307,27 @@ export function createSetupService({
     return report;
   }
 
+  async function check(agent: Agent): Promise<SetupReport> {
+    if (agent === "codex")
+      return finish({ agent, overall: "ok", claude_version: null, items: [skillItem("codex")], next_steps: [] }, false);
+    const { report, blocking } = await checkClaude();
+    return finish(report, blocking);
+  }
+  async function requireReady(agent: Agent): Promise<void> {
+    const report = await check(agent);
+    if (report.overall === "needs_action" || report.overall === "unavailable") {
+      const missing = report.items
+        .filter((i) => i.status !== "ok")
+        .map((i) => i.message)
+        .join("；");
+      throw new TypeError(
+        `${agent === "claude" ? "Claude" : "Codex"} 前置安装未完成，请先在「前置安装接入」页完成安装：${missing}`,
+      );
+    }
+  }
+
   return {
-    async check(agent: Agent): Promise<SetupReport> {
-      if (agent === "codex")
-        return finish({ agent, overall: "ok", claude_version: null, items: [skillItem("codex")], next_steps: [] }, false);
-      const { report, blocking } = await checkClaude();
-      return finish(report, blocking);
-    },
+    check,
     async install(agent: Agent): Promise<SetupReport> {
       if (agent === "codex") {
         const item = skillItem("codex");
@@ -442,6 +456,7 @@ export function createSetupService({
     probeStatus(): ProbeState {
       return probeState;
     },
+    requireReady,
     // 供页面展示的规则与说明。
     instructions: INSTRUCTIONS,
   };

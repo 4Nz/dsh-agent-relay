@@ -81,18 +81,20 @@ function setup(t, options = {}) {
     notifications: { drain: async () => {} },
     credentials,
     skillInstall: {
-      preview: async (agent) => ({
-        agent,
-        skill: "external-agent-notification",
-        target_dir: `/tmp/${agent}/skills`,
-        prompt: "请安装",
-        supported: agent === "claude",
-        reason: agent === "claude" ? null : "预留",
-      }),
-      install: async (agent) =>
-        agent === "claude"
-          ? { supported: true, prompt: "请安装", result: { status: "completed", output: "已安装" } }
-          : { supported: false, reason: "Codex 开新会话执行安装为后续版本预留" },
+      preview: async (agent) => ({ agent, skill: "external-agent-notification", target_dir: `/tmp/${agent}/skills`, prompt: "请安装", supported: true, reason: null }),
+      install: async (agent) => ({ supported: true, prompt: "请安装", result: { status: "completed", output: "已安装" } }),
+    },
+    setup: {
+      check: async (agent) => ({ agent, overall: "ok", claude_version: null, items: [], next_steps: [] }),
+      install: async (agent) => ({ agent, overall: "ok", claude_version: null, items: [], next_steps: [] }),
+      uninstall: async () => ({ agent: "claude", overall: "ok", claude_version: null, items: [], next_steps: [] }),
+      probeStart: () => ({ status: "idle" }),
+      probeStatus: () => ({ status: "idle" }),
+      requireReady: async (agent) => {
+        if (options.requireReadyReject === agent)
+          throw new TypeError(`${agent} 前置安装未完成`);
+      },
+      instructions: [],
     },
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
     hasDshSession: async (id) => id === "dsh",
@@ -243,27 +245,14 @@ test("凭证 RPC 只通过服务层暴露生成、查询和重置", async (t) =>
   assert.equal((await relay.call("credential_reset", {})).value.token, "new-token");
 });
 
-test("安装通知 Skill：预览按能力路由，Codex 预留不支持", async (t) => {
-  const { relay } = setup(t);
-  const claude = await relay.call("install_skill_preview", { agent: "claude" });
-  assert.equal(claude.ok, true);
-  assert.equal(claude.value.supported, true);
-  assert.equal(claude.value.skill, "external-agent-notification");
-  const codex = await relay.call("install_skill_preview", { agent: "codex" });
-  assert.equal(codex.ok, true);
-  assert.equal(codex.value.supported, false);
-  assert.match(codex.value.reason, /预留/);
-});
-
-test("安装通知 Skill：Claude 执行返回结果，Codex 拒绝，非法 Agent 报错", async (t) => {
-  const { relay } = setup(t);
-  const run = await relay.call("install_skill", { agent: "claude" });
-  assert.equal(run.ok, true);
-  assert.equal(run.value.supported, true);
-  assert.equal(run.value.result.status, "completed");
-  const codex = await relay.call("install_skill", { agent: "codex" });
-  assert.equal(codex.value.supported, false);
-  assert.equal((await relay.call("install_skill", { agent: "bad" })).ok, false);
+test("前置安装门控：未安装的 Agent 订阅与发送被拒绝", async (t) => {
+  const { relay } = setup(t, { requireReadyReject: "codex" });
+  const sub = await relay.call("subscribe", { agent: "codex", external_session_id: "ext" }, "dsh");
+  assert.equal(sub.ok, false);
+  assert.match(sub.error.message, /前置安装未完成/);
+  const send = await relay.call("send", { agent: "codex", external_session_id: "ext", content: "hi" }, "dsh");
+  assert.equal(send.ok, false);
+  assert.match(send.error.message, /前置安装未完成/);
 });
 
 
@@ -367,6 +356,7 @@ test("发送后订阅使用发送前快照基线，空历史 cursor=null 不被�
     subscriptions,
     checks: { check: async () => ({ status: "not_due" }) },
     notifications: { drain: async () => {} },
+    skillInstall: { preview: async () => ({}), install: async () => ({}) },
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
     hasDshSession: async (id) => id === "dsh",
     createDshSession: async () => "new-dsh",
@@ -420,6 +410,7 @@ test("发送成功但订阅创建失败时保留 sent 消息并返回 subscripti
     subscriptions,
     checks: { check: async () => ({ status: "not_due" }) },
     notifications: { drain: async () => {} },
+    skillInstall: { preview: async () => ({}), install: async () => ({}) },
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
     hasDshSession: async (id) => id === "dsh",
     createDshSession: async () => "new-dsh",
@@ -465,6 +456,7 @@ test("subscribe 用 hasDshSession 验证存在性，不读取标题", async (t) 
     subscriptions,
     checks: { check: async () => ({ status: "not_due" }) },
     notifications: { drain: async () => {} },
+    skillInstall: { preview: async () => ({}), install: async () => ({}) },
     listDshSessions: async () => {
       listCalls++;
       return [{ id: "dsh", title: "接收会话" }];

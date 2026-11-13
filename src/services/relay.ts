@@ -130,12 +130,6 @@ export function createRelayService({
           case "agents":
             value = adapters.list();
             break;
-          case "install_skill_preview":
-            value = await skillInstall.preview(agent(args.agent));
-            break;
-          case "install_skill":
-            value = await skillInstall.install(agent(args.agent));
-            break;
           case "setup_check":
           case "setup_install":
           case "setup_uninstall":
@@ -150,7 +144,9 @@ export function createRelayService({
             break;
           }
           case "create_session": {
-            const adapter = adapters.get(agent(args.agent));
+            const selected = agent(args.agent);
+            if (setup) await setup.requireReady(selected);
+            const adapter = adapters.get(selected);
             if (!adapter.capabilities().createSession || !adapter.createSession)
               throw new TypeError("该 Agent 不支持新建专用会话");
             value = await adapter.createSession({ cwd: text(args.cwd, "cwd") });
@@ -185,6 +181,7 @@ export function createRelayService({
               throw new TypeError("订阅类型无效");
             const selected = agent(args.agent),
               external = text(args.external_session_id, "external_session_id");
+            if (setup) await setup.requireReady(selected);
             let session = type === "poll"
               ? (args.dsh_session_id === undefined || args.dsh_session_id === null
                 ? currentSession ?? null : text(args.dsh_session_id, "dsh_session_id"))
@@ -248,6 +245,7 @@ export function createRelayService({
           }
           case "send": {
             const selected = agent(args.agent);
+            if (setup) await setup.requireReady(selected);
             const external = text(args.external_session_id, "external_session_id");
             const content = text(args.content, "content");
             const subscribeAfterSend =

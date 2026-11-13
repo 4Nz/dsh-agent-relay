@@ -36,8 +36,11 @@ import { PLUGIN_VERSION } from "./version.js";
 interface RelayHost extends DshDeliveryContext {
   schedule: unknown;
   connection: RelayConnection;
-  sessions: DshDeliveryContext["sessions"] & {
-    create(id: string, options: { meta: { cwd: string } }): unknown;
+  sessions: DshDeliveryContext["sessions"];
+  // 接收会话须经 sessionController.create mint 并 compose 默认 preset，
+  // 才能被 resolveAgent 成功 resume；不能用 sessions 的低级 create 只建记录。
+  sessionController: DshDeliveryContext["sessionController"] & {
+    create(request: { cwd: string }): Promise<{ sessionId: string }>;
   };
   workspaceRegistry: { create(path: string, title?: string): Promise<unknown> };
   sessionQuery: DshDeliveryContext["sessionQuery"] & {
@@ -114,9 +117,8 @@ export function apply(ctx: Context): void {
   const createReceiveSession = async () => {
     await mkdir(relayDir, { recursive: true, mode: 0o700 });
     await host.workspaceRegistry.create(relayDir, RELAY_GROUP_TITLE);
-    const id = randomUUID();
-    await host.sessions.create(id, { meta: { cwd: relayDir } });
-    return id;
+    const { sessionId } = await host.sessionController.create({ cwd: relayDir });
+    return sessionId;
   };
   const dshSessions = createDshSessions(host.sessionQuery);
   const service = createRelayService({
@@ -172,6 +174,7 @@ export function apply(ctx: Context): void {
     createSubscription: async (input) => subscriptions.createPush(input),
     createSession: createReceiveSession,
     drain: () => notifications.drain(),
+    requireReady: (agent) => setup.requireReady(agent),
   });
   const pushServer = createPushServer({
     handler: pushHandler,

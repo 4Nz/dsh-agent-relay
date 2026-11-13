@@ -63,7 +63,7 @@ export function registerTools(
       name: "relay_send",
       endpoint: "send",
       description:
-        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递：先为 queued，会话空闲后推送为 sent，Claude 确认后记录 acked_at；未启用 channel 时 rejected。Codex 仅向 Relay 创建登记的专用后台会话发送；其他会话只读。可选发送成功后创建一次 poll 订阅。",
+        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递：先为 queued，会话空闲后推送为 sent，Claude 确认后记录 acked_at；未启用 channel 时 rejected。Codex 桌面会话经队列排队投递，专用后台会话直接开始新轮。可选发送成功后创建一次 poll 订阅。",
       parameters: {
         agent,
         external_session_id: { type: "string", required: true },
@@ -72,13 +72,6 @@ export function registerTools(
         subscribe_after_send: { type: "boolean" },
         dsh_session_id: { type: "string" },
       },
-    },
-    {
-      name: "relay_install_skill",
-      endpoint: "install_skill",
-      description:
-        "向本地 Agent 开一个新会话执行安装提示词，把 external-agent-notification 通知 Skill 写入其技能目录；Codex 第一版为后续预留，返回不支持。",
-      parameters: { agent },
     },
     {
       name: "relay_setup_check",

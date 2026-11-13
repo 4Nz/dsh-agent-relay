@@ -29,7 +29,7 @@ export class CodexRpcError extends Error {
   constructor(readonly code: number, message: string) { super(message); this.name = 'CodexRpcError'; }
 }
 const METHODS = new Set(['thread/list', 'thread/read', 'thread/turns/list']);
-const WRITE_METHODS = new Set(['thread/start', 'thread/resume', 'turn/start']);
+const WRITE_METHODS = new Set(['thread/start', 'thread/resume', 'turn/start', 'thread/queue/add']);
 const MAX_MESSAGE = 16 * 1024 * 1024;
 const failure = (message: string) => new AdapterError('unavailable', message);
 

@@ -24,7 +24,6 @@ test("工具把 DSH 执行会话传入共用服务，注册所有 M2 工具", as
     "relay_check",
     "relay_create_session",
     "relay_inspect",
-    "relay_install_skill",
     "relay_list",
     "relay_list_sessions",
     "relay_ping",

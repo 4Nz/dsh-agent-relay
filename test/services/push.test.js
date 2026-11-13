@@ -50,6 +50,7 @@ test("push handler 校验共享凭证、为无接收会话的订阅创建分组�
       return "dsh-new";
     },
     drain: async () => calls.push("drain"),
+    requireReady: async () => {},
     now: () => 100,
     newId: () => "notification-id",
   });
@@ -105,6 +106,7 @@ test("push 不需要预先订阅，首次请求自动创建一次性订阅和接
       return "dsh-new";
     },
     drain: async () => calls.push("drain"),
+    requireReady: async () => {},
     now: () => 100,
     newId: () => "notification-id",
   });

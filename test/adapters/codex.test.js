@@ -134,6 +134,7 @@ async function writable(t, overrides = {}) {
       if (method === 'thread/read' || method === 'thread/resume') return { thread: { ...thread, status: { type: 'idle' } } };
       if (method === 'thread/turns/list') return { data: [turn()], nextCursor: null };
       if (method === 'turn/start') return { turn: { id: 'accepted-turn', status: 'inProgress' } };
+      if (method === 'thread/queue/add') return { queuedSubmission: { id: 'queued-1', input: params.input, clientUserMessageId: params.clientUserMessageId } };
       assert.fail(method);
     } }),
   });
@@ -152,13 +153,21 @@ test('Codex 写入：新建专用会话登记后发送，接收即 sent 且不�
   assert.deepEqual(started.params, { threadId: ID, input: [{ type: 'text', text: '继续' }] });
   assert.equal(closes(), 0);
 });
-test('Codex 写入：未登记、端点不符、忙碌和恢复后状态不明均拒绝', async t => {
+test('Codex 写入：未登记与端点不符走 queue/add 排队，忙碌和恢复后状态不明仍拒绝', async t => {
   const { adapter, store, calls } = await writable(t, { request: async method => method === 'thread/read' ? { thread } : method === 'thread/resume' ? { thread: { ...thread, status: { type: 'active' } } } : undefined });
-  assert.equal((await adapter.sendMessage(ID, '继续')).status, 'rejected');
-  assert.equal(calls.length, 0);
+  // 未登记 → 桌面会话，经 thread/queue/add 排队投递。
+  const first = await adapter.sendMessage(ID, '继续');
+  assert.equal(first.status, 'sent');
+  assert.equal(first.external_ref, 'queued-1');
+  assert.equal(calls.some(c => c.method === 'thread/queue/add'), true);
+  assert.equal(calls.some(c => c.method === 'turn/start'), false);
+  // 端点不符 → 仍未登记，走 queue/add。
+  calls.length = 0;
   store.codexSessions.register({ session_id: ID, endpoint: '/tmp/other.sock', created_at: 1 });
-  assert.equal((await adapter.sendMessage(ID, '继续')).status, 'rejected');
-  assert.equal(calls.length, 0);
+  assert.equal((await adapter.sendMessage(ID, '继续')).status, 'sent');
+  assert.equal(calls.some(c => c.method === 'thread/queue/add'), true);
+  // 端点匹配（专用会话）→ 恢复后 active，拒绝且不走 turn/start。
+  calls.length = 0;
   store.codexSessions.register({ session_id: ID, endpoint: '/tmp/relay-test.sock', created_at: 2 });
   assert.equal((await adapter.sendMessage(ID, '继续')).status, 'rejected');
   assert.equal(calls.some(c => c.method === 'turn/start'), false);
