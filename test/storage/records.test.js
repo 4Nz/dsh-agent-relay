@@ -171,3 +171,35 @@ test("按外部会话顺延：只影响同 agent、同会话的未结束订阅",
   assert.equal(s.get("other").expires_at, 100 + 3600000);
   assert.equal(s.get("done").expires_at, 100 + 3600000);
 });
+test("channel 消息：queued 入队、按序列出、推送、ack 与 ack 超时", (t) => {
+  const { db } = fixture(t);
+  const m = createMessages(db);
+  m.create({ ...message("q1"), status: "queued", created_at: 100 });
+  m.create({ ...message("q2"), status: "queued", created_at: 101 });
+  assert.throws(() => m.create({ ...message("bad"), status: "sent" }), TypeError);
+  assert.deepEqual(m.queued("claude", "session'1").map((x) => x.id), ["q1", "q2"]);
+  // 推送：queued → sent，external_ref 标记 channel
+  assert.equal(m.transition({ id: "q1", expected_status: "queued", status: "sent", sent_at: 200, external_ref: "channel:q1" }), true);
+  assert.equal(m.transition({ id: "q1", expected_status: "queued", status: "failed" }), false);
+  assert.deepEqual(m.queued("claude", "session'1").map((x) => x.id), ["q2"]);
+  assert.deepEqual(m.awaitingAck(300).map((x) => x.id), ["q1"]);
+  assert.equal(m.ack({ id: "q1", acked_at: 250, summary: "已完成" }), true);
+  assert.equal(m.ack({ id: "q1", acked_at: 260 }), false, "重复 ack 不生效");
+  assert.equal(m.get("q1").ack_summary, "已完成");
+  assert.equal(m.awaitingAck(300).length, 0);
+  // ack 超时：sent → unknown；迟到的 ack 改回 sent
+  m.transition({ id: "q2", expected_status: "queued", status: "sent", sent_at: 300, external_ref: "channel:q2" });
+  assert.equal(m.ackTimeout("q2", "超时未确认"), true);
+  assert.equal(m.get("q2").status, "unknown");
+  assert.equal(m.get("q2").sent_at, null);
+  assert.equal(m.ack({ id: "q2", acked_at: 900 }), true);
+  assert.equal(m.get("q2").status, "sent");
+  assert.equal(m.get("q2").sent_at, 900);
+  // 非 channel 消息不受 ack 影响
+  m.create(message("plain"));
+  m.transition({ id: "plain", expected_status: "sending", status: "sent", sent_at: 1, external_ref: "uuid-1" });
+  assert.equal(m.ack({ id: "plain", acked_at: 2 }), false);
+  assert.equal(m.ackTimeout("plain", "x"), false);
+  // acked_at 只能出现在 sent 上
+  assert.throws(() => db.exec("UPDATE relay_message SET status='failed',sent_at=NULL WHERE id='q1'"));
+});

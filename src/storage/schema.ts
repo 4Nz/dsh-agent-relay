@@ -60,4 +60,26 @@ CREATE INDEX message_route ON relay_message(agent,external_session_id,subscripti
  endpoint TEXT NOT NULL CHECK(length(trim(endpoint))>0),
  created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991)
 ) STRICT;`,
+  // Claude channel 投递：新增 queued（等会话空闲）状态和 ack 字段。SQLite 不能修改 CHECK，按新结构重建表。
+  `
+CREATE TABLE relay_message_v3 (
+ id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0),agent TEXT NOT NULL CHECK(agent IN ('claude','codex')),
+ external_session_id TEXT NOT NULL CHECK(length(trim(external_session_id))>0),subscription_id TEXT REFERENCES relay_subscription(id),
+ content TEXT NOT NULL CHECK(length(trim(content))>0),status TEXT NOT NULL DEFAULT 'sending' CHECK(status IN ('queued','sending','sent','rejected','failed','unknown')),
+ error TEXT,external_ref TEXT,${time("created_at")},${time("sent_at", true)},${time("acked_at", true)},ack_summary TEXT,
+ CHECK((status='sent' AND sent_at IS NOT NULL) OR (status!='sent' AND sent_at IS NULL)),
+ CHECK(acked_at IS NULL OR status='sent')
+) STRICT;
+INSERT INTO relay_message_v3 (id,agent,external_session_id,subscription_id,content,status,error,external_ref,created_at,sent_at)
+ SELECT id,agent,external_session_id,subscription_id,content,status,error,external_ref,created_at,sent_at FROM relay_message;
+DROP TABLE relay_message;
+ALTER TABLE relay_message_v3 RENAME TO relay_message;
+CREATE TRIGGER message_route_insert BEFORE INSERT ON relay_message WHEN NEW.subscription_id IS NOT NULL BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM relay_subscription WHERE id=NEW.subscription_id AND agent=NEW.agent AND external_session_id=NEW.external_session_id) THEN RAISE(ABORT,'消息路由不匹配') END; END;
+CREATE TRIGGER message_route_update BEFORE UPDATE ON relay_message WHEN NEW.subscription_id IS NOT NULL BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM relay_subscription WHERE id=NEW.subscription_id AND agent=NEW.agent AND external_session_id=NEW.external_session_id) THEN RAISE(ABORT,'消息路由不匹配') END; END;
+CREATE INDEX message_list ON relay_message(created_at DESC,id DESC);
+CREATE INDEX message_route ON relay_message(agent,external_session_id,subscription_id);
+CREATE INDEX message_queue ON relay_message(status,agent,external_session_id,created_at);
+`,
 ];

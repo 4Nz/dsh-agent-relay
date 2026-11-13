@@ -10,7 +10,7 @@ export type Result =
   | "unreachable";
 export type EndReason = Result | "delivered" | "user_stopped";
 export type MessageStatus =
-  "sending" | "sent" | "rejected" | "failed" | "unknown";
+  "queued" | "sending" | "sent" | "rejected" | "failed" | "unknown";
 export type DeliveryStatus =
   "pending" | "delivering" | "delivered" | "failed" | "unknown";
 export type Json =
@@ -95,12 +95,18 @@ export interface Message {
   external_ref: string | null;
   created_at: number;
   sent_at: number | null;
+  // Claude channel 投递：Claude 调用 ack 的时间和结果摘要；只在 sent 上记录。
+  acked_at: number | null;
+  ack_summary: string | null;
 }
 export type MessageInput = Pick<
   Message,
   "id" | "agent" | "external_session_id" | "content" | "created_at"
 > &
-  Partial<Pick<Message, "subscription_id">>;
+  Partial<Pick<Message, "subscription_id">> & {
+    // 默认 sending；channel 投递先以 queued 入队，等会话空闲。
+    status?: "sending" | "queued";
+  };
 export interface Notification {
   id: string;
   subscription_id: string;
@@ -151,7 +157,7 @@ export interface FinishInput {
 export interface TransitionInput {
   id: string;
   expected_status: MessageStatus;
-  status: Exclude<MessageStatus, "sending">;
+  status: Exclude<MessageStatus, "sending" | "queued">;
   error?: string | null;
   external_ref?: string | null;
   sent_at?: number | null;
