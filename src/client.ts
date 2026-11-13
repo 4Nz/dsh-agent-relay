@@ -14,6 +14,7 @@ const labels: Record<string, string> = {
   unreachable: "无法访问",
   user_stopped: "手动停止",
   sent: "已发送",
+  queued: "排队中",
   rejected: "被拒绝",
   pending: "待投递",
   delivering: "投递中",
@@ -363,7 +364,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     try {
       const value = await call("send", { agent: sub.agent, external_session_id: sub.external_session_id,
         subscription_id: sub.id, content: message });
-      setNotice(`消息${label(value.message.status)}${value.message.error ? `：${value.message.error}` : "；已发送不代表任务完成。"}`);
+      setNotice(`消息${label(value.message.status)}${value.message.error ? `：${value.message.error}` : value.message.status === "queued" ? "；会话空闲后推送，Claude 确认后显示已确认。" : "；已发送不代表任务完成。"}`);
       setRefreshVersion((v) => v + 1); close(); setMessage("");
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }

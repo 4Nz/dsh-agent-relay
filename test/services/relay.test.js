@@ -97,6 +97,7 @@ function setup(t, options = {}) {
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
     hasDshSession: async (id) => id === "dsh",
     createDshSession: async () => "new-dsh",
+    onQueued: options.onQueued,
   });
   return {
     relay,
@@ -520,4 +521,21 @@ test('发送服务：同目标并发拒绝，其他目标可发送，锁在失�
   assert.equal(other.value.message.status, 'sent');
   release(); assert.equal((await first).value.message.status, 'sent');
   assert.equal((await relay.call('send', { agent: 'claude', external_session_id: 'held', content: 'd' })).value.message.status, 'sent');
+});
+
+test("Claude 终端持有的会话：消息记为 queued 并触发推送检查，发送后订阅照常创建", async (t) => {
+  let triggered = 0;
+  const { relay, store, setSendResult } = setup(t, { onQueued: async () => { triggered++; } });
+  setSendResult({ status: "queued" });
+  const result = await relay.call("send", { agent: "claude", external_session_id: "held", content: "补充需求" });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.message.status, "queued");
+  assert.equal(result.value.message.sent_at, null);
+  assert.equal(store.messages.get(result.value.message.id).status, "queued");
+  assert.equal(triggered, 1);
+  setSendResult({ status: "rejected", reason: "该会话未启用 Agent Relay channel" });
+  const rejected = await relay.call("send", { agent: "claude", external_session_id: "held", content: "再补充" });
+  assert.equal(rejected.value.message.status, "rejected");
+  assert.match(rejected.value.message.error, /channel/);
+  assert.equal(triggered, 1);
 });

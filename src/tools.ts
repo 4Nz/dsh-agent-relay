@@ -63,7 +63,7 @@ export function registerTools(
       name: "relay_send",
       endpoint: "send",
       description:
-        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，Codex 仅向 Relay 创建登记的专用后台会话发送；其他会话只读。可选发送成功后创建一次 poll 订阅。",
+        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递：先为 queued，会话空闲后推送为 sent，Claude 确认后记录 acked_at；未启用 channel 时 rejected。Codex 仅向 Relay 创建登记的专用后台会话发送；其他会话只读。可选发送成功后创建一次 poll 订阅。",
       parameters: {
         agent,
         external_session_id: { type: "string", required: true },

@@ -225,3 +225,36 @@ test("会话目录不可读时抛检查失败而非视为不存在；真实缺�
     chmodSync(dir, 0o755);
   }
 });
+
+test("sendMessage：被终端持有的会话交给 channel，不调用 -p；无进程持有仍走 --resume", async (t) => {
+  const { dir, file } = fixture(t);
+  writeFileSync(file, prompt("任务", 1) + reply("结果", 2));
+  const accepted = [];
+  const channel = {
+    accept: async (id) => {
+      accepted.push(id);
+      return id === ID ? { status: "queued" } : { status: "rejected", reason: "该会话未启用 Agent Relay channel" };
+    },
+  };
+  for (const status of ["idle", "busy"]) {
+    const r = runner({ agents: [{ sessionId: ID, status }], onPrint: () => assert.fail("不应发送") });
+    assert.deepEqual(await adapter(dir, r.run, { channel }).sendMessage(ID, "继续"), { status: "queued" });
+  }
+  assert.deepEqual(accepted, [ID, ID]);
+  // 状态查询失败时不交给 channel
+  const failing = runner({ agentsFail: true, onPrint: () => assert.fail("不应发送") });
+  assert.match((await adapter(dir, failing.run, { channel }).sendMessage(ID, "继续")).reason, /无法确认会话状态/);
+  assert.equal(accepted.length, 2);
+  // 无进程持有：沿用 --resume
+  let printed = false;
+  const free = runner({
+    agents: [],
+    onPrint: (args, options) => {
+      printed = true;
+      appendFileSync(file, prompt(options.input, 3));
+      return { code: 0, stdout: JSON.stringify({ is_error: false, session_id: ID }), stderr: "", timedOut: false };
+    },
+  });
+  assert.equal((await adapter(dir, free.run, { channel }).sendMessage(ID, "继续")).status, "sent");
+  assert.equal(printed, true);
+});

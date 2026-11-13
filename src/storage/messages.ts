@@ -61,6 +61,13 @@ export function createMessages(db: DatabaseSync) {
           .run(status, error, external_ref, sent_at, id, expected_status).changes === 1
       );
     },
+    // Adapter 交给 channel 排队：sending → queued，等会话空闲后由 channel 服务推送。
+    enqueue(id: string) {
+      text(id, "id");
+      return (
+        db.prepare(`UPDATE ${table} SET status='queued',error=NULL WHERE id=? AND status='sending'`).run(id).changes === 1
+      );
+    },
     // 记录 Claude 的 ack。仅对已推送（sent）且未 ack 的消息生效；
     // ack 超时已记为 unknown 的 channel 消息收到迟到的 ack 时改回 sent。
     ack({ id, acked_at, summary = null }: { id: string; acked_at: number; summary?: string | null }) {

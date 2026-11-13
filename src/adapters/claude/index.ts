@@ -26,6 +26,8 @@ export interface ClaudeAdapterOptions {
   pollIntervalMs?: number;
   // 开新会话执行一次性提示词的最长等待时间，超时记为 failed。
   runPromptTimeoutMs?: number;
+  // 被终端持有的会话改由 channel 排队投递；未配置时按旧规则拒绝。
+  channel?: { accept(sessionId: string): Promise<{ status: "queued" } | { status: "rejected"; reason: string }> };
 }
 interface Runtime {
   runtime: RuntimeStatus;
@@ -117,6 +119,8 @@ export function createClaudeAdapter(
       throw new AdapterError("unavailable", `无法读取会话记录：${message(error)}`);
     }
     const state = await runtimeOf(sessionId);
+    // 被终端持有（忙碌或空闲）：不用 --resume 注入，交给 channel 等空闲后推送。
+    if (!state.error && state.held && options.channel) return options.channel.accept(sessionId);
     const refusal = refuse(state);
     if (refusal) return { status: "rejected", reason: refusal };
     const child = run(

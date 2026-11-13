@@ -25,6 +25,10 @@ import { registerRelayApi, type RelayConnection } from "./api.js";
 import { createCredentialService } from "./services/credentials.js";
 import { createSkillInstallService } from "./services/skill-install.js";
 import { createPushHandler, createPushServer } from "./services/push.js";
+import { createClaudeChannelService } from "./services/claude-channel.js";
+import { createChannelRoutes } from "./services/channel-http.js";
+import { createClaudeAgentList } from "./adapters/claude/agents.js";
+import { createRunner } from "./adapters/claude/runner.js";
 import { randomUUID } from "node:crypto";
 import { PLUGIN_VERSION } from "./version.js";
 
@@ -73,8 +77,15 @@ export function apply(ctx: Context): void {
     throw error;
   }
   const codex = createCodexAdapter({ bindings: store.codexSessions });
+  // Claude channel：独立凭证，明文由前置安装接入写入 Claude 侧供 channel server 读取。
+  const channelCredentials = createCredentialService({ dataDir, name: "claude-channel-credential.json" });
+  const channel = createClaudeChannelService({
+    store,
+    listAgents: createClaudeAgentList(createRunner()),
+    onError: (error) => ctx.logger.warn("[agent-relay] claude channel: %s", error),
+  });
   const adapters = createAdapterRegistry([
-    createClaudeAdapter(),
+    createClaudeAdapter({ channel }),
     codex,
   ]);
   const scheduler = createDshScheduler(host.schedule);
@@ -108,6 +119,7 @@ export function apply(ctx: Context): void {
     createDshSession: createReceiveSession,
     listDshSessions: () => dshSessions.list(),
     hasDshSession: (id) => dshSessions.has(id),
+    onQueued: () => channel.tick(),
   });
   let stopping = false;
   const operations = new Set<Promise<unknown>>();
@@ -149,11 +161,17 @@ export function apply(ctx: Context): void {
     createSession: createReceiveSession,
     drain: () => notifications.drain(),
   });
-  const pushServer = createPushServer({ handler: pushHandler });
+  const pushServer = createPushServer({
+    handler: pushHandler,
+    routes: createChannelRoutes({ channel, credentials: channelCredentials }),
+  });
+  const stopChannel = channel.start();
   ctx.effect(() => async () => {
     stopping = true;
     stopApi();
     stopCleanup();
+    stopChannel();
+    channel.dispose();
     try {
       await pushServer.stop().catch(() => {});
       await runtime.stop();

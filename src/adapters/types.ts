@@ -48,6 +48,8 @@ export interface Snapshot {
 }
 export type SendResult =
   | { status: "sent"; external_ref: string | null }
+  // Claude 终端持有的会话：已交给 channel 排队，等会话空闲后推送。
+  | { status: "queued" }
   | { status: "rejected"; reason: string }
   | { status: "failed"; error: string }
   | { status: "unknown"; error: string };

@@ -79,6 +79,7 @@ export function createRelayService({
   listDshSessions,
   hasDshSession,
   createDshSession,
+  onQueued,
 }: {
   store: RelayStore;
   adapters: AdapterRegistry;
@@ -91,6 +92,8 @@ export function createRelayService({
   // 仅用于存在性验证，不读取标题/正文；失败向上抛 unavailable，不当作不存在。
   hasDshSession?: (id: string) => Promise<boolean>;
   createDshSession?: () => Promise<string>;
+  // 消息进入 channel 队列后触发一次推送检查。
+  onQueued?: () => Promise<void>;
 }) {
   const sending = new Set<string>();
   return {
@@ -269,6 +272,7 @@ export function createRelayService({
               const adapter = adapters.get(selected);
               let sendResult:
                 | { status: "sent"; external_ref: string | null }
+                | { status: "queued" }
                 | { status: "rejected"; reason: string }
                 | { status: "failed"; error: string }
                 | { status: "unknown"; error: string };
@@ -294,19 +298,24 @@ export function createRelayService({
                   sendResult = { status: "failed", error: messageOf(error) };
                 }
               }
-              const transitioned = store.messages.transition({
-                id: message.id,
-                expected_status: "sending",
-                status: sendResult.status,
-                ...(sendResult.status === "sent"
-                  ? { external_ref: sendResult.external_ref, sent_at: Date.now() }
-                  : { error: "reason" in sendResult ? sendResult.reason : sendResult.error }),
-              });
+              const transitioned =
+                sendResult.status === "queued"
+                  ? store.messages.enqueue(message.id)
+                  : store.messages.transition({
+                      id: message.id,
+                      expected_status: "sending",
+                      status: sendResult.status,
+                      ...(sendResult.status === "sent"
+                        ? { external_ref: sendResult.external_ref, sent_at: Date.now() }
+                        : { error: "reason" in sendResult ? sendResult.reason : sendResult.error }),
+                    });
               if (!transitioned) throw new Error("消息状态更新失败");
+              // 排队的消息尝试立即推送（会话空闲且 channel 在线时）。
+              if (sendResult.status === "queued") await onQueued?.();
               const saved = store.messages.get(message.id)!;
               let createdSubscription = null;
               let subscriptionError: string | null = null;
-              if (saved.status === "sent") {
+              if (saved.status === "sent" || saved.status === "queued") {
                 subscriptions.touch(selected, external);
                 if (subscribeAfterSend) {
                   try {
