@@ -297,7 +297,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setInstallPreview(null);
     setInstallResult(null);
     setInstallError("");
-    void call("install_skill_preview", { agent: installAgent })
+    void call("setup_status", { agent: installAgent })
       .then((value) => {
         if (live) setInstallPreview(value);
       })
@@ -400,21 +400,13 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setInstallError("");
     setInstallResult(null);
     try {
-      const value = await call("install_skill", { agent: installAgent });
+      const value = await call("setup", { agent: installAgent });
       setInstallResult(value);
+      if (value.ok) setInstallPreview(value.status);
     } catch (e) {
       setInstallError((e as Error).message);
     } finally {
       setInstallBusy(false);
-    }
-  }
-  async function copyPrompt() {
-    if (!installPreview?.prompt) return;
-    try {
-      await navigator.clipboard.writeText(installPreview.prompt);
-      setNotice("安装提示词已复制到剪贴板。");
-    } catch {
-      setInstallError("复制失败，请手动选中提示词复制。");
     }
   }
   async function submit(event: Event) {
@@ -852,35 +844,32 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     h("label", null, "消息", h("textarea", { value: message, rows: 5, maxLength: 500, onChange: (e: any) => setMessage(e.target.value) })),
     error && h("p", { role: "alert", className: "error" }, error),
     h("button", { disabled: busy || !message.trim() || !sendAllowed(sub), onClick: () => void send(sub) }, "确认目标并发送"));
-  const installStatusLabel = (status: string) =>
-    status === "completed" ? "已完成" : status === "failed" ? "失败" : status === "rejected" ? "被拒绝" : status;
-  const installDrawer = () => h(Drawer, { title: "安装通知 Skill", onClose: close },
-    h("p", { className: "muted" }, "向本地 Agent 开一个新会话执行安装提示词，把 external-agent-notification skill 写入其技能目录，之后该 Agent 就能在任务完成后把结果通知回 DSH。"),
+  const installDrawer = () => h(Drawer, { title: "前置安装", onClose: close },
+    h("p", { className: "muted" }, "检测 Agent 后台可用性并安装 external-agent-notification 通知 Skill，两者都通过后该 Agent 才能用于订阅、发送和接收通知。"),
     fieldSelect("Agent", installAgent, (v) => {
       setInstallAgent(v);
       setInstallResult(null);
       setInstallError("");
     }, [["claude", "Claude"], ["codex", "Codex"]]),
     installPreview && h("div", { className: "notice small" },
-      h("p", null, `技能：${installPreview.skill}`),
-      h("p", { className: "muted" }, `安装目录：${installPreview.target_dir}`),
-      !installPreview.supported && h("p", { className: "warn" }, installPreview.reason)),
-    installPreview && h("label", null, "安装提示词（可复制后手动执行）",
-      h("textarea", { readOnly: true, value: installPreview.prompt, rows: 11 })),
+      h("p", null, `后台可用：${installPreview.available ? "是" : "否"}`),
+      installPreview.available_reason && h("p", { className: "warn" }, installPreview.available_reason),
+      h("p", null, `通知 Skill：${installPreview.skill_installed ? "已安装" : "未安装"}`),
+      h("p", { className: "muted" }, installPreview.skill_dir),
+      installPreview.ready
+        ? h("p", null, "✅ 前置安装完成，该 Agent 可用。")
+        : h("p", { className: "warn" }, installPreview.reason)),
     installError && h("p", { role: "alert", className: "error" }, installError),
     installResult && h("div", { className: "notice" },
-      installResult.supported === false
-        ? h("p", null, installResult.reason)
-        : h("p", null, `执行结果：${installStatusLabel(installResult.result.status)}`),
-      installResult.result?.error && h("p", { className: "error" }, installResult.result.error),
-      installResult.result?.output && h("p", { className: "small", style: { whiteSpace: "pre-wrap" } }, installResult.result.output)),
+      installResult.ok === true
+        ? h("p", null, "✅ 安装完成。")
+        : h("p", { className: "warn" }, installResult.reason)),
     h("footer", null,
-      h("button", { disabled: !installPreview, onClick: () => void copyPrompt() }, "复制提示词"),
       h("button", {
         className: "primary",
-        disabled: busy || installBusy || !installPreview || !installPreview.supported,
+        disabled: busy || installBusy || !installPreview || !installPreview.available,
         onClick: () => void runInstall(),
-      }, installBusy ? "正在安装…" : "发送安装指令")));
+      }, installBusy ? "正在安装…" : "执行安装")));
   return h(
     "div",
     {
@@ -913,7 +902,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
               setDrawer("install");
             },
           },
-          "安装通知 Skill",
+          "前置安装",
         ),
         h(
           "button",

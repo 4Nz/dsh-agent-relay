@@ -63,7 +63,7 @@ export function registerTools(
       name: "relay_send",
       endpoint: "send",
       description:
-        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，Codex 仅向 Relay 创建登记的专用后台会话发送；其他会话只读。可选发送成功后创建一次 poll 订阅。",
+        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收。Codex 桌面会话经队列排队投递，专用后台会话直接开始新轮；Claude 安装流程开发中暂不支持。可选发送成功后创建一次 poll 订阅。",
       parameters: {
         agent,
         external_session_id: { type: "string", required: true },
@@ -74,10 +74,17 @@ export function registerTools(
       },
     },
     {
-      name: "relay_install_skill",
-      endpoint: "install_skill",
+      name: "relay_setup",
+      endpoint: "setup",
       description:
-        "向本地 Agent 开一个新会话执行安装提示词，把 external-agent-notification 通知 Skill 写入其技能目录；Codex 第一版为后续预留，返回不支持。",
+        "检测 Agent 后台可用性并安装 external-agent-notification 通知 Skill，两者都通过后该 Agent 才能用于订阅、发送和接收通知。Claude 安装流程开发中暂不支持，Codex 需先完成前置安装。",
+      parameters: { agent },
+    },
+    {
+      name: "relay_setup_status",
+      endpoint: "setup_status",
+      description:
+        "查看 Agent 的前置安装状态（后台可用性 + 通知 Skill 是否已安装、是否 ready）。",
       parameters: { agent },
     },
     {

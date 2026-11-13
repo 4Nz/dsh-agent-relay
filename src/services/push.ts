@@ -32,6 +32,7 @@ export interface PushHandlerOptions {
   }) => Promise<{ ok: true; subscription: Subscription } | { ok: false; message: string }>;
   createSession: (subscription: Subscription) => Promise<string>;
   drain: () => Promise<unknown>;
+  requireReady: (agent: "claude" | "codex") => Promise<void>;
   now?: () => number;
   newId?: () => string;
 }
@@ -42,6 +43,7 @@ export function createPushHandler({
   createSession,
   createSubscription,
   drain,
+  requireReady,
   now = Date.now,
   newId = randomUUID,
 }: PushHandlerOptions) {
@@ -127,6 +129,14 @@ export function createPushHandler({
     }
     if (!subscription || subscription.type !== "push")
       return new Response("push 订阅不存在", { status: 404 });
+    try {
+      await requireReady(subscription.agent);
+    } catch (error) {
+      return new Response(
+        error instanceof Error ? error.message : "前置安装未完成",
+        { status: 403 },
+      );
+    }
     if (direct && (
       subscription.agent !== input.agent ||
       subscription.external_session_id !== input.external_session_id

@@ -1,34 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSkillInstallService } from "../../lib/services/skill-install.js";
-import { createAdapterRegistry } from "../../lib/adapters/registry.js";
-
-function adapters(runCalls) {
-  return createAdapterRegistry([
-    {
-      agent: "claude",
-      capabilities: () => ({ listSessions: true, snapshot: true, sendMessage: true, runPrompt: true }),
-      listSessions: async () => [],
-      snapshot: async () => ({}),
-      sendMessage: async () => ({ status: "sent", external_ref: null }),
-      runPrompt: async (text, options) => {
-        runCalls.push([text, options]);
-        return { status: "completed", output: "已安装" };
-      },
-    },
-    {
-      agent: "codex",
-      capabilities: () => ({ listSessions: true, snapshot: true, sendMessage: false, runPrompt: false }),
-      listSessions: async () => [],
-      snapshot: async () => ({}),
-      sendMessage: async () => ({ status: "rejected", reason: "只读" }),
-      runPrompt: async () => ({ status: "rejected", reason: "预留" }),
-    },
-  ]);
-}
 
 function fixture(t) {
   const skillsDir = mkdtempSync(join(tmpdir(), "relay-skill-src-"));
@@ -42,41 +17,51 @@ function fixture(t) {
   return { skillsDir, homeDir };
 }
 
-test("预览读取技能内容并拼装安装提示词，目标目录按 Agent 区分", async (t) => {
+test("status：Claude 开发中不可用，Codex 依赖检测结果且未装不算 ready", async (t) => {
   const { skillsDir, homeDir } = fixture(t);
-  const runCalls = [];
-  const service = createSkillInstallService({ adapters: adapters(runCalls), skillsDir, homeDir });
-  const claude = await service.preview("claude");
-  assert.equal(claude.supported, true);
-  assert.equal(claude.skill, "external-agent-notification");
-  assert.equal(claude.target_dir, join(homeDir, ".claude", "skills", "external-agent-notification"));
-  assert.match(claude.prompt, /external-agent-notification/);
-  assert.match(claude.prompt, /# 通知技能/);
-  assert.match(claude.prompt, /SKILL\.md/);
-  const codex = await service.preview("codex");
-  assert.equal(codex.supported, false);
-  assert.match(codex.reason, /预留/);
-  assert.equal(codex.target_dir, join(homeDir, ".codex", "skills", "external-agent-notification"));
+  const svc = createSkillInstallService({
+    skillsDir, homeDir,
+    detect: async (agent) => agent === "codex"
+      ? { available: true, reason: null }
+      : { available: false, reason: "Claude 安装流程开发中，暂不支持" },
+  });
+  const claude = await svc.status("claude");
+  assert.equal(claude.available, false);
+  assert.match(claude.reason, /开发中/);
+  assert.equal(claude.ready, false);
+
+  const codex = await svc.status("codex");
+  assert.equal(codex.available, true);
+  assert.equal(codex.skill_installed, false);
+  assert.equal(codex.ready, false);
+  assert.match(codex.reason, /尚未安装/);
+  assert.equal(codex.skill_dir, join(homeDir, ".codex", "skills", "external-agent-notification", "SKILL.md"));
 });
 
-test("安装调用 runPrompt，把技能目录作为 addDirs 传入", async (t) => {
+test("install：Codex 可用时写入 skill 文件并 ready", async (t) => {
   const { skillsDir, homeDir } = fixture(t);
-  const runCalls = [];
-  const service = createSkillInstallService({ adapters: adapters(runCalls), skillsDir, homeDir });
-  const result = await service.install("claude");
-  assert.equal(result.supported, true);
-  assert.equal(result.result.status, "completed");
-  assert.equal(runCalls.length, 1);
-  assert.match(runCalls[0][0], /external-agent-notification/);
-  assert.deepEqual(runCalls[0][1], { addDirs: [join(homeDir, ".claude", "skills")] });
+  const svc = createSkillInstallService({ skillsDir, homeDir, detect: async () => ({ available: true, reason: null }) });
+  const r = await svc.install("codex");
+  assert.equal(r.ok, true);
+  assert.equal(r.status.ready, true);
+  assert.equal(r.status.skill_installed, true);
+  assert.ok(existsSync(join(homeDir, ".codex", "skills", "external-agent-notification", "SKILL.md")));
 });
 
-test("Codex 安装返回不支持且不调用 runPrompt", async (t) => {
+test("install：Claude 不支持且不写文件", async (t) => {
   const { skillsDir, homeDir } = fixture(t);
-  const runCalls = [];
-  const service = createSkillInstallService({ adapters: adapters(runCalls), skillsDir, homeDir });
-  const result = await service.install("codex");
-  assert.equal(result.supported, false);
-  assert.match(result.reason, /预留/);
-  assert.equal(runCalls.length, 0);
+  const svc = createSkillInstallService({ skillsDir, homeDir });
+  const r = await svc.install("claude");
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /开发中/);
+  assert.equal(existsSync(join(homeDir, ".claude", "skills", "external-agent-notification", "SKILL.md")), false);
+});
+
+test("requireReady：未装抛错，装后放行，Claude 恒拒绝", async (t) => {
+  const { skillsDir, homeDir } = fixture(t);
+  const svc = createSkillInstallService({ skillsDir, homeDir, detect: async () => ({ available: true, reason: null }) });
+  await assert.rejects(() => svc.requireReady("codex"), /前置安装未完成/);
+  await svc.install("codex");
+  await svc.requireReady("codex");
+  await assert.rejects(() => svc.requireReady("claude"), /开发中/);
 });
