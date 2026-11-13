@@ -214,6 +214,8 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const [installPreview, setInstallPreview] = useState<any>(null);
   const [installResult, setInstallResult] = useState<any>(null);
   const [installBusy, setInstallBusy] = useState(false);
+  const [setupReport, setSetupReport] = useState<any>(null);
+  const [probe, setProbe] = useState<any>(null);
   const [installError, setInstallError] = useState("");
   const revision = useRef(0);
   const [refreshVersion, setRefreshVersion] = useState(0);
@@ -298,9 +300,17 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setInstallPreview(null);
     setInstallResult(null);
     setInstallError("");
+    setSetupReport(null);
     void call("install_skill_preview", { agent: installAgent })
       .then((value) => {
         if (live) setInstallPreview(value);
+      })
+      .catch((e) => {
+        if (live) setInstallError((e as Error).message);
+      });
+    void call("setup_check", { agent: installAgent })
+      .then((value) => {
+        if (live) setSetupReport(value);
       })
       .catch((e) => {
         if (live) setInstallError((e as Error).message);
@@ -309,6 +319,14 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       live = false;
     };
   }, [drawer, installAgent]);
+  // 连通测试进行中时每 2 秒刷新一次结果。
+  useEffect(() => {
+    if (drawer !== "install" || probe?.status !== "waiting") return;
+    const timer = setInterval(() => {
+      void call("setup_probe_status").then(setProbe).catch(() => {});
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [drawer, probe?.status]);
   useEffect(() => {
     if (drawer === "detail" && current?.agent === "codex") void inspect(current);
   }, [drawer, current?.id]);
@@ -396,17 +414,23 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       setBusy(false);
     }
   }
-  async function runInstall() {
+  async function runSetup(endpoint: "setup_check" | "setup_install" | "setup_uninstall") {
     setInstallBusy(true);
     setInstallError("");
-    setInstallResult(null);
     try {
-      const value = await call("install_skill", { agent: installAgent });
-      setInstallResult(value);
+      setSetupReport(await call(endpoint, { agent: installAgent }));
     } catch (e) {
       setInstallError((e as Error).message);
     } finally {
       setInstallBusy(false);
+    }
+  }
+  async function startProbe() {
+    setInstallError("");
+    try {
+      setProbe(await call("setup_probe_start"));
+    } catch (e) {
+      setInstallError((e as Error).message);
     }
   }
   async function copyPrompt() {
@@ -853,35 +877,76 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     h("label", null, "消息", h("textarea", { value: message, rows: 5, maxLength: 500, onChange: (e: any) => setMessage(e.target.value) })),
     error && h("p", { role: "alert", className: "error" }, error),
     h("button", { disabled: busy || !message.trim() || !sendAllowed(sub), onClick: () => void send(sub) }, "确认目标并发送"));
-  const installStatusLabel = (status: string) =>
-    status === "completed" ? "已完成" : status === "failed" ? "失败" : status === "rejected" ? "被拒绝" : status;
-  const installDrawer = () => h(Drawer, { title: "安装通知 Skill", onClose: close },
-    h("p", { className: "muted" }, "向本地 Agent 开一个新会话执行安装提示词，把 external-agent-notification skill 写入其技能目录，之后该 Agent 就能在任务完成后把结果通知回 DSH。"),
+  const SETUP_LABEL: Record<string, string> = {
+    ok: "正常",
+    missing: "未安装",
+    outdated: "需更新",
+    conflict: "冲突",
+    unavailable: "不可用",
+  };
+  const SETUP_OVERALL: Record<string, string> = {
+    ok: "已安装，无需重复操作",
+    changed: "已完成安装或更新",
+    needs_action: "部分项需要处理",
+    unavailable: "当前环境不满足，未做改动",
+  };
+  const SETUP_ITEM: Record<string, string> = {
+    claude: "Claude 命令",
+    channel_flag: "channel 支持",
+    channel_server: "channel server",
+    mcp: "MCP 登记",
+    credential: "channel 凭证",
+    rule: "Relay 规则",
+    claude_md: "CLAUDE.md 引用",
+    shell: "claude 函数",
+    skill: "通知 Skill",
+  };
+  const installDrawer = () => h(Drawer, { title: "前置安装接入", onClose: close },
+    h("p", { className: "muted" }, installAgent === "claude"
+      ? "为 Claude 一次配好接入：通知 Skill（任务完成后通知 DSH）和 channel（把消息送进开在终端里的会话）。已正常的项不会改动，修改前自动备份。"
+      : "Codex 只需安装通知 Skill；发送消息走 Relay 专用后台会话，不需要 channel。"),
     fieldSelect("Agent", installAgent, (v) => {
       setInstallAgent(v);
       setInstallResult(null);
+      setSetupReport(null);
       setInstallError("");
     }, [["claude", "Claude"], ["codex", "Codex"]]),
-    installPreview && h("div", { className: "notice small" },
-      h("p", null, `技能：${installPreview.skill}`),
-      h("p", { className: "muted" }, `安装目录：${installPreview.target_dir}`),
-      !installPreview.supported && h("p", { className: "warn" }, installPreview.reason)),
-    installPreview && h("label", null, "安装提示词（可复制后手动执行）",
-      h("textarea", { readOnly: true, value: installPreview.prompt, rows: 11 })),
+    !setupReport && !installError && h("p", { className: "muted" }, "正在检查安装状态…"),
+    setupReport && h("div", { className: "notice small" },
+      h("p", null, `${SETUP_OVERALL[setupReport.overall] ?? setupReport.overall}${setupReport.claude_version ? ` · Claude Code ${setupReport.claude_version}` : ""}`),
+      h("ul", null, ...setupReport.items.map((item: any) =>
+        h("li", { key: item.key, className: item.status === "ok" ? "" : item.status === "conflict" || item.status === "unavailable" ? "error" : "warn" },
+          `${SETUP_ITEM[item.key] ?? item.key}：${SETUP_LABEL[item.status] ?? item.status} · ${item.message}`,
+          item.backup ? h("span", { className: "muted" }, `（备份：${item.backup}）`) : null))),
+      setupReport.sessions && h("p", { className: "muted" }, `已启用 channel 的会话：${setupReport.sessions.online} 个`),
+      setupReport.next_steps?.length > 0 && h("div", null, h("p", null, "下一步："),
+        h("ol", null, ...setupReport.next_steps.map((step: string, i: number) => h("li", { key: i }, step))))),
+    installAgent === "claude" && probe && h("div", { className: "notice small" },
+      probe.status === "waiting"
+        ? h("div", null, h("p", null, "连通测试进行中，请按以下步骤操作："),
+            h("ol", null, ...probe.instructions.map((step: string, i: number) => h("li", { key: i }, step))))
+        : h("p", { className: probe.status === "acked" ? "" : "error" }, probe.message)),
+    installAgent === "codex" && installPreview && h("label", null, "通知 Skill 安装提示词（复制后在 Codex 中执行）",
+      h("textarea", { readOnly: true, value: installPreview.prompt, rows: 9 })),
     installError && h("p", { role: "alert", className: "error" }, installError),
-    installResult && h("div", { className: "notice" },
-      installResult.supported === false
-        ? h("p", null, installResult.reason)
-        : h("p", null, `执行结果：${installStatusLabel(installResult.result.status)}`),
-      installResult.result?.error && h("p", { className: "error" }, installResult.result.error),
-      installResult.result?.output && h("p", { className: "small", style: { whiteSpace: "pre-wrap" } }, installResult.result.output)),
     h("footer", null,
-      h("button", { disabled: !installPreview, onClick: () => void copyPrompt() }, "复制提示词"),
-      h("button", {
+      h("button", { disabled: installBusy, onClick: () => void runSetup("setup_check") }, "检查安装状态"),
+      installAgent === "codex" && h("button", { disabled: !installPreview, onClick: () => void copyPrompt() }, "复制提示词"),
+      installAgent === "claude" && h("button", {
+        disabled: installBusy || probe?.status === "waiting" || setupReport?.overall === "unavailable",
+        onClick: () => void startProbe(),
+      }, probe?.status === "waiting" ? "等待新会话…" : "连通测试"),
+      installAgent === "claude" && h("button", {
+        disabled: installBusy,
+        onClick: () => {
+          if (window.confirm("将删除 channel 配置（MCP 登记、规则、claude 函数、channel 凭证），通知 Skill 保留。继续？")) void runSetup("setup_uninstall");
+        },
+      }, "卸载 channel"),
+      installAgent === "claude" && h("button", {
         className: "primary",
-        disabled: busy || installBusy || !installPreview || !installPreview.supported,
-        onClick: () => void runInstall(),
-      }, installBusy ? "正在安装…" : "发送安装指令")));
+        disabled: busy || installBusy || setupReport?.overall === "unavailable",
+        onClick: () => void runSetup("setup_install"),
+      }, installBusy ? "正在处理…" : setupReport?.overall === "ok" ? "重新检查并修复" : "安装 / 修复")));
   return h(
     "div",
     {
@@ -911,10 +976,12 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
               setInstallPreview(null);
               setInstallResult(null);
               setInstallError("");
+              setSetupReport(null);
+              setProbe(null);
               setDrawer("install");
             },
           },
-          "安装通知 Skill",
+          "前置安装接入",
         ),
         h(
           "button",

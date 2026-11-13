@@ -114,14 +114,16 @@ test("ack 超时记 unknown 不重发，迟到 ack 改回 sent；排队超时记
   assert.equal(store.messages.get("stale").status, "failed");
 });
 
-test("连通测试：登记后推送探测并等 ack；未登记返回 not_registered", async (t) => {
-  const { channel } = fixture(t, []);
-  assert.deepEqual(await channel.probe(S2, () => "x", { registerTimeoutMs: 50, ackTimeoutMs: 50 }), { status: "not_registered" });
+test("连通测试：等待测试开始后新登记的 channel，推送探测并等 ack；未登记返回 not_registered", async (t) => {
+  const { channel, clock } = fixture(t, []);
+  const since = clock.now;
+  assert.deepEqual(await channel.probe((r) => r.registered_at > since, () => "x", { registerTimeoutMs: 50, ackTimeoutMs: 50 }), { status: "not_registered" });
+  clock.now += 1;
   const polling = channel.poll({ pid: 10, session_id: S1, version: null }, 2000);
-  const probing = channel.probe(S1, (id) => `探测 ${id}`, { registerTimeoutMs: 1000, ackTimeoutMs: 1000 });
+  const probing = channel.probe((r) => r.registered_at > since, (id) => `探测 ${id}`, { registerTimeoutMs: 1000, ackTimeoutMs: 1000 });
   const pushed = await polling;
-  assert.equal(pushed[0].msg_id, `probe-${S1}`);
-  assert.equal(pushed[0].content, `探测 probe-${S1}`);
+  assert.match(pushed[0].msg_id, /^probe-10-/);
+  assert.equal(pushed[0].content, `探测 ${pushed[0].msg_id}`);
   channel.ack({ msg_id: pushed[0].msg_id, summary: "OK" });
   assert.deepEqual(await probing, { status: "acked", summary: "OK" });
 });

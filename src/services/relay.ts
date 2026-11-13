@@ -12,6 +12,7 @@ import type { CheckService } from "./checks.js";
 import type { NotificationService } from "./notifications.js";
 import type { CredentialService } from "./credentials.js";
 import type { SkillInstallService } from "./skill-install.js";
+import type { SetupService } from "./setup.js";
 export interface DshSessionOption {
   id: string;
   title: string;
@@ -34,6 +35,11 @@ export const endpoints = [
   "credential_reset",
   "install_skill",
   "install_skill_preview",
+  "setup_check",
+  "setup_install",
+  "setup_uninstall",
+  "setup_probe_start",
+  "setup_probe_status",
   "list",
   "notify_poll",
   "get",
@@ -80,6 +86,7 @@ export function createRelayService({
   hasDshSession,
   createDshSession,
   onQueued,
+  setup,
 }: {
   store: RelayStore;
   adapters: AdapterRegistry;
@@ -94,6 +101,8 @@ export function createRelayService({
   createDshSession?: () => Promise<string>;
   // 消息进入 channel 队列后触发一次推送检查。
   onQueued?: () => Promise<void>;
+  // 前置安装接入：按 Agent 安装、自检、卸载与连通测试。
+  setup?: SetupService;
 }) {
   const sending = new Set<string>();
   return {
@@ -127,6 +136,19 @@ export function createRelayService({
           case "install_skill":
             value = await skillInstall.install(agent(args.agent));
             break;
+          case "setup_check":
+          case "setup_install":
+          case "setup_uninstall":
+          case "setup_probe_start":
+          case "setup_probe_status": {
+            if (!setup) throw new Error("前置安装接入未就绪");
+            if (endpoint === "setup_check") value = await setup.check(agent(args.agent));
+            else if (endpoint === "setup_install") value = await setup.install(agent(args.agent));
+            else if (endpoint === "setup_uninstall") value = await setup.uninstall();
+            else if (endpoint === "setup_probe_start") value = setup.probeStart();
+            else value = setup.probeStatus();
+            break;
+          }
           case "create_session": {
             const adapter = adapters.get(agent(args.agent));
             if (!adapter.capabilities().createSession || !adapter.createSession)

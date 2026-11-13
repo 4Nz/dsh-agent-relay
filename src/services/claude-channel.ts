@@ -17,6 +17,7 @@ export interface ChannelRegistration {
   // channel server 启动时的会话 ID，仅作初始值、兜底匹配和展示。
   initial_session_id: string | null;
   version: string | null;
+  registered_at: number;
   last_seen: number;
 }
 export interface ChannelPush {
@@ -154,7 +155,7 @@ export function createClaudeChannelService({
       if (disposed) return Promise.resolve([]);
       let entry = entries.get(input.pid);
       if (!entry) {
-        entry = { pid: input.pid, initial_session_id: input.session_id, version: input.version, last_seen: now(), waiters: [] };
+        entry = { pid: input.pid, initial_session_id: input.session_id, version: input.version, registered_at: now(), last_seen: now(), waiters: [] };
         entries.set(input.pid, entry);
       }
       entry.last_seen = now();
@@ -207,23 +208,23 @@ export function createClaudeChannelService({
     registrations(): ChannelRegistration[] {
       return [...entries.values()]
         .filter(online)
-        .map(({ pid, initial_session_id, version, last_seen }) => ({ pid, initial_session_id, version, last_seen }));
+        .map(({ pid, initial_session_id, version, registered_at, last_seen }) => ({ pid, initial_session_id, version, registered_at, last_seen }));
     },
-    // 连通测试：等待指定会话的 channel 登记，推送探测消息并等 ack。
+    // 连通测试：等待符合条件的 channel 登记（如测试开始后新启动的 Claude），推送探测消息并等 ack。
     async probe(
-      sessionId: string,
+      match: (registration: ChannelRegistration) => boolean,
       content: (msgId: string) => string,
       { registerTimeoutMs = 60_000, ackTimeoutMs: wait = 90_000 } = {},
     ): Promise<{ status: "acked"; summary: string | null } | { status: "not_registered" } | { status: "no_ack" }> {
       const deadline = Date.now() + registerTimeoutMs;
       let entry: Entry | undefined;
       while (Date.now() < deadline && !disposed) {
-        entry = [...entries.values()].find((e) => online(e) && e.initial_session_id === sessionId && e.waiters.length);
+        entry = [...entries.values()].find((e) => online(e) && match(e) && e.waiters.length);
         if (entry) break;
         await new Promise((r) => setTimeout(r, 300));
       }
       if (!entry) return { status: "not_registered" };
-      const msgId = `probe-${sessionId}`;
+      const msgId = `probe-${entry.pid}-${now()}`;
       const acked = new Promise<string | null>((resolve) => probes.set(msgId, resolve));
       deliver(entry, { msg_id: msgId, content: content(msgId) });
       let timer: ReturnType<typeof setTimeout> | undefined;

@@ -29,6 +29,7 @@ import { createClaudeChannelService } from "./services/claude-channel.js";
 import { createChannelRoutes } from "./services/channel-http.js";
 import { createClaudeAgentList } from "./adapters/claude/agents.js";
 import { createRunner } from "./adapters/claude/runner.js";
+import { createSetupService } from "./services/setup.js";
 import { randomUUID } from "node:crypto";
 import { PLUGIN_VERSION } from "./version.js";
 
@@ -79,9 +80,11 @@ export function apply(ctx: Context): void {
   const codex = createCodexAdapter({ bindings: store.codexSessions });
   // Claude channel：独立凭证，明文由前置安装接入写入 Claude 侧供 channel server 读取。
   const channelCredentials = createCredentialService({ dataDir, name: "claude-channel-credential.json" });
+  const claudeRunner = createRunner();
+  const listClaudeAgents = createClaudeAgentList(claudeRunner);
   const channel = createClaudeChannelService({
     store,
-    listAgents: createClaudeAgentList(createRunner()),
+    listAgents: listClaudeAgents,
     onError: (error) => ctx.logger.warn("[agent-relay] claude channel: %s", error),
   });
   const adapters = createAdapterRegistry([
@@ -100,6 +103,14 @@ export function apply(ctx: Context): void {
     transport: createDshDelivery(host),
   });
   const skillInstall = createSkillInstallService({ adapters });
+  const setup = createSetupService({
+    run: claudeRunner,
+    channel,
+    listAgents: listClaudeAgents,
+    channelCredentials,
+    skillInstall,
+    log: (text) => ctx.logger.info("[agent-relay] setup: %s", text),
+  });
   const createReceiveSession = async () => {
     await mkdir(relayDir, { recursive: true, mode: 0o700 });
     await host.workspaceRegistry.create(relayDir, RELAY_GROUP_TITLE);
@@ -120,6 +131,7 @@ export function apply(ctx: Context): void {
     listDshSessions: () => dshSessions.list(),
     hasDshSession: (id) => dshSessions.has(id),
     onQueued: () => channel.tick(),
+    setup,
   });
   let stopping = false;
   const operations = new Set<Promise<unknown>>();

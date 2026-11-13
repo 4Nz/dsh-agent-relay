@@ -81,6 +81,20 @@ export function registerTools(
       parameters: { agent },
     },
     {
+      name: "relay_setup_check",
+      endpoint: "setup_check",
+      description:
+        "检查前置安装接入状态：Claude 检查 channel 参数、MCP 登记、规则、shell 函数、channel 凭证和通知 Skill；Codex 只检查通知 Skill。逐项返回 ok/missing/outdated/conflict/unavailable 与下一步提示。",
+      parameters: { agent },
+    },
+    {
+      name: "relay_setup_install",
+      endpoint: "setup_install",
+      description:
+        "执行前置安装接入：只修复不正常的项，已正常的项不改动；修改前备份，冲突项不自动覆盖。Claude 安装后需新开终端或重新进入会话才生效。",
+      parameters: { agent },
+    },
+    {
       name: "relay_list",
       endpoint: "list",
       description: "分页查看订阅、检查和通知投递状态；任务结果与投递结果不同。",
