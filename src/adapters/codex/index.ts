@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 import { realpath, stat } from 'node:fs/promises';
 import type { CodexBindings } from '../../storage/codex-sessions.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { AdapterError } from '../types.js';
 import type { AgentAdapter, SendResult, SessionCursor, SessionInfo, Snapshot } from '../types.js';
 import { connectCodex, codexEndpoint, CodexRpcError, CodexTransportError, type CodexClient, type CodexConnectionOptions } from './rpc.js';
@@ -34,8 +34,9 @@ function info(value: unknown, writable = false): SessionInfo {
     last_activity_at: millis(t.updatedAt),
     // daemon 不是桌面执行实例，idle/notLoaded 都不能证明原会话空闲。
     runtime: status === 'active' ? 'busy' : writable && status === 'idle' ? 'idle' : 'unknown', held: true,
-    send_allowed: writable && (status === 'idle' || status === 'notLoaded'),
-    send_reason: !writable ? '仅 Relay 创建的专用后台会话支持发送；桌面及其他会话只读' : status === 'active' ? '会话处理中' : status === 'idle' || status === 'notLoaded' ? '' : '无法确认后台会话状态',
+    // 桌面/其他会话经 thread/queue/add 排队投递，可发送；专用会话沿用 turn/start 需 idle/notLoaded。
+    send_allowed: writable ? (status === 'idle' || status === 'notLoaded') : true,
+    send_reason: writable ? (status === 'active' ? '会话处理中' : status === 'idle' || status === 'notLoaded' ? '' : '无法确认后台会话状态') : '',
   };
 }
 function page(value: unknown): { data: unknown[]; nextCursor: string | null } {
@@ -139,19 +140,31 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
       if (!options.bindings) return { status: 'rejected', reason: 'Codex 第一版不支持发送消息' };
       checkId(sessionId);
       if (typeof text !== 'string' || !text.trim()) return { status: 'rejected', reason: '消息不能为空' };
-      if (!bound(sessionId)) return { status: 'rejected', reason: '此会话未登记到当前后台实例，只允许查阅' };
       if (sending.has(sessionId)) return { status: 'rejected', reason: '此会话正在发送消息' };
       sending.add(sessionId);
       let starting = false;
       try {
         const client = await writer();
-        const reason = await writableState(client, sessionId);
-        if (reason) return { status: 'rejected', reason };
+        if (bound(sessionId)) {
+          // 专用后台会话：沿用 turn/start，需先确认空闲可写。
+          const reason = await writableState(client, sessionId);
+          if (reason) return { status: 'rejected', reason };
+          starting = true;
+          const result = object(await client.request('turn/start', { threadId: sessionId, input: [{ type: 'text', text }] }));
+          const turnId = string(object(result.turn).id);
+          if (!turnId.trim()) bad();
+          return { status: 'sent', external_ref: turnId };
+        }
+        // 桌面/其他会话：thread/queue/add 排队投递，绕过桌面 active writer 独占，agent 醒来后消费。
         starting = true;
-        const result = object(await client.request('turn/start', { threadId: sessionId, input: [{ type: 'text', text }] }));
-        const turnId = string(object(result.turn).id);
-        if (!turnId.trim()) bad();
-        return { status: 'sent', external_ref: turnId };
+        const result = object(await client.request('thread/queue/add', {
+          threadId: sessionId,
+          input: [{ type: 'text', text }],
+          clientUserMessageId: randomUUID(),
+        }));
+        const queueId = string(object(result.queuedSubmission).id);
+        if (!queueId.trim()) bad();
+        return { status: 'sent', external_ref: queueId };
       } catch (error) {
         if (error instanceof CodexTransportError) writeConnection = undefined;
         // 请求已经发出却缺少可靠回执（包括畸形响应），不能当作未发送。
