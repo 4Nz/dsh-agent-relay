@@ -43,7 +43,7 @@ DSH Agent Relay 是 DSH 的外部 Agent 任务订阅、通知与消息转发插�
 - 按明确的 Agent 和外部会话 ID 路由；标题与工作目录仅用于展示和人工核对。
 - 工具与页面接口共用服务层；各 Agent 通过 Adapter 声明能力，不支持的操作应明确返回原因。
 - Codex 支持会话发现和快照查阅；仅 Relay 创建并登记到当前 daemon 端点的专用会话支持发送，其他会话只读。专用会话不得同时交给桌面或 CLI 执行；会话绑定不是全局排他锁。daemon 可读持久化历史，不代表它掌握桌面会话的实时状态；`notLoaded` 不等于空闲或任务完成。
-- Claude 只向无进程持有的会话转发消息；会话忙碌或被终端持有时拒绝发送。排队和 btw 不在第一版范围内。
+- Claude 被终端持有的会话通过 Agent Relay channel 投递：消息先排队，会话空闲时再推送，Claude 处理后调用 `ack` 确认；会话未启用 channel 时拒绝并说明原因。无进程持有的会话沿用 `claude -p --resume`。不用 `--resume` 向被持有的会话注入。等空闲排队只用于 channel 会话，btw 不在第一版范围内。方案与实测见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md`，尚未实施。
 
 ## 状态、数据与验证
 

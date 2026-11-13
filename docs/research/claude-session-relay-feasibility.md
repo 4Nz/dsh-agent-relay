@@ -2,6 +2,8 @@
 
 验证日期：2026-11-11（Asia/Shanghai）。环境：macOS，Claude Code CLI 2.1.311。依据：本机 CLI 帮助、本机会话文件和实测。本文是方案与验证报告，尚未实现 DSH 插件。
 
+> 2026-11-13 更新：会话开在终端里时的转发已另行实测，改用 Claude Code Channels 投递，本文第 1、5、7 节中“终端持有时不开放”的结论不再适用。见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md`。
+
 ## 1. 结论
 
 - **查阅指定会话：可行。** 会话记录是本地 JSONL 文件，按会话 ID 直接读取即可，不需要启动 Claude。

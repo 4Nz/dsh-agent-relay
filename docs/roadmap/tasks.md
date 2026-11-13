@@ -16,7 +16,7 @@
 
 - 判断“收到通知后下一步做什么”。插件只负责把通知送进 DSH 会话，后续由 DSH 处理。
 - 进展的逐条同步。通知只发结果摘要，不搬运外部会话的上下文。
-- Agent 层面的增强能力，比如会话处理中时排队、btw 提问。
+- Agent 层面的增强能力，比如 btw 提问，以及 Claude channel 会话以外的排队。
 - WorkBuddy 接入。
 - 多用户鉴权。第一版按本机单用户设计，表里保留所有者字段。
 
@@ -142,7 +142,7 @@ T1 已提供独立存储模块；接口、迁移与限制见 `docs/superpowers/p
 | T2.4 | 检查执行器 | 由 `schedule` 提醒唤醒的 agent 调 `relay_check` 工具触发，按订阅加锁，上一轮没跑完就跳过。未到 `expires_at` 时直接返回；到期后调用 `snapshot`，按“有效期”一节决定顺延或生成通知并结束，到 `hard_expires_at` 时生成 `expired`。检查失败时累加 `consecutive_failures`，成功时清零，达到阈值生成 `unreachable` 通知并结束订阅。只更新检查状态，不写逐条进展 |
 | T2.5 | 通知服务 | 两种订阅共用。poll 生成通知和结束订阅同事务；push 在送达 DSH 会话并触发处理后结束为 delivered，不等待回复完成。投递最多尝试 3 次，使用稳定幂等标识；未知结果先核对，不盲目重发 |
 | T2.6 | 外部通知入口 | 接收 `push` 通知，校验插件级共享 token，交给通知服务。重复通知按唯一约束忽略 |
-| T2.7 | 转发服务 | 写入 `relay_message`，调用 Adapter 发送。会话处理中或不支持发送时记为 `rejected` 并写明原因。可选“发送后订阅”：发送成功后自动创建一条 `poll` 订阅，任务完成时通知 |
+| T2.7 | 转发服务 | 写入 `relay_message`，调用 Adapter 发送。会话处理中或不支持发送时记为 `rejected` 并写明原因。Claude channel 会话的消息先记为 `queued`，空闲推送后为 `sent`，ack 记 `acked_at`，ack 超时记 `unknown` 不重发。可选“发送后订阅”：发送成功后自动创建一条 `poll` 订阅，任务完成时通知 |
 | T2.8 | 历史清理 | 每天清理超过保留期限的通知和消息 |
 
 “任务结束”的判定交给各 Adapter：
@@ -182,7 +182,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 
 | 编号 | 任务 | 第一版能力 |
 | --- | --- | --- |
-| T5.1 | Claude Adapter | 列出会话、`snapshot`、发送消息。会话处理中或开在终端里时拒绝发送 |
+| T5.1 | Claude Adapter | 列出会话、`snapshot`、发送消息。无进程持有的会话用 `--resume` 发送；被终端持有的会话通过 Agent Relay channel 在空闲时投递，未启用 channel 时拒绝并说明原因。方案见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md` |
 | T5.2 | Codex Adapter | 列出会话、`snapshot`；新增 Relay 专用 daemon 会话创建、持久绑定和受限发送，其他会话只读。发送后订阅按 `turnId` 跟踪。真实 DSH 宿主专项验证通过，见 `docs/research/T2.7-T5.2-T6-T7-codex-daemon-send-validation.md`；历史只读设计见 `docs/superpowers/plans/T5.2-codex-adapter-design.md` |
 
 每个 Adapter 都要有针对真实会话的冒烟测试，测试会话和业务会话分开。
@@ -195,7 +195,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | T6.2 | 新建订阅 | 选 Agent、选外部会话、选接收通知的 DSH 会话（可选），设置有效期（默认 1 小时） |
 | T6.3 | 通知会话分组 | 在 DSH 会话列表里，把由 Relay 新建的通知会话归到一个分组；用户指定的已有会话保留原工作目录与分组，避免改变其后续执行环境。复用 T0.4/T0.5 确认的 workspace 机制。 |
 | T6.4 | 能力提示 | 不支持的操作置灰并说明原因，例如“仅 Relay 创建的 Codex 专用后台会话支持发送” |
-| T6.6 | 一键安装通知 Skill | 页面按钮：向 Claude 开新会话执行安装提示词，把 `external-agent-notification` 写入 `~/.claude/skills`；Codex 只读，预留接口并给可复制提示词 |
+| T6.6 | 一键安装通知 Skill | 页面按钮：向 Claude 开新会话执行安装提示词，把 `external-agent-notification` 写入 `~/.claude/skills`；Codex 只读，预留接口并给可复制提示词。Claude 另需由插件一次配好 channel：MCP 登记、`~/.claude/agent-relay.md` 规则及 `CLAUDE.md` 引用、`claude` shell 函数；重复安装先自检，逐项返回 `ok` / `missing` / `outdated` / `conflict` / `unavailable` 和下一步提示 |
 
 会话内的对话、回复和后续处理都用 DSH 原生能力，插件不另做聊天界面。
 
@@ -219,7 +219,7 @@ DSH 设置页面统一配置和重置插件级共享 token；本机所有 Agent 
 | T7.2b | 无法访问：订阅后让检查调用失败（如停掉 Codex daemon、让会话文件不可解析） → 连续 3 次检查失败 → 一条 `unreachable` 通知，带最近错误 → 订阅结束；中途恢复一次则计数清零 |
 | T7.3 | 主动通知：外部 Agent 发通知 → 送达 → 订阅结束；重复发送不会产生第二条通知 |
 | T7.3a | 用户消息提醒：外部 Agent 通知写入 DSH 会话后，已授权且保持打开的 DSH 浏览器前端显示消息通知；核验首条新通知、历史不补弹、重复请求和刷新防重、权限拒绝/不支持、断网恢复。步骤与判定见 `docs/superpowers/plans/T7.3a-external-notification-acceptance.md`；当前待真实浏览器验收 |
-| T7.4 | 转发：会话空闲时发送成功；处理中时被拒绝并显示原因；“发送后订阅”在任务完成时收到通知 |
+| T7.4 | 转发：会话空闲时发送成功；处理中时被拒绝并显示原因；“发送后订阅”在任务完成时收到通知。Claude 终端持有的会话：空闲时经 channel 送达并收到 ack；忙碌时保持 `queued`，空闲后送达；未启用 channel 时被拒绝并提示重新进入；ack 超时记 `unknown` 不重发；重复安装返回自检结果 |
 | T7.5 | 异常：检查失败、外部会话不存在、投递失败重试、DSH 重启后订阅和定时任务恢复、检查重叠 |
 
 ## 依赖与顺序
