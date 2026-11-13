@@ -54,6 +54,14 @@ rtk proxy node node_modules/dsh-agent-relay/scripts/install-skills.mjs /绝对�
 
 旧脚本没有安装记录：仍指向当前包的链接可以直接重新安装补记；来源不同的旧链接需要人工核对后仅移除符号链接，再重新安装，不递归删除同名目录。项目中的安装记录包含本机路径，通常应加入该项目的本地忽略规则，不提交到公共仓库。
 
+## Claude 前置安装接入（T6.6）
+
+在订阅看板「前置安装接入」选择 Claude，点击「安装 / 修复」。插件直接写入：用户级 MCP server `agent-relay`（`claude mcp add-json -s user`）、`~/.claude/agent-relay.md` 规则与 `~/.claude/CLAUDE.md` 中的 `@agent-relay.md`、`~/.zshrc` 或 `~/.bashrc` 中带标记的 `claude` 函数、`~/.claude/agent-relay/channel-token`（0600）。修改前在原文件旁生成 `.agent-relay-<时间>.bak` 备份；重复安装只修复不正常的项。插件升级后 channel server 路径变化，自检显示 MCP「需更新」，再次安装即可。
+
+安装后新开终端运行 `claude`，启动时在开发 channel 警告框按回车；已运行的会话需退出后 `claude --resume <会话 ID>` 重新进入。建议运行页面中的连通测试。Claude Code 升级后若自检提示“当前版本 Claude 不支持 channel”，channel 投递不可用，详情见插件日志。
+
+「卸载 channel」删除上述配置并保留通知 Skill。停用插件前建议先卸载，否则 `claude` 函数仍会带 channel 参数启动，channel server 会因连不上 Relay 而静默重试。
+
 ## 升级、备份与回滚（T1）
 
 1. 记录旧安装包版本、profile 配置与锁文件，保留旧 tgz。维护期间暂停外部 push 调用。

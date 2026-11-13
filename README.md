@@ -25,7 +25,7 @@ rtk npm run release:prepare
 
 ## 能力边界
 
-通知每条订阅只发一次，仅包含结果摘要。`sent` 不代表任务完成；`delivered` 不代表 DSH 后续处理完成；`unknown` 不自动重发。Claude 忙碌或被终端持有时拒绝转发。Codex 仅允许向 Relay 创建登记的专用 daemon 会话发送，忙碌时拒绝；桌面及其他历史会话保持只读。专用会话请勿同时交给桌面或 CLI 执行。
+通知每条订阅只发一次，仅包含结果摘要。`sent` 不代表任务完成；`delivered` 不代表 DSH 后续处理完成；`unknown` 不自动重发。Claude 会话开在终端里时，经 Agent Relay channel 投递：消息先为 `queued`，会话空闲后推送为 `sent`，Claude 调用 `ack` 后记录确认时间；需先在看板「前置安装接入」中完成 Claude 安装，并用新开终端运行 `claude`（启动时在开发 channel 警告框按回车）。未启用 channel 的终端会话拒绝转发，无进程持有的会话沿用原发送方式。Codex 仅允许向 Relay 创建登记的专用 daemon 会话发送，忙碌时拒绝；桌面及其他历史会话保持只读。专用会话请勿同时交给桌面或 CLI 执行。
 
 开发任务和验收场景见 [第一版任务拆解](docs/roadmap/tasks.md)。
 

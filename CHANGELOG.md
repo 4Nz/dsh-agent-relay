@@ -2,6 +2,9 @@
 
 ## 未发布
 
+- Claude 终端持有的会话改用 Claude Code channel（研究预览）排队投递：会话空闲才推送，Claude 调用 ack 确认，ack 超时记 unknown 不重发；`/clear` 后按 claude 进程 pid 路由。数据库迁移 3 为消息新增 `queued` 状态和 ack 字段。
+- 「安装通知 Skill」改为「前置安装接入」，按 Agent 区分；Claude 一次配好 MCP 登记、规则、`claude` shell 函数和 channel 凭证，支持自检、逐项修复、卸载和连通测试。
+
 - Codex 支持创建 Relay 专用 daemon 会话、持久绑定和受限发送，其他历史会话继续只读。
 - 发送后订阅按目标 turnId 跟踪，修正同秒及后续轮次覆盖；未知回执不自动重发。
 - 新增会话级发送提示、专用会话创建工具/页面入口，以及真实 DSH 两轮上下文、重启和唯一通知冒烟。

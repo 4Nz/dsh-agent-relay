@@ -205,7 +205,7 @@ DSH 设置页面统一配置和重置插件级共享 token；本机所有 Agent 
 
 ### T6.6 前置安装接入
 
-订阅看板的「安装通知 Skill」按钮改为「前置安装接入」，内分 Claude 和 Codex 两部分，各自安装和自检。Claude 部分包含通知 Skill 和 channel 配置，见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md` 第 3.3、3.4 节；Codex 部分只有通知 Skill。以下为现有通知 Skill 的安装方式，channel 部分尚未实施：向 Claude 开新会话执行安装提示词，把随包 `external-agent-notification` 通知 Skill 写入 `~/.claude/skills/external-agent-notification/SKILL.md`；Codex 第一版只读，预留接口并给可复制提示词。实现见 `docs/superpowers/plans/T2.1-T3.1-T3.3-T5.1-T6.6-skill-install.md`。
+订阅看板的「安装通知 Skill」按钮改为「前置安装接入」，内分 Claude 和 Codex 两部分，各自安装和自检。Claude 部分包含通知 Skill 和 channel 配置，见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md` 第 3.3、3.4 节；Codex 部分只有通知 Skill。channel 部分已实施，真实宿主验收归 T7.4。通知 Skill 沿用原安装方式：向 Claude 开新会话执行安装提示词，把随包 `external-agent-notification` 通知 Skill 写入 `~/.claude/skills/external-agent-notification/SKILL.md`；Codex 第一版只读，预留接口并给可复制提示词。实现见 `docs/superpowers/plans/T2.1-T3.1-T3.3-T5.1-T6.6-skill-install.md`。
 
 ## T7 验收
 
