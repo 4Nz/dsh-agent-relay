@@ -96,6 +96,8 @@ export function createSubscriptions(db: DatabaseSync) {
         "expires_at",
         "check_interval_seconds",
         "idle_timeout_seconds",
+        "max_lifetime_seconds",
+        "hard_expires_at",
         "max_consecutive_failures",
         "dsh_session_id",
         "schedule_task_id",

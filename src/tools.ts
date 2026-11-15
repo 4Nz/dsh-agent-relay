@@ -48,7 +48,7 @@ export function registerTools(
       name: "relay_subscribe",
       endpoint: "subscribe",
       description:
-        "创建一次性订阅；poll 默认向当前 DSH 会话通知，预注册 push 可指定接收会话。外部 Agent 也可不预先订阅，直接调用通知入口。默认有效期一小时、最长24小时。只有 schedule_ready=true 才表示定时检查已就绪。",
+        "创建一次性订阅；poll 默认每60秒检查，订阅从创建起3600秒后超时，发现新完成结果即汇报。可按用户要求设置 check_interval_seconds（60～3600秒）和 max_lifetime_seconds（60～86400秒，默认3600）；订阅总超时不随活动顺延。例如每5分钟检查、关注2小时：分别传300和7200。poll 默认向当前 DSH 会话汇报；push 可指定接收会话。schedule_ready=true 表示检查就绪。",
       parameters: {
         agent,
         type: { type: "string", enum: ["poll", "push"] },
@@ -56,6 +56,7 @@ export function registerTools(
         dsh_session_id: { type: "string" },
         idle_timeout_seconds: { type: "integer" },
         check_interval_seconds: { type: "integer" },
+        max_lifetime_seconds: { type: "integer" },
         max_consecutive_failures: { type: "integer" },
       },
     },
@@ -109,7 +110,7 @@ export function registerTools(
       name: "relay_check",
       endpoint: "check",
       description:
-        "执行指定订阅的一次到期检查；未到期或暂停时跳过。由 Agent Relay 定时提醒调用，重复调用不会重复通知。",
+        "立即检查指定订阅，发现新完成结果即通知，不等待无活动超时；暂停或结束时跳过，重复调用不会重复通知。插件已自动定时检查，无需模型重复调用。",
       parameters: subscription,
     },
   ];

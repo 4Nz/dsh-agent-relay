@@ -9,7 +9,7 @@ import { startHistoryCleanup } from "./services/cleanup.js";
 import { createAdapterRegistry } from "./adapters/registry.js";
 import { createClaudeAdapter } from "./adapters/claude/index.js";
 import { createCodexAdapter } from "./adapters/codex/index.js";
-import { createDshScheduler } from "./services/scheduler.js";
+import { createDshScheduler, createPollingScheduler } from "./services/scheduler.js";
 import { createSubscriptionService } from "./services/subscriptions.js";
 import { createCheckService } from "./services/checks.js";
 import { createNotificationService } from "./services/notifications.js";
@@ -32,6 +32,7 @@ import { createRunner } from "./adapters/claude/runner.js";
 import { createSetupService } from "./services/setup.js";
 import { randomUUID } from "node:crypto";
 import { PLUGIN_VERSION } from "./version.js";
+import { createRelayReceiveSession, RELAY_GROUP_TITLE } from "./services/receive-session.js";
 
 interface RelayHost extends DshDeliveryContext {
   schedule: unknown;
@@ -40,9 +41,9 @@ interface RelayHost extends DshDeliveryContext {
   // 接收会话须经 sessionController.create mint 并 compose 默认 preset，
   // 才能被 resolveAgent 成功 resume；不能用 sessions 的低级 create 只建记录。
   sessionController: DshDeliveryContext["sessionController"] & {
-    create(request: { cwd: string }): Promise<{ sessionId: string }>;
+    create(request: { workspaceId: string }): Promise<{ sessionId: string }>;
   };
-  workspaceRegistry: { create(path: string, title?: string): Promise<unknown> };
+  workspaceRegistry: { create(path: string, title?: string): Promise<{ id: string }> };
   sessionQuery: DshDeliveryContext["sessionQuery"] & {
     listSessions(): Promise<{ header: { id: string } }[]>;
     readTitleSnapshots(
@@ -65,13 +66,15 @@ export const inject = [
   "sessionQuery",
   "connection",
 ];
-const RELAY_GROUP_TITLE = "Agent 通知";
 
 export function apply(ctx: Context): void {
   const host = ctx as unknown as RelayHost;
   const dataDir = join(resolveDshHome(), "agent-relay");
   const relayDir = join(dataDir, "conversations");
-  const credentials = createCredentialService({ dataDir });
+  const credentials = createCredentialService({ dataDir, clientConfig: {
+    path: join(dataDir, "notification-client.json"),
+    endpoint: `http://127.0.0.1:${Number(process.env.DSH_AGENT_RELAY_PORT ?? 37421)}/api/agent-relay/notifications`,
+  } });
   const releaseLock = acquireRuntimeLock(dataDir);
   let store: ReturnType<typeof openRelayStore>;
   try {
@@ -94,7 +97,10 @@ export function apply(ctx: Context): void {
     createClaudeAdapter({ channel }),
     codex,
   ]);
-  const scheduler = createDshScheduler(host.schedule);
+  const scheduler = createPollingScheduler(createDshScheduler(host.schedule), async (id) => {
+    await checks.check(id);
+    await notifications.drain();
+  }, (error) => ctx.logger.warn("[agent-relay] poll failed: %s", error));
   const subscriptions = createSubscriptionService({
     store,
     adapters,
@@ -114,12 +120,7 @@ export function apply(ctx: Context): void {
     skillInstall,
     log: (text) => ctx.logger.info("[agent-relay] setup: %s", text),
   });
-  const createReceiveSession = async () => {
-    await mkdir(relayDir, { recursive: true, mode: 0o700 });
-    await host.workspaceRegistry.create(relayDir, RELAY_GROUP_TITLE);
-    const { sessionId } = await host.sessionController.create({ cwd: relayDir });
-    return sessionId;
-  };
+  const createReceiveSession = () => createRelayReceiveSession(host, relayDir);
   const dshSessions = createDshSessions(host.sessionQuery);
   const service = createRelayService({
     store,
@@ -145,6 +146,7 @@ export function apply(ctx: Context): void {
       ctx.logger.warn("[agent-relay] reconciliation failed: %s", error),
     beforeClose: async () => {
       await Promise.allSettled([...operations]);
+      await scheduler.stop();
       await codex.dispose?.();
     },
   });
@@ -211,7 +213,7 @@ export function apply(ctx: Context): void {
 }
 
 // T6.3 通知会话分组的前置：在插件数据目录下建专用目录并注册为 workspace 项目，
-// 通知投递新建的会话以该目录为 cwd 时会自动归入「Agent 通知」分组。
+// 实际新建会话时仍须指定该 workspaceId，仅 cwd 相同不会自动登记分组成员。
 async function ensureRelayWorkspace(ctx: Context): Promise<void> {
   const relayDir = join(resolveDshHome(), "agent-relay", "conversations");
   try {

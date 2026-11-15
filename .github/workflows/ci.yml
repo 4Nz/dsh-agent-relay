@@ -7,7 +7,11 @@ permissions:
   contents: read
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -21,6 +25,6 @@ jobs:
       - run: npm run release:prepare
       - uses: actions/upload-artifact@v7
         with:
-          name: agent-relay-package
+          name: agent-relay-package-${{ matrix.os }}
           path: dist/*/*
           if-no-files-found: error

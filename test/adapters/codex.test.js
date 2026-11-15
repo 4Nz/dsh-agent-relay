@@ -52,10 +52,36 @@ test('Codex：基线旧轮次不算完成，同轮结束刷新游标，新轮次
   const baseline = (await first.adapter.snapshot(ID)).cursor;
   const done = await setup();
   const same = await done.adapter.snapshot(ID, baseline);
-  assert.equal(same.finished_turn, null);
+  assert.equal(same.finished_turn.result, 'completed');
   assert.notEqual(same.cursor.uuid, baseline.uuid);
   const next = await setup({ turns: [turn({ id: 'turn-2', startedAt: 210, completedAt: 220, status: 'failed' })] });
   assert.equal((await next.adapter.snapshot(ID, baseline)).finished_turn.result, 'failed');
+});
+
+test('Codex：订阅时被独立读取标为 interrupted 的同轮后来完成，仍应识别',async()=>{
+ const before=await setup({turns:[turn({status:'interrupted',completedAt:null})]});
+ const baseline=(await before.adapter.snapshot(ID)).cursor;
+ const done=await setup({turns:[turn({completedAt:250})]});
+ assert.equal((await done.adapter.snapshot(ID,baseline)).finished_turn?.result,'completed');
+});
+
+test('Codex：新一轮已开始时仍识别基线轮次的完成，摘要对应完成轮次',async()=>{
+ const baseline={uuid:'codex:turn-1:old',timestamp:150000,turn_status:'interrupted'};
+ const {adapter}=await setup({metadata:{...thread,status:{type:'active'}},turns:[
+  turn({id:'turn-2',status:'inProgress',startedAt:210,completedAt:null,items:[{type:'agentMessage',text:'新任务进行中'}]}),
+  turn({items:[{type:'agentMessage',text:'上一轮完成汇报'}]}),
+ ]});
+ const result=await adapter.snapshot(ID,baseline);
+ assert.equal(result.finished_turn?.external_ref,'turn-1');
+ assert.equal(result.last_reply,'上一轮完成汇报');
+ assert.match(result.cursor.uuid,/turn-2/);
+});
+
+test('Codex：只读 stdio 的已有桌面会话可订阅但不声明可发送或实时空闲',async()=>{
+ const {createCodexAdapter}=await import('../../lib/adapters/codex/index.js');
+ const adapter=createCodexAdapter({connect:async()=>({transport:'stdio',request:async(method,params)=>method==='thread/list'?{data:params.archived?[]:[thread],nextCursor:null}:method==='thread/read'?{thread}:{data:[turn()],nextCursor:null},close(){}})});
+ const list=await adapter.listSessions();assert.equal(list[0].send_allowed,false);
+ const snapshot=await adapter.snapshot(ID);assert.equal(snapshot.runtime,'unknown');assert.equal(snapshot.send_allowed,false);assert.match(snapshot.send_reason,/查询/);
 });
 
 test('Codex：最近轮次执行中、未知或中断不回退到旧完成结果', async () => {

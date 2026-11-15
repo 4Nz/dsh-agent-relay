@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openRelayStore } from "../../lib/storage/index.js";
-import { createRelayService } from "../../lib/services/relay.js";
+import { createRelayService, endpoints } from "../../lib/services/relay.js";
 import { createAdapterRegistry } from "../../lib/adapters/registry.js";
 import { createSubscriptionService } from "../../lib/services/subscriptions.js";
 function setup(t, options = {}) {
@@ -72,6 +72,7 @@ function setup(t, options = {}) {
     get: () => ({ configured: true, digest: "digest", created_at: 1 }),
     generate: () => ({ token: "token", digest: "digest", created_at: 2 }),
     reset: () => ({ token: "new-token", digest: "new-digest", created_at: 3 }),
+    reveal: () => ({ token: "current-token" }),
   };
   const relay = createRelayService({
     store,
@@ -123,8 +124,28 @@ test("订阅使用调用上下文，定时任务未创建时明确返回未就�
   assert.equal(result.ok, true);
   assert.equal(result.value.schedule_ready, false);
   assert.equal(result.value.subscription.dsh_session_id, "dsh");
+  assert.equal(result.value.subscription.check_interval_seconds,60);
+  assert.equal(result.value.subscription.hard_expires_at-result.value.subscription.created_at,3600000);
   const list = await relay.call("list", {});
   assert.equal(list.value.items.length, 1);
+});
+
+test('订阅允许1小时检查和24小时超时，拒绝超限；修改超时仍从原创建时间计算',async t=>{
+ const {relay,store}=setup(t);
+ for(const input of [{check_interval_seconds:3601},{max_lifetime_seconds:86401}]) {
+  assert.equal((await relay.call('subscribe',{agent:'claude',external_session_id:'ext',...input},'dsh')).ok,false);
+ }
+ assert.equal(store.subscriptions.list().items.length,0);
+ const created=await relay.call('subscribe',{agent:'claude',external_session_id:'ext',check_interval_seconds:3600,max_lifetime_seconds:86400},'dsh');
+ assert.equal(created.ok,true);
+ const sub=created.value.subscription;
+ assert.equal(sub.check_interval_seconds,3600);
+ assert.equal(sub.hard_expires_at-sub.created_at,86400000);
+ assert.equal(sub.expires_at,sub.hard_expires_at);
+ assert.equal((await relay.call('update',{subscription_id:sub.id,check_interval_seconds:3601})).ok,false);
+ const updated=await relay.call('update',{subscription_id:sub.id,max_lifetime_seconds:7200});
+ assert.equal(updated.ok,true);
+ assert.equal(updated.value.hard_expires_at,sub.created_at+7200000);
 });
 test("非法 Agent、过短周期、push 及不存在的接收会话在业务边界拒绝", async (t) => {
   const { relay, store } = setup(t);
@@ -243,6 +264,24 @@ test("凭证 RPC 只通过服务层暴露生成、查询和重置", async (t) =>
   assert.deepEqual((await relay.call("credential_get", {})).value.configured, true);
   assert.equal((await relay.call("credential_generate", {})).value.token, "token");
   assert.equal((await relay.call("credential_reset", {})).value.token, "new-token");
+  assert.equal((await relay.call("credential_reveal", {})).value.token, "current-token");
+});
+
+test("已注册的 Skill 预览和安装 RPC 必须实际分发到服务", async(t)=>{
+  const {relay}=setup(t);
+  const preview=await relay.call('install_skill_preview',{agent:'codex'});
+  assert.equal(preview.ok,true);assert.equal(preview.value.prompt,'请安装');
+  assert.equal(preview.value.agent,'codex');
+  const installed=await relay.call('install_skill',{agent:'claude'});
+  assert.equal(installed.ok,true);assert.equal(installed.value.result.status,'completed');
+});
+
+test('所有对外注册的 Relay 操作都有处理分支',async(t)=>{
+  const {relay}=setup(t);
+  for(const endpoint of endpoints){
+    const result=await relay.call(endpoint,{});
+    assert.notEqual(result.error?.message,'不支持的 Relay 操作',endpoint);
+  }
 });
 
 test("前置安装门控：未安装的 Agent 订阅与发送被拒绝", async (t) => {

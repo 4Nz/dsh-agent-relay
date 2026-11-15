@@ -21,4 +21,26 @@
 
 ## 剩余限制
 
-临时构建测试的 Windows 输出写入失败仍需定位，不将安装包冒烟描述为全量门禁通过。本次产物为本地验收包，未上传、未安装到用户业务 profile、未调整发布版本。完整 Windows DSH 安装启用、页面、重启和外部 Agent 链路仍属 T7 真实宿主验收。Windows 私有数据保护依赖父目录继承的文件权限，不能将 POSIX mode 当作 Windows 权限证明。
+11 月 13 日记录的临时构建测试 Windows 输出写入失败，在当轮环境中未解决；11 月 14 日独立 worktree 的完整复验结果见下文。本次产物为本地验收包，未上传、未安装到用户业务 profile、未调整发布版本。完整 Windows DSH 安装启用、页面、重启和外部 Agent 链路仍属 T7 真实宿主验收。Windows 私有数据保护依赖父目录继承的文件权限，不能将 POSIX mode 当作 Windows 权限证明。
+
+## 2026-11-14 T0、T3、T7 独立分支复验
+
+基于 `windows-install-compat` 的 `35d1e4c` 创建分支 `codex/windows-install-validation`，使用 Codex 管理的独立 worktree。环境为 Windows，Node.js v24.16.0、npm 11.13.0；本机未安装 RTK，直接运行 npm/node。
+
+### 执行权限与复验结果
+
+新 worktree 创建后，默认沙箱中 Git 操作和创建 `node_modules` 分别遇到工作树访问失败及 `EPERM`。获准在沙箱外执行后，分支创建和依赖安装成功。
+
+- `npm ci --cache ./.npm-cache`：通过，按锁文件安装 56 个依赖包。
+- `npm run release:prepare`：退出码 0。服务端及前端类型检查通过；188 项测试中 187 通过、0 失败、1 跳过；随后干净构建、包清单检查和隔离 tarball 安装冒烟通过。
+- 安装包冒烟确认服务端导入、前端 loader 注册、包版本和临时 SQLite 重开。
+- 产物为 `dist/0.1.0/dsh-agent-relay-0.1.0.tgz`、`release.json` 和 `SHA256SUMS`，未上传。
+- 对照执行：默认沙箱内运行 `node --test test/scripts/build.test.js`，在临时目录创建 `node_modules` junction 时返回 `EPERM`；该测试在上述完整交付验证的获准执行环境中通过。
+
+当前证据证明沙箱权限会影响本机验证，并且现有适配代码在本次获准执行环境中可以通过完整交付门禁。此前 TypeScript 原生编译器的 `Access is denied` 本轮未重现，不能仅凭本次 junction 拒绝推断两次失败完全同源。本轮未修改构建代码，也未跳过或删除失败测试。
+
+### 尚未验证
+
+本轮仅完成基础交付门禁复验，未启动真实 DSH、Claude 或 Codex 测试会话。Windows DSH 安装启用、页面访问、重启恢复、通知和消息转发仍需 T7 真实宿主验收。父目录继承权限、Agent CLI 安装方式及运行时进程行为也不能由安装包冒烟替代验证。
+
+后续同日已执行独立 DSH 安装及用户指定 Codex 桌面聊天链路验收：安装与直接 push 通知通过，桌面订阅因 daemon 端点不可连接未通过；详情见 [T0、T3、T7 Windows 安装与 Codex 桌面链路验收](T0-T3-T7-windows-codex-desktop-validation.md)。该结果不改变上文本轮基础门禁复验的范围。

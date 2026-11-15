@@ -1,6 +1,6 @@
 # DSH Agent Relay
 
-DSH 的本机外部 Agent 订阅、通知与消息转发插件。支持 Claude 会话发现、查阅、订阅和空闲会话转发；Codex 支持发现和查阅，并可向 Relay 创建登记的专用后台会话发送消息，外部 Codex 也可主动发送结果通知。
+DSH 的本机外部 Agent 订阅、通知与消息转发插件。支持 Claude、Codex 会话发现、查阅和结果订阅；Codex 已有桌面会话可经本机 daemon 排队接收消息，Relay 专用后台会话可直接执行。外部 Agent 也可主动发送结果通知。
 
 运行要求：Node.js >=24、DSH 与外部 Agent 位于同一台机器。包声明的 DSH 范围为 `>=0.2.0 <0.3.0`，宿主依赖使用 `0.2.1-rc.2`；这不是整个范围均已实测的承诺。T7 真实宿主验收尚未完成。
 
@@ -25,13 +25,13 @@ rtk npm run release:prepare
 
 ## 能力边界
 
-通知每条订阅只发一次，仅包含结果摘要。`sent` 不代表任务完成；`delivered` 不代表 DSH 后续处理完成；`unknown` 不自动重发。Claude 会话开在终端里时，经 Agent Relay channel 投递：消息先为 `queued`，会话空闲后推送为 `sent`，Claude 调用 `ack` 后记录确认时间；需先在看板「前置安装接入」中完成 Claude 安装，并用新开终端运行 `claude`（启动时在开发 channel 警告框按回车）。未启用 channel 的终端会话拒绝转发，无进程持有的会话沿用原发送方式。Codex 仅允许向 Relay 创建登记的专用 daemon 会话发送，忙碌时拒绝；桌面及其他历史会话保持只读。专用会话请勿同时交给桌面或 CLI 执行。
+通知每条订阅只发一次，仅包含结果摘要。`sent` 不代表任务完成；`delivered` 不代表 DSH 后续处理完成；`unknown` 不自动重发。Claude 会话开在终端里时，经 Agent Relay channel 投递：消息先为 `queued`，会话空闲后推送为 `sent`，Claude 调用 `ack` 后记录确认时间；需先完成 channel 安装，未启用的终端会话拒绝转发。Codex 已有桌面会话通过 daemon 队列接收消息；未加载时先入队，打开原聊天后由原实例消费。只有独立历史回退连接是只读的。专用后台会话请勿同时交给桌面或 CLI 执行。
 
 开发任务和验收场景见 [第一版任务拆解](docs/roadmap/tasks.md)。
 
 ## Codex 专用后台会话（T5.2）
 
-本机需有已运行且已登录的 Codex daemon；插件不会自动启动、升级或重启它。在看板「新建订阅」选择 Codex，填写绝对工作目录并点击「新建 Codex 专用会话」，再创建订阅，进入详情查阅状态并发送。
+发送需要已运行且已登录的本机 Codex daemon，插件不自动启动、升级或重启它。订阅已有聊天无需创建后台会话；在「新建订阅」选择已有 Codex 聊天即可。确需后台任务时，通过 `relay_create_session` 工具创建，再使用返回 ID。
 
 DSH 对话也可调用 `relay_create_session({agent:"codex",cwd:"/绝对路径/项目"})`，随后用返回的 ID 调用 `relay_send`。传 `subscribe_after_send:true` 后，完成通知精确跟踪这次发送返回的轮次，重启后继续对账。审批请求明确拒绝，不提升原权限策略；暂不支持排队、steer 或交互式审批。
 

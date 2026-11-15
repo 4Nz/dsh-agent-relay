@@ -67,24 +67,54 @@ function fixture(t) {
   });
   return { store, state, service, sub };
 }
-test("未到期不读取；观察新消息后仍可判定已结束轮次，重复检查只登记一次通知", async (t) => {
+
+test('暂停不会延长订阅总超时，到期只生成一次 expired 且不查询外部会话',async t=>{
+ const {store,state,service,sub}=fixture(t);
+ store.subscriptions.update({id:sub.id,expected_status:'active',patch:{status:'paused'}});
+ assert.equal((await service.check(sub.id)).status,'inactive');
+ state.now=sub.hard_expires_at;
+ assert.equal((await service.check(sub.id)).status,'notified');
+ assert.equal(store.subscriptions.get(sub.id).end_reason,'expired');
+ assert.equal(state.calls,0);
+ await service.check(sub.id);assert.equal(state.deleted,1);
+});
+
+test('查询跨过总截止时间且期间暂停，仍以 expired 结束',async t=>{
+ const {store,state,service,sub}=fixture(t);
+ let release;state.wait=new Promise(r=>{release=r;});
+ const checking=service.check(sub.id);
+ store.subscriptions.update({id:sub.id,expected_status:'active',patch:{status:'paused'}});
+ state.now=sub.hard_expires_at+1;release();
+ assert.equal((await checking).status,'notified');
+ assert.equal(store.subscriptions.get(sub.id).end_reason,'expired');
+});
+test("未到超时也读取，新完成轮次首次检查即通知且防重", async (t) => {
   const { store, state, service, sub } = fixture(t);
-  assert.equal((await service.check("s")).status, "not_due");
-  assert.equal(state.calls, 0);
-  state.now = sub.expires_at;
-  assert.equal((await service.check("s")).status, "extended");
-  state.now = store.subscriptions.get("s").expires_at;
   assert.equal((await service.check("s")).status, "notified");
   assert.equal(store.notifications.getBySubscription("s").result, "completed");
   assert.equal(store.subscriptions.get("s").status, "ended");
   await service.check("s");
-  assert.equal(state.calls, 2);
+  assert.equal(state.calls, 1);
   assert.equal(state.deleted, 1);
+});
+
+test("无完成证据且无新活动时，检查记录成功但不到无活动超时不结束", async t => {
+  const { store, state, service, sub } = fixture(t);
+  state.snapshot.cursor = {uuid:'a',timestamp:0};
+  state.snapshot.finished_turn = null;
+  assert.equal((await service.check('s')).status,'watching');
+  assert.equal(store.subscriptions.get('s').last_checked_at,1000);
+  assert.equal(store.subscriptions.get('s').expires_at,sub.expires_at);
+  assert.equal(store.notifications.getBySubscription('s'),null);
+  state.now=sub.expires_at;
+  assert.equal((await service.check('s')).status,'notified');
+  assert.equal(store.notifications.getBySubscription('s').result,'idle_timeout');
 });
 test("busy 顺延；连续查询失败达到三次才产生 unreachable", async (t) => {
   const { store, state, service, sub } = fixture(t);
   state.now = sub.expires_at;
   state.snapshot.runtime = "busy";
+  state.snapshot.finished_turn = null;
   assert.equal((await service.check("s")).status, "extended");
   state.error = true;
   for (let i = 1; i <= 3; i++) {

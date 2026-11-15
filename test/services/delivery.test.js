@@ -1,6 +1,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createDshDelivery } from "../../lib/services/delivery.js";
+
+for (const source of ['poll','push']) test(`${source} 投递保留来源，并使用对应的汇报或自主判断指引`,async()=>{
+ let received;
+ const delivery=createDshDelivery({
+  sessionQuery:{readSession:async()=>({events:[]})},
+  sessionController:{resolveAgent:async()=>({agent:{session:{},followup(message){received=message;}}})},
+  sessions:{flush:async()=>true},
+ });
+ const notification={delivery_key:'notice-'+source,source,result:'completed',summary:'帮我梳理下E盘内容：外部会话已完成磁盘空间查询。'};
+ assert.equal((await delivery.deliver('receiver',notification)).status,'delivered');
+ const prompt=received.content[0].text;
+ assert.ok(prompt.includes(notification.summary));
+ assert.equal(prompt.includes('请按用户原有要求处理'),false);
+ if(source==='poll'){
+  assert.match(prompt,/会话订阅汇报/);
+  assert.match(prompt,/不要重新执行/);
+  assert.match(prompt,/不要调用工具/);
+  assert.doesNotMatch(prompt,/自行判断下一步/);
+ }else{
+  assert.match(prompt,/Agent 主动通知/);
+  assert.match(prompt,/自行判断下一步/);
+  assert.doesNotMatch(prompt,/不要调用工具/);
+ }
+});
 test("followup 后 flush 失败保持未知，核对已有 inbox 消息后不再次发送", async () => {
   const events = [];
   let flush = false;

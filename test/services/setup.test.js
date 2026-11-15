@@ -72,7 +72,7 @@ function fixture(t, { version = "2.1.311", flag = true, agents = [], registratio
     zshrc: join(home, ".zshrc"),
     token: join(home, ".claude", "agent-relay", "channel-token"),
   };
-  return { service, home, files, calls, logs, skillCalls, channelEntry };
+  return { service, home, files, calls, logs, skillCalls, channelEntry, skillsDir };
 }
 const byKey = (report) => Object.fromEntries(report.items.map((i) => [i.key, i]));
 
@@ -217,6 +217,19 @@ test("Codex 只检查通知 Skill", async (t) => {
   const installed = await service.install("codex");
   assert.match(installed.items[0].message, /手动执行/);
   assert.equal(calls.length, 0);
+});
+
+test("Codex 只有说明文件时识别缺失发送器，脚本更新后自检通过", async(t) => {
+  const {service,home,skillsDir}=fixture(t);
+  writeFileSync(join(skillsDir,'external-agent-notification','send.mjs'),'// sender v1\n');
+  const target=join(home,'.codex','skills','external-agent-notification');
+  mkdirSync(target,{recursive:true});
+  writeFileSync(join(target,'SKILL.md'),SKILL);
+  assert.equal((await service.check('codex')).items[0].status,'outdated');
+  writeFileSync(join(target,'send.mjs'),'// sender v1\n');
+  assert.equal((await service.check('codex')).overall,'ok');
+  writeFileSync(join(target,'send.mjs'),'// old sender\n');
+  assert.equal((await service.check('codex')).items[0].status,'outdated');
 });
 
 test("连通测试：未登记时失败并给出原因", async (t) => {

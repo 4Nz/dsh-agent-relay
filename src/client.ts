@@ -23,6 +23,7 @@ const labels: Record<string, string> = {
   success: "成功",
   error: "检查失败",
   not_due: "未到期，已跳过",
+  watching: "检查成功，继续关注",
   extended: "检测到活动，已顺延",
   notified: "已生成通知",
   inactive: "订阅未运行",
@@ -109,10 +110,8 @@ const css = `
 .ar .subscription-state{white-space:nowrap}.ar .start-time{font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--dsw-alias-label-secondary,#aaa)}.ar .expiry{white-space:nowrap}.ar .message-cell{min-width:100px}
 .ar .drawer select{width:100%;min-height:40px}.ar .drawer option{background:var(--dsw-alias-bg-layer-1,#202020);color:var(--dsw-alias-label-primary,#eee)}
 .ar .credential-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 8px}
+.ar .credential-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:18px 0 10px}.ar .credential-actions button{min-height:40px;padding:8px 16px}.ar .credential-path{overflow-wrap:anywhere;margin:12px 0}.ar .drawer .ar>.body{padding:0}
 .ar .credential-summary{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;background:var(--dsw-alias-bg-layer-1,#202020);border:1px solid var(--dsw-alias-border-l2,#49494d);border-radius:8px;padding:6px 10px}
-.ar .credential-token{display:flex;flex-direction:column;gap:8px;margin:10px 0}
-.ar .credential-token textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;resize:vertical}
-.ar .copy-btn{font-size:12px;padding:4px 10px}
 @media(max-width:700px){.ar header{padding:18px 16px;align-items:flex-start}.ar .body{padding:16px}.ar .drawer{padding:20px}.ar .detail{grid-template-columns:90px minmax(0,1fr)}}
 `;
 
@@ -206,10 +205,9 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const [capabilities, setCapabilities] = useState<any[]>([]);
   const [snapshot, setSnapshot] = useState<any>(null);
   const [inspecting, setInspecting] = useState(false);
-  const [failures, setFailures] = useState("3"), [interval, setIntervalValue] = useState("60");
+  const [failures, setFailures] = useState("3"), [interval, setIntervalValue] = useState("1");
   const [message, setMessage] = useState("");
-  const [codexCwd, setCodexCwd] = useState("");
-  const createGen = useRef(0);
+  const [candidateRevision, setCandidateRevision] = useState(0);
   const [installAgent, setInstallAgent] = useState("claude");
   const [installPreview, setInstallPreview] = useState<any>(null);
   const [installResult, setInstallResult] = useState<any>(null);
@@ -224,7 +222,6 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const creating = drawer === "create";
   const current = items.find((s) => s.id === selected);
   const close = () => {
-    createGen.current++;
     inspectGen.current++;
     setInspecting(false);
     setDrawer("");
@@ -270,15 +267,17 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setCandidateLoading(true);
     setCandidateError("");
     setCandidates([]);
+    setTargets([]);
     setExternal("");
-    void Promise.all([
+    void Promise.allSettled([
       call("sessions", { agent, limit: 100 }),
       call("dsh_sessions"),
     ])
       .then(([sessions, dsh]) => {
         if (live) {
-          setCandidates(sessions);
-          setTargets(dsh);
+          if (sessions.status === "fulfilled") setCandidates(sessions.value);
+          if (dsh.status === "fulfilled") setTargets(dsh.value);
+          setCandidateError([sessions, dsh].filter((r) => r.status === "rejected").map((r) => (r as PromiseRejectedResult).reason?.message ?? "读取会话失败").join("；"));
         }
       })
       .catch((e) => {
@@ -290,7 +289,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     return () => {
       live = false;
     };
-  }, [creating, agent]);
+  }, [creating, agent, candidateRevision]);
   useEffect(() => {
     void call("agents").then(setCapabilities).catch((e) => setError(e.message));
   }, []);
@@ -301,16 +300,14 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setInstallResult(null);
     setInstallError("");
     setSetupReport(null);
-    void call("install_skill_preview", { agent: installAgent })
-      .then((value) => {
-        if (live) setInstallPreview(value);
-      })
-      .catch((e) => {
-        if (live) setInstallError((e as Error).message);
-      });
     void call("setup_check", { agent: installAgent })
-      .then((value) => {
-        if (live) setSetupReport(value);
+      .then(async (value) => {
+        if (!live) return;
+        setSetupReport(value);
+        if (installAgent === "codex" && value.overall !== "ok") {
+          const preview = await call("install_skill_preview", { agent: installAgent });
+          if (live) setInstallPreview(preview);
+        }
       })
       .catch((e) => {
         if (live) setInstallError((e as Error).message);
@@ -341,19 +338,6 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     if (sub.agent !== "codex") return "该 Agent 不支持发送消息或能力尚未加载";
     return snapshot?.external_session_id === sub.external_session_id ? snapshot.value.send_reason || "请查阅最新状态后发送" : "请先查阅会话，核对是否支持发送";
   }
-  async function createCodexSession() {
-    const gen = ++createGen.current;
-    setBusy(true); setCandidateError("");
-    try {
-      const session = await call("create_session", { agent: "codex", cwd: codexCwd });
-      setNotice(`Codex 专用会话已创建：${session.id}`);
-      if (gen === createGen.current) {
-        setCandidates((old) => [session, ...old.filter((s) => s.id !== session.id)]);
-        setExternal(session.id);
-      }
-    } catch (e) { if (gen === createGen.current) setCandidateError((e as Error).message); }
-    finally { setBusy(false); }
-  }
   async function inspect(sub: any) {
     const gen = ++inspectGen.current;
     const target = { agent: sub.agent, external_session_id: sub.external_session_id };
@@ -371,7 +355,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   async function saveConfig(sub: any) {
     setBusy(true); setError("");
     try {
-      await call("update", { subscription_id: sub.id, idle_timeout_seconds: Number(minutes) * 60,
+      await call("update", { subscription_id: sub.id, max_lifetime_seconds: Number(minutes) * 60,
         max_consecutive_failures: Number(failures), ...(sub.type === "poll" ? { check_interval_seconds: Number(interval) * 60 } : {}) });
       setNotice("订阅配置已保存。"); setRefreshVersion((v) => v + 1); close();
     } catch (e) { setError((e as Error).message); }
@@ -418,7 +402,11 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setInstallBusy(true);
     setInstallError("");
     try {
-      setSetupReport(await call(endpoint, { agent: installAgent }));
+      const report = await call(endpoint, { agent: installAgent });
+      setSetupReport(report);
+      setInstallPreview(null);
+      if (installAgent === "codex" && report.overall !== "ok")
+        setInstallPreview(await call("install_skill_preview", { agent: installAgent }));
     } catch (e) {
       setInstallError((e as Error).message);
     } finally {
@@ -452,7 +440,8 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         external_session_id: external,
         ...(target ? { dsh_session_id: target } : {}),
         max_consecutive_failures: Number(failures),
-        idle_timeout_seconds: Number(minutes) * 60,
+        max_lifetime_seconds: Number(minutes) * 60,
+        check_interval_seconds: Number(interval) * 60,
       });
       setDrawer("");
       setNotice(
@@ -539,7 +528,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           "button",
           {
             disabled: busy,
-            title: "按有效期规则检查，未到期时跳过，不提前结束订阅",
+            title: "立即读取外部会话，发现新完成结果即通知；尚未完成则继续关注",
             onClick: () => void action("check", sub.id),
           },
           "立即检查",
@@ -658,7 +647,6 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           "Agent",
           agent,
           (v) => {
-            createGen.current++;
             setAgent(v);
             setExternal("");
           },
@@ -671,14 +659,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           h(
             "div",
             { className: "notice muted small" },
-            "Codex 仅支持向 Relay 创建的专用后台会话发送消息；桌面及其他会话只读。专用会话请勿同时交给桌面或 CLI 执行。",
-            capability("codex", "createSession") && h("div", { className: "fields" },
-              h("label", null, "专用会话工作目录（绝对路径）", h("input", {
-                type: "text", value: codexCwd, placeholder: "/绝对路径/项目目录", disabled: busy,
-                onChange: (e: any) => setCodexCwd(e.target.value),
-              })),
-              h("button", { type: "button", disabled: busy || candidateLoading || !codexCwd.trim(),
-                onClick: () => void createCodexSession() }, "新建 Codex 专用会话")),
+            "选择已有的 Codex 桌面或 CLI 会话进行订阅，无需另建后台会话。订阅只查阅历史，不接管原会话。",
           ),
         fieldSelect(
           "外部会话",
@@ -693,6 +674,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           ],
           { disabled: candidateLoading },
         ),
+        h("button", { type: "button", disabled: candidateLoading || busy, onClick: () => setCandidateRevision((value) => value + 1) }, "刷新会话列表"),
         (() => {
           const chosen = candidates.find((s) => s.id === external);
           return (
@@ -703,7 +685,6 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
               h("strong", null, chosen.title ?? "未命名"),
               chosen.cwd && h("p", { className: "muted" }, chosen.cwd),
               h("p", { className: "muted" }, `ID：${chosen.id}`),
-              agent === "codex" && h("p", null, chosen.send_allowed ? "此专用会话支持发送消息" : chosen.send_reason ?? "此会话只读"),
             )
           );
         })(),
@@ -717,14 +698,15 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           ],
           {},
         ),
-        fieldInput("有效期（分钟）", minutes, setMinutes, { min: 1, max: 1440 }),
+        fieldInput("检查频率（分钟）", interval, setIntervalValue, { min: 1, max: 60 }),
+        fieldInput("订阅超时（分钟）", minutes, setMinutes, { min: 1, max: 1440 }),
         fieldInput("连续失败阈值", failures, setFailures, { min: 1, max: 100 }),
         candidateError &&
           h("p", { className: "error", role: "alert" }, candidateError),
         h(
           "p",
           { className: "muted small" },
-          "到期检查一次并发送结果摘要，随后订阅结束；默认最长关注 24 小时。",
+          "默认每 1 分钟检查，60 分钟后订阅超时；检查频率可设为 1～60 分钟，订阅超时可设为 1～1440 分钟。超时从创建起计算，不随活动顺延；完成后只整理汇报。",
         ),
         h(
           "footer",
@@ -790,8 +772,8 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           title: sendAllowed(sub) ? "核对目标后发送" : sendReason(sub),
           onClick: () => { setMessage(""); setDrawer("send"); } }, "发送消息"),
         sub.status !== "ended" && h("button", { disabled: busy, onClick: () => {
-          setMinutes(String(sub.idle_timeout_seconds / 60)); setFailures(String(sub.max_consecutive_failures));
-          setIntervalValue(String((sub.check_interval_seconds ?? 3600) / 60)); setDrawer("edit");
+          setMinutes(String(sub.max_lifetime_seconds / 60)); setFailures(String(sub.max_consecutive_failures));
+          setIntervalValue(String((sub.check_interval_seconds ?? 60) / 60)); setDrawer("edit");
         } }, "修改配置")),
       sub.agent === "codex" && !sendAllowed(sub) && h("p", { className: "muted small" }, inspecting ? "正在核对会话状态…" : sendReason(sub)),
       snapshot &&
@@ -817,7 +799,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         h(
           "p",
           { className: "notice muted" },
-          "Codex 暂不支持发送消息；daemon 运行状态未知不能视为任务完成。",
+          "订阅和查阅不要求会话可发送；发送能力以当前连接与会话检查结果为准，实时状态未知不代表任务完成。",
         ),
       h(
         "footer",
@@ -866,9 +848,9 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     );
   const settingsDrawer = () => h(Drawer, { title: "共享通知凭证", onClose: close }, h(CredentialSettings, { rpc, embedded: true }));
   const editDrawer = (sub: any) => h(Drawer, { title: "修改订阅配置", onClose: close },
-    fieldInput("有效期（分钟）", minutes, setMinutes, { min: 1, max: 1440 }),
+    fieldInput("订阅超时（分钟）", minutes, setMinutes, { min: 1, max: 1440 }),
     fieldInput("连续失败阈值", failures, setFailures, { min: 1, max: 100 }),
-    sub.type === "poll" && fieldInput("检查周期（分钟）", interval, setIntervalValue, { min: 1, max: 1440 }),
+    sub.type === "poll" && fieldInput("检查频率（分钟）", interval, setIntervalValue, { min: 1, max: 60 }),
     error && h("p", { role: "alert", className: "error" }, error),
     h("button", { disabled: busy, onClick: () => void saveConfig(sub) }, "保存"));
   const sendDrawer = (sub: any) => h(Drawer, { title: "发送消息", onClose: close },
@@ -904,7 +886,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const installDrawer = () => h(Drawer, { title: "前置安装接入", onClose: close },
     h("p", { className: "muted" }, installAgent === "claude"
       ? "为 Claude 一次配好接入：通知 Skill（任务完成后通知 DSH）和 channel（把消息送进开在终端里的会话）。已正常的项不会改动，修改前自动备份。"
-      : "Codex 只需安装通知 Skill；发送消息走 Relay 专用后台会话，不需要 channel。"),
+      : "Codex 的通知 Skill 用于主动通知；订阅可选择已有桌面或 CLI 会话，不需要 channel。"),
     fieldSelect("Agent", installAgent, (v) => {
       setInstallAgent(v);
       setInstallResult(null);
@@ -931,7 +913,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     installError && h("p", { role: "alert", className: "error" }, installError),
     h("footer", null,
       h("button", { disabled: installBusy, onClick: () => void runSetup("setup_check") }, "检查安装状态"),
-      installAgent === "codex" && h("button", { disabled: !installPreview, onClick: () => void copyPrompt() }, "复制提示词"),
+      installAgent === "codex" && installPreview && h("button", { onClick: () => void copyPrompt() }, "复制提示词"),
       installAgent === "claude" && h("button", {
         disabled: installBusy || probe?.status === "waiting" || setupReport?.overall === "unavailable",
         onClick: () => void startProbe(),
@@ -985,7 +967,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         ),
         h(
           "button",
-          { className: "primary", onClick: () => { setMinutes("60"); setFailures("3"); setTarget(""); setError(""); setDrawer("create"); } },
+          { className: "primary", onClick: () => { setMinutes("60"); setIntervalValue("1"); setFailures("3"); setTarget(""); setError(""); setDrawer("create"); } },
           "新建订阅",
         ),
       ),
@@ -1248,7 +1230,7 @@ function AgentRelayIcon({ rpc }: { rpc: Rpc }) {
   );
 }
 export function CredentialSettings({ rpc, embedded = false }: { rpc: Rpc; embedded?: boolean }) {
-  const [credential, setCredential] = useState<any>(null), [token, setToken] = useState("");
+  const [credential, setCredential] = useState<any>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [copied, setCopied] = useState("");
   async function call(endpoint: string) {
@@ -1264,10 +1246,10 @@ export function CredentialSettings({ rpc, embedded = false }: { rpc: Rpc; embedd
   }, []);
   async function generate() {
     // 已配置时等同重置：重新生成并失效旧凭证，不再需要单独的「重置」按钮。
-    setBusy(true); setError(""); setToken("");
+    setBusy(true); setError("");
     try {
       const value = await call(credential?.configured ? "credential_reset" : "credential_generate");
-      setCredential(value); setToken(value.token);
+      setCredential({ ...value, configured: true });
     }
     catch (e) {
       setError((e as Error).message);
@@ -1297,23 +1279,26 @@ export function CredentialSettings({ rpc, embedded = false }: { rpc: Rpc; embedd
     setCopied(key);
     setTimeout(() => setCopied(""), 1600);
   }
+  async function copyCredential() {
+    setBusy(true); setError("");
+    try { const value = await call("credential_reveal"); await copy(value.token, "token"); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
   const summary = credential
     ? (credential.configured ? `已配置 · 摘要 ${credential.digest.slice(0, 12)}…` : "尚未配置")
     : "正在读取…";
   return h("section", { className: "ar" }, h("style", null, css),
     h("div", { className: "body" },
       !embedded && h("h2", null, "共享通知凭证"),
-      h("p", { className: "muted" }, "本机 Claude、Codex 共用；只保存摘要，明文仅在本次生成时展示。重新生成后旧凭证失效。"),
+      h("p", { className: "muted" }, "本机 Claude、Codex 共用。凭证保存在本机私有配置中，Skill 每次发送前自动读取；重新生成后旧凭证失效。"),
       error && h("p", { role: "alert", className: "error" }, error),
-      h("div", { className: "credential-status" },
-        h("span", { className: "credential-summary" }, summary),
-        credential?.configured && h("button", { className: "copy-btn", onClick: () => void copy(credential.digest, "digest") }, copied === "digest" ? "已复制" : "复制摘要")),
-      token && h("div", { className: "credential-token" },
-        h("label", null, "本次凭证（关闭后无法再次查看）",
-          h("textarea", { readOnly: true, value: token, rows: 3, onFocus: (e: any) => e.target.select() })),
-        h("button", { className: "primary", onClick: () => void copy(token, "token") }, copied === "token" ? "已复制" : "复制")),
-      h("button", { className: "primary", disabled: busy || !credential, onClick: () => void generate() },
-        credential?.configured ? "重新生成凭证" : "生成凭证")));
+      h("div", { className: "credential-status" }, h("span", { className: "credential-summary" }, summary)),
+      credential?.client_configured === false && credential?.configured && h("p", { className: "warn" }, "本机通知配置缺失或需要更新，请重新生成一次凭证以启用 Skill 自动通知。"),
+      credential?.client_config_path && h("p", { className: "muted small credential-path" }, "本机配置：", credential.client_config_path),
+      h("div", { className: "credential-actions" },
+        credential?.configured && h("button", { className: "primary", disabled: busy || credential.client_configured === false, onClick: copyCredential }, copied === "token" ? "已复制" : "复制凭证"),
+        h("button", { disabled: busy || !credential, onClick: () => void generate() }, credential?.configured ? "重新生成凭证" : "生成凭证"))));
 }
 
 interface RelayClientContext {

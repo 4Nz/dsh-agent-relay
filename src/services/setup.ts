@@ -231,6 +231,9 @@ export function createSetupService({
     const installed = read(skillTarget[agent]);
     if (installed === null) return { key: "skill", status: "missing", message: "未安装通知 Skill" };
     if (packaged !== null && installed.trim() !== packaged.trim()) return { key: "skill", status: "outdated", message: "通知 Skill 与当前插件版本不一致" };
+    const sender = read(join(skillsDir, NOTIFICATION_SKILL, "send.mjs"));
+    if (sender !== null && read(join(dirname(skillTarget[agent]), "send.mjs")) !== sender)
+      return { key: "skill", status: "outdated", message: "通知发送脚本缺失或需更新，请重新安装通知 Skill" };
     return { key: "skill", status: "ok", message: "通知 Skill 已安装" };
   }
   async function sessions() {

@@ -35,9 +35,11 @@ test("工具把 DSH 执行会话传入共用服务，注册所有 M2 工具", as
   ]);
   const tool = tools.get("relay_subscribe");
   await tool.execute(
-    { agent: "claude", external_session_id: "external" },
+    { agent: "claude", external_session_id: "external", check_interval_seconds:300, max_lifetime_seconds:7200 },
     { agent: { session: { id: "current-dsh" } } },
   );
   assert.equal(received[0], "subscribe");
   assert.equal(received[2], "current-dsh");
+  assert.equal(received[1].check_interval_seconds,300);
+  assert.equal(received[1].max_lifetime_seconds,7200);
 });

@@ -55,6 +55,19 @@ async function server(t, handler, onInitialize = () => {}) {
   return path;
 }
 
+test('Windows 官方代理承载完整 WebSocket 握手和排队回执，不把代理当 JSONL server',async t=>{
+ const path=await server(t,(req,socket)=>socket.write(frame({id:req.id,result:{queuedSubmission:{id:'queue-receipt'}}})));
+ const dir=await mkdtemp(join(tmpdir(),'relay-proxy-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const cli=join(dir,'proxy.mjs');
+ await writeFile(cli,"import net from 'node:net'; const s=net.connect(process.argv.at(-1));process.stdin.pipe(s);s.pipe(process.stdout);s.on('error',()=>process.exit(1));");
+ const mod=await import('../../lib/adapters/codex/proxy.js').catch(()=>({}));
+ assert.equal(typeof mod.connectCodexProxy,'function');
+ const client=await mod.connectCodexProxy({cliPath:cli,socketPath:path,timeoutMs:1000,writable:true});t.after(()=>client.close());
+ assert.equal(client.transport,'daemon');
+ assert.equal((await client.request('thread/queue/add',{threadId:'test',input:[]})).queuedSubmission.id,'queue-receipt');
+ await assert.rejects(client.request('thread/delete',{}),/只读|允许/);
+});
+
 test('Codex RPC：安装包版本变化后握手同步版本', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'relay-version-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

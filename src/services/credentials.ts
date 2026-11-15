@@ -1,6 +1,7 @@
 import { createHash, randomBytes as systemRandomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 interface StoredCredential {
   digest: string;
@@ -8,7 +9,8 @@ interface StoredCredential {
 }
 
 export interface CredentialService {
-  get(): { configured: boolean; digest: string | null; created_at: number | null };
+  get(): { configured: boolean; digest: string | null; created_at: number | null; client_configured?: boolean; client_config_path?: string };
+  reveal(): { token: string };
   generate(): { token: string; digest: string; created_at: number };
   reset(): { token: string; digest: string; created_at: number };
   verify(token: string): boolean;
@@ -29,11 +31,13 @@ export function createCredentialService({
   randomBytes = systemRandomBytes,
   // 凭证文件名；Claude channel 使用独立凭证，与共享通知凭证互不影响。
   name = "notification-credential.json",
+  clientConfig,
 }: {
   dataDir: string;
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
   name?: string;
+  clientConfig?: { path: string; endpoint: string };
 }): CredentialService {
   const file = join(dataDir, name);
   let cached: StoredCredential | null | undefined;
@@ -62,27 +66,56 @@ export function createCredentialService({
     }
     return cached;
   }
+  function atomicWrite(path: string, text: string) {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, text, { mode: 0o600, flag: "wx" });
+      if (process.platform !== "win32") chmodSync(temporary, 0o600);
+      renameSync(temporary, path);
+    } finally { rmSync(temporary, { force: true }); }
+  }
   function persist(value: StoredCredential) {
-    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    const temporary = `${file}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, file);
+    atomicWrite(file, `${JSON.stringify(value)}\n`);
     cached = value;
+  }
+  function reveal(): { token: string } {
+    try {
+      if (!clientConfig) throw new Error();
+      const client = JSON.parse(readFileSync(clientConfig.path, "utf8"));
+      if (typeof client.token !== "string" || client.endpoint !== clientConfig.endpoint || digest(client.token) !== load()?.digest) throw new Error();
+      return { token: client.token };
+    } catch { throw new Error("本机通知配置缺失或与凭证不一致，请重新生成凭证"); }
   }
   function create() {
     const plain = token();
     const value = { digest: digest(plain), created_at: now() };
-    persist(value);
-    return { token: plain, ...value };
+    if (clientConfig) {
+      let previous: string | null = null;
+      try { previous = readFileSync(clientConfig.path, "utf8"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      atomicWrite(clientConfig.path, `${JSON.stringify({ format: 1, endpoint: clientConfig.endpoint, token: plain }, null, 2)}\n`);
+      try { persist(value); }
+      catch (error) {
+        if (previous === null) rmSync(clientConfig.path, { force: true });
+        else atomicWrite(clientConfig.path, previous);
+        throw error;
+      }
+    } else persist(value);
+    return { token: plain, ...value, ...(clientConfig ? { client_configured: true, client_config_path: clientConfig.path } : {}) };
   }
   return {
     get() {
       const value = load();
-      return value
+      const result = value
         ? { configured: true, digest: value.digest, created_at: value.created_at }
         : { configured: false, digest: null, created_at: null };
+      if (!clientConfig) return result;
+      let ready = false;
+      try { reveal(); ready = true; } catch { /* 旧摘要无法恢复明文，提示用户重新生成。 */ }
+      return { ...result, client_configured: ready, client_config_path: clientConfig.path };
     },
+    reveal,
     generate() {
       if (load()) throw new CredentialConflictError();
       return create();

@@ -31,6 +31,7 @@ export const endpoints = [
   "messages",
   "update",
   "credential_get",
+  "credential_reveal",
   "credential_generate",
   "credential_reset",
   "install_skill",
@@ -119,6 +120,10 @@ export function createRelayService({
             if (!credentials) throw new Error("凭证服务未就绪");
             value = credentials.get();
             break;
+          case "credential_reveal":
+            if (!credentials) throw new Error("凭证服务未就绪");
+            value = credentials.reveal();
+            break;
           case "credential_generate":
             if (!credentials) throw new Error("凭证服务未就绪");
             value = credentials.generate();
@@ -129,6 +134,12 @@ export function createRelayService({
             break;
           case "agents":
             value = adapters.list();
+            break;
+          case "install_skill_preview":
+            value = await skillInstall.preview(agent(args.agent));
+            break;
+          case "install_skill":
+            value = await skillInstall.install(agent(args.agent));
             break;
           case "setup_check":
           case "setup_install":
@@ -217,7 +228,7 @@ export function createRelayService({
                       args.check_interval_seconds,
                       "check_interval_seconds",
                       60,
-                      86400,
+                      3600,
                     ),
                   }
                 : {}),
@@ -404,7 +415,10 @@ export function createRelayService({
                 ? { idle_timeout_seconds: integer(args.idle_timeout_seconds, "idle_timeout_seconds", 60, 86400) }
                 : {}),
               ...(args.check_interval_seconds !== undefined
-                ? { check_interval_seconds: integer(args.check_interval_seconds, "check_interval_seconds", 60, 86400) }
+                ? { check_interval_seconds: integer(args.check_interval_seconds, "check_interval_seconds", 60, 3600) }
+                : {}),
+              ...(args.max_lifetime_seconds !== undefined
+                ? { max_lifetime_seconds: integer(args.max_lifetime_seconds, "max_lifetime_seconds", 60, 86400) }
                 : {}),
               ...(args.expires_at !== undefined
                 ? { expires_at: integer(args.expires_at, "expires_at", 0, Number.MAX_SAFE_INTEGER) }

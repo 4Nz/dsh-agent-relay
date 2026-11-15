@@ -4,9 +4,10 @@ import type { CodexBindings } from '../../storage/codex-sessions.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { AdapterError } from '../types.js';
 import type { AgentAdapter, SendResult, SessionCursor, SessionInfo, Snapshot } from '../types.js';
-import { connectCodex, codexEndpoint, CodexRpcError, CodexTransportError, type CodexClient, type CodexConnectionOptions } from './rpc.js';
+import { codexEndpoint, CodexRpcError, CodexTransportError, type CodexClient } from './rpc.js';
+import { connectCodexReader, connectCodexDaemon, type CodexReaderOptions } from './reader.js';
 
-export interface CodexAdapterOptions extends CodexConnectionOptions {
+export interface CodexAdapterOptions extends CodexReaderOptions {
   connect?: () => Promise<CodexClient>;
   bindings?: CodexBindings;
 }
@@ -26,17 +27,17 @@ function millis(value: unknown): number {
 function optionalString(value: unknown): string | null {
   return value == null ? null : string(value);
 }
-function info(value: unknown, writable = false): SessionInfo {
+function info(value: unknown, writable = false, queryOnly = false): SessionInfo {
   const t = object(value);
   const status = string(object(t.status).type);
   return {
     id: string(t.id), title: optionalString(t.name), cwd: optionalString(t.cwd),
     last_activity_at: millis(t.updatedAt),
     // daemon 不是桌面执行实例，idle/notLoaded 都不能证明原会话空闲。
-    runtime: status === 'active' ? 'busy' : writable && status === 'idle' ? 'idle' : 'unknown', held: true,
+    runtime: queryOnly ? 'unknown' : status === 'active' ? 'busy' : writable && status === 'idle' ? 'idle' : 'unknown', held: true,
     // 桌面/其他会话经 thread/queue/add 排队投递，可发送；专用会话沿用 turn/start 需 idle/notLoaded。
-    send_allowed: writable ? (status === 'idle' || status === 'notLoaded') : true,
-    send_reason: writable ? (status === 'active' ? '会话处理中' : status === 'idle' || status === 'notLoaded' ? '' : '无法确认后台会话状态') : '',
+    send_allowed: !queryOnly && (writable ? (status === 'idle' || status === 'notLoaded') : true),
+    send_reason: queryOnly ? '当前连接仅支持历史查询和订阅；发送消息需要可用的 Codex daemon' : writable ? (status === 'active' ? '会话处理中' : status === 'idle' || status === 'notLoaded' ? '' : '无法确认后台会话状态') : '',
   };
 }
 function page(value: unknown): { data: unknown[]; nextCursor: string | null } {
@@ -56,15 +57,15 @@ const closedSnapshot = (): Snapshot => ({
 export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdapter {
   const endpoint = codexEndpoint(options);
   const bound = (id: string) => options.bindings?.has(id, endpoint) ?? false;
-  const metadata = (value: unknown) => info(value, bound(string(object(value).id)));
-  const connect = options.connect ?? (() => connectCodex(options));
+  const metadata = (value: unknown, queryOnly = false) => info(value, bound(string(object(value).id)), queryOnly);
+  const connect = options.connect ?? (() => connectCodexReader(options));
   let writeConnection: Promise<CodexClient> | undefined;
   let disposed = false;
   const sending = new Set<string>();
   async function writer(): Promise<CodexClient> {
     if (disposed) throw new AdapterError('unavailable', 'Codex Adapter 已停止');
     if (!writeConnection) {
-      const attempt = options.connect ? options.connect() : connectCodex({ ...options, writable: true,
+      const attempt = options.connect ? options.connect() : connectCodexDaemon({ ...options, writable: true,
         onClose: () => { if (writeConnection === attempt) writeConnection = undefined; },
       });
       writeConnection = attempt;
@@ -105,7 +106,7 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
         modelProviders: [],
         sourceKinds: ['cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview', 'subAgentCompact', 'subAgentThreadSpawn', 'subAgentOther', 'unknown'],
       }));
-      for (const item of p.data) yield metadata(item);
+      for (const item of p.data) yield metadata(item, client.transport === 'stdio');
       if (!p.nextCursor) return;
       if (seen.has(p.nextCursor)) bad();
       seen.add(p.nextCursor); cursor = p.nextCursor;
@@ -192,6 +193,7 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
       checkId(sessionId);
       if (baseline !== null && (typeof baseline !== 'object' ||
           (baseline.target_turn_id !== undefined && (typeof baseline.target_turn_id !== 'string' || !baseline.target_turn_id.trim())) ||
+          (baseline.turn_status !== undefined && typeof baseline.turn_status !== 'string') ||
           typeof baseline.uuid !== 'string' || !baseline.uuid.startsWith('codex:') ||
           !Number.isFinite(baseline.timestamp) || baseline.timestamp < 0))
         throw new AdapterError('invalid_input', 'Codex 快照基线格式无效');
@@ -200,7 +202,7 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
         for await (const session of sessions(client, true))
           if (session.id === sessionId) return closedSnapshot();
         let metadata: SessionInfo;
-        try { metadata = info(object(await client.request('thread/read', { threadId: sessionId, includeTurns: false })).thread, bound(sessionId)); }
+        try { metadata = info(object(await client.request('thread/read', { threadId: sessionId, includeTurns: false })).thread, bound(sessionId), client.transport === 'stdio'); }
         catch (error) {
           // 只有明确的不存在错误且活动列表也找不到时，才认定删除。
           if (!(error instanceof CodexRpcError) || error.code !== -32600 ||
@@ -211,13 +213,14 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
         if (metadata.id !== sessionId) bad();
         const target = baseline?.target_turn_id;
         let latest: RecordValue | null = null;
+        let completedTurn: RecordValue | null = null;
         let next: string | null = null;
         const seen = new Set<string>();
         for (let n = 0; n < 1000; n++) {
           let turns: { data: unknown[]; nextCursor: string | null };
           try {
             turns = page(await client.request('thread/turns/list', {
-              threadId: sessionId, limit: target ? 50 : 1, cursor: next, sortDirection: 'desc', itemsView: 'full',
+              threadId: sessionId, limit: target || baseline ? 50 : 1, cursor: next, sortDirection: 'desc', itemsView: 'full',
             }));
           } catch (error) {
             // daemon 在首条消息前尚未物化历史；仅对已登记且确认为 idle 的空会话接受这一精确错误。
@@ -226,9 +229,26 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
               turns = { data: [], nextCursor: null };
             else throw error;
           }
-          const found = target ? turns.data.find(t => object(t).id === target) : turns.data[0];
-          if (found != null) { latest = object(found); break; }
-          if (!target || !turns.nextCursor) break;
+          let reachedBaseline = false;
+          for (const value of turns.data) {
+            const candidate = object(value), id = string(candidate.id), status = string(candidate.status);
+            if (target && id !== target) continue;
+            latest ??= candidate;
+            const sameTurn = baseline?.uuid.startsWith(`codex:${id}:`) ?? false;
+            const started = candidate.startedAt == null ? null : millis(candidate.startedAt);
+            const ended = candidate.completedAt == null ? null : millis(candidate.completedAt);
+            // 独立历史实例会把桌面正在执行的轮次读成 interrupted，不能仅接受 inProgress 基线。
+            const after = !baseline || (!sameTurn && started !== null && started >= baseline.timestamp) ||
+              (sameTurn && (baseline.turn_status === 'inProgress' || (baseline.turn_status === 'interrupted' && ended !== null && ended >= baseline.timestamp)));
+            const terminal = status === 'completed' || status === 'failed' || (target && status === 'interrupted');
+            // 新一轮开始不应掩盖订阅后已结束的上一轮；当前忙碌仅阻止把最新轮次误判为空闲。
+            if ((target || after) && terminal && (target || metadata.runtime !== 'busy' || candidate !== latest)) {
+              completedTurn = candidate;
+              break;
+            }
+            if (target || !baseline || sameTurn) { reachedBaseline = true; break; }
+          }
+          if (completedTurn || reachedBaseline || !turns.nextCursor) break;
           if (seen.has(turns.nextCursor)) bad();
           seen.add(turns.nextCursor); next = turns.nextCursor;
           if (n === 999) throw new AdapterError('unavailable', '目标轮次分页超过查询上限');
@@ -247,15 +267,19 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): AgentAdap
           for (const item of messages) reply = string(item.text).slice(0, 1000);
           // 轮次 ID 与内容摘要都进入游标，刷新同一轮的状态/回复也能观察到变化。
           const digest = createHash('sha256').update(JSON.stringify([status, latest.items])).digest('hex').slice(0, 24);
-          cursor = { uuid: `codex:${id}:${digest}`, timestamp: activity };
-          const sameTurn = baseline?.uuid.startsWith(`codex:${id}:`) ?? false;
-          const after = !baseline || (!sameTurn && started !== null && started >= baseline.timestamp);
-          if ((target || (after && metadata.runtime !== 'busy')) && (status === 'completed' || status === 'failed' || (target && status === 'interrupted')))
-            finished = { result: status === 'completed' ? 'completed' : 'failed', external_ref: id };
+          cursor = { uuid: `codex:${id}:${digest}`, timestamp: activity, turn_status: status };
+        }
+        if (completedTurn) {
+          if (!Array.isArray(completedTurn.items)) bad();
+          const messages = completedTurn.items.map(object).filter(item => item.type === 'agentMessage');
+          const finals = messages.filter(item => item.phase === 'final_answer');
+          const chosen = (finals.length ? finals : messages).at(-1);
+          reply = chosen ? string(chosen.text).slice(0, 1000) : null;
+          finished = { result: completedTurn.status === 'completed' ? 'completed' : 'failed', external_ref: string(completedTurn.id) };
         }
         return {
           ...metadata, closed: false, cursor, last_activity_at: activity,
-          runtime_error: metadata.runtime === 'unknown' ? (bound(sessionId) ? '专用后台会话尚未加载，发送前将重新核对状态' : 'daemon 无法确认桌面会话的实时运行状态') : null,
+          runtime_error: metadata.runtime === 'unknown' ? (client.transport === 'stdio' ? '当前读取持久化历史，无法确认桌面会话的实时运行状态' : bound(sessionId) ? '专用后台会话尚未加载，发送前将重新核对状态' : 'daemon 无法确认桌面会话的实时运行状态') : null,
           check_error: null,
           finished_turn: finished, last_reply: reply,
         };

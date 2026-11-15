@@ -72,7 +72,8 @@ export function createSubscriptionService({
     return scheduler.create({
       sessionId: sub.dsh_session_id,
       ...reminder(sub),
-      everySeconds: sub.check_interval_seconds ?? sub.idle_timeout_seconds,
+      everySeconds: Math.min(sub.check_interval_seconds ?? 60, 3600),
+      deadline: sub.hard_expires_at,
     });
   }
   async function unschedule(sub: Subscription) {
@@ -166,6 +167,14 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       return { ok: true, subscription: subs.get(created.id)! };
     },
     async subscribe(input: SubscribeInput): Promise<SubscribeResult> {
+      for (const [key, value, max] of [
+        ['check_interval_seconds', input.check_interval_seconds, 3600],
+        ['max_lifetime_seconds', input.max_lifetime_seconds, 86400],
+        ['idle_timeout_seconds', input.idle_timeout_seconds, 86400],
+      ] as const) {
+        if (value !== undefined && (!Number.isSafeInteger(value) || value < 60 || value > max))
+          return {ok:false,code:'invalid_input',message:`${key} 必须为 60～${max} 的整数秒`};
+      }
       const adapter = adapters.get(input.agent);
       if (!adapter.capabilities().snapshot)
         return { ok: false, code: "unsupported", message: `${input.agent} 不支持查阅会话` };
@@ -180,7 +189,8 @@ async function closeSession(agent: Agent, externalSessionId: string) {
         return { ok: false, code: "session_closed", message: "外部会话不存在或已归档" };
       const receiveSession = input.dsh_session_id ?? (input.create_dsh_session ? await input.create_dsh_session() : null);
       const time = now();
-      const idle = input.idle_timeout_seconds ?? DEFAULT_IDLE_SECONDS;
+      const lifetime = input.max_lifetime_seconds ?? (input.type === 'poll' ? input.idle_timeout_seconds ?? 3600 : 86400);
+      const idle = input.type === 'poll' ? lifetime : input.idle_timeout_seconds ?? DEFAULT_IDLE_SECONDS;
       const draft = {
         id: input.id ?? newId(),
         owner: input.owner ?? "local",
@@ -192,9 +202,9 @@ async function closeSession(agent: Agent, externalSessionId: string) {
         dsh_session_id: receiveSession,
         ...(input.max_consecutive_failures === undefined ? {} : { max_consecutive_failures: input.max_consecutive_failures }),
         idle_timeout_seconds: idle,
-        ...(input.max_lifetime_seconds ? { max_lifetime_seconds: input.max_lifetime_seconds } : {}),
+        max_lifetime_seconds: lifetime,
         ...(input.type === "poll"
-          ? { check_interval_seconds: input.check_interval_seconds ?? idle }
+          ? { check_interval_seconds: input.check_interval_seconds ?? 60 }
           : {}),
         cursor: input.target_turn_id ? {
           uuid: base.cursor?.uuid ?? `codex:target:${input.target_turn_id}`,
@@ -232,6 +242,7 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       check_interval_seconds?: number;
       expires_at?: number;
       max_consecutive_failures?: number;
+      max_lifetime_seconds?: number;
     }): Promise<ChangeResult> {
       const current = subs.get(id);
       if (!current) return { ok: false, code: "not_found", message: "订阅不存在" };
@@ -240,16 +251,23 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       for (const [key, value] of Object.entries(input)) {
         if (value !== undefined && (!Number.isSafeInteger(value) || value < (key === "max_consecutive_failures" ? 1 : 60)))
           throw new TypeError(`${key} 必须为合法正整数`);
+        if (value !== undefined && ((key === 'check_interval_seconds' && value > 3600) || (['max_lifetime_seconds','idle_timeout_seconds'].includes(key) && value > 86400)))
+          throw new TypeError(`${key} 超过允许上限`);
         if (value !== undefined) patch[key] = value;
       }
       if (!Object.keys(patch).length)
         throw new TypeError("至少指定一个订阅配置");
-      if (patch.expires_at !== undefined && patch.expires_at > current.hard_expires_at)
+      if (patch.max_lifetime_seconds !== undefined) {
+        patch.hard_expires_at = current.created_at + patch.max_lifetime_seconds * 1000;
+        patch.expires_at = patch.hard_expires_at;
+        patch.idle_timeout_seconds = patch.max_lifetime_seconds;
+      }
+      if (patch.expires_at !== undefined && patch.expires_at > (patch.hard_expires_at ?? current.hard_expires_at))
         throw new TypeError("expires_at 不能超过最长存活时间");
       if (patch.idle_timeout_seconds !== undefined && patch.expires_at === undefined)
         patch.expires_at = Math.min(now() + patch.idle_timeout_seconds * 1000, current.hard_expires_at);
-      const intervalChanged = patch.check_interval_seconds !== undefined &&
-        patch.check_interval_seconds !== current.check_interval_seconds;
+      const intervalChanged = (patch.check_interval_seconds !== undefined &&
+        patch.check_interval_seconds !== current.check_interval_seconds) || patch.max_lifetime_seconds !== undefined;
       if (intervalChanged) await unscheduleQuietly(current);
       if (!subs.update({ id, expected_status: current.status, patch: { ...patch, updated_at: now() } }))
         return { ok: false, code: "conflict", message: "订阅状态已被修改" };

@@ -110,11 +110,11 @@ test("创建 poll 订阅：以快照为基线，写入有效期并建定时检�
   assert.deepEqual(sub.cursor, { uuid: "u1", timestamp: 50 });
   assert.equal(sub.external_session_title, "测试会话");
   assert.equal(sub.expires_at, 1000 + HOUR);
-  assert.equal(sub.hard_expires_at, 1000 + 24 * HOUR);
-  assert.equal(sub.check_interval_seconds, 3600);
+  assert.equal(sub.hard_expires_at, 1000 + HOUR);
+  assert.equal(sub.check_interval_seconds, 60);
   const task = sched.tasks.get(sub.schedule_task_id);
   assert.equal(task.sessionId, "dsh-1");
-  assert.equal(task.everySeconds, 3600);
+  assert.equal(task.everySeconds, 60);
   assert.ok(task.prompt.includes(v2Marker(sub.id)));
   assert.ok(task.prompt.includes(JSON.stringify(sub.id)));
   assert.match(task.prompt, /relay_check/);
@@ -159,7 +159,7 @@ test("暂停、恢复、停止：状态冲突返回 conflict，恢复顺延有�
   clock.now = 1000 + 2 * HOUR;
   const resumed = await service.resume(sub.id);
   assert.equal(resumed.subscription.status, "active");
-  assert.equal(resumed.subscription.expires_at, clock.now + HOUR);
+  assert.equal(resumed.subscription.expires_at, sub.hard_expires_at);
   const stopped = await service.stop(sub.id);
   assert.equal(stopped.subscription.end_reason, "user_stopped");
   assert.equal(sched.tasks.size, 0);
@@ -173,10 +173,11 @@ test("查阅和发送顺延同一会话所有订阅；不超过最长存活", as
   const b = (await service.subscribe({ ...poll, type: "push", dsh_session_id: null })).subscription;
   clock.now = 1000 + 30 * 60_000;
   await service.inspect("claude", SESSION);
-  for (const id of [a.id, b.id]) assert.equal(store.subscriptions.get(id).expires_at, clock.now + HOUR);
+  assert.equal(store.subscriptions.get(a.id).expires_at, a.hard_expires_at);
+  assert.equal(store.subscriptions.get(b.id).expires_at, clock.now + HOUR);
   clock.now = 1000 + 23.5 * HOUR;
   assert.equal(service.touch("claude", SESSION), 2);
-  assert.equal(store.subscriptions.get(a.id).expires_at, 1000 + 24 * HOUR);
+  assert.equal(store.subscriptions.get(a.id).expires_at, a.hard_expires_at);
 });
 
 test("查阅时发现会话关闭：poll 结束为 session_closed 并删定时任务，push 登记通知等待投递", async (t) => {
@@ -256,7 +257,7 @@ test("更新订阅周期和有效期会持久化并重建主动检查提醒", as
   const sub = (await service.subscribe(poll)).subscription;
   const previousTask = sub.schedule_task_id;
   const result = await service.update(sub.id, {
-    idle_timeout_seconds: 7200,
+    max_lifetime_seconds: 7200,
     check_interval_seconds: 1800,
   });
   assert.equal(result.ok, true);

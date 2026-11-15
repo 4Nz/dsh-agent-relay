@@ -12,9 +12,11 @@ export function validatePackage(pkg, files, tag) {
   const flatten = (value) => typeof value === "string" ? [value] : Object.values(value).flatMap(flatten);
   const required = ["package.json", "lib/index.js", "lib/client.js", "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/external-agent-notification/SKILL.md", "README.md", "CHANGELOG.md", guide,
     ...flatten(pkg.exports).map((path) => path.replace(/^\.\//, "")), pkg.dsh.bundle.patch.replace(/^\.\//, "")];
+  required.push("skills/external-agent-notification/send.mjs");
   for (const path of required) if (!files.includes(path)) throw new Error(`安装包缺少：${path}`);
   for (const path of files) {
     const allowed = ["package.json", "cordis.patch.yml", "README.md", "CHANGELOG.md", "LICENSE", guide, "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/external-agent-notification/SKILL.md"].includes(path)
+      || path === "skills/external-agent-notification/send.mjs"
       || /^lib\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+(?:\.d\.ts|\.js)$/.test(path);
     if (!allowed) throw new Error(`不允许发布文件：${path}`);
   }

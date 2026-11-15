@@ -80,8 +80,6 @@ export type SubscriptionPatch = Partial<
     | "external_cwd"
     | "created_at"
     | "notification_recorded_at"
-    | "max_lifetime_seconds"
-    | "hard_expires_at"
   >
 >;
 export interface Message {

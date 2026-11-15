@@ -34,6 +34,7 @@ function fixture(t) {
   const skillsDir = mkdtempSync(join(tmpdir(), "relay-skill-src-"));
   mkdirSync(join(skillsDir, "external-agent-notification"));
   writeFileSync(join(skillsDir, "external-agent-notification", "SKILL.md"), "---\nname: external-agent-notification\n---\n# 通知技能\n");
+  writeFileSync(join(skillsDir, "external-agent-notification", "send.mjs"), "// 通知发送器\n");
   const homeDir = mkdtempSync(join(tmpdir(), "relay-skill-home-"));
   t.after(() => {
     rmSync(skillsDir, { recursive: true, force: true });
@@ -53,6 +54,8 @@ test("预览读取技能内容并拼装安装提示词，目标目录按 Agent �
   assert.match(claude.prompt, /external-agent-notification/);
   assert.match(claude.prompt, /# 通知技能/);
   assert.match(claude.prompt, /SKILL\.md/);
+  assert.match(claude.prompt, /send\.mjs/);
+  assert.match(claude.prompt, /通知发送器/);
   const codex = await service.preview("codex");
   assert.equal(codex.supported, false);
   assert.match(codex.reason, /预留/);

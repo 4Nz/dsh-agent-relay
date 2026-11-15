@@ -13,6 +13,7 @@ export function cursor(value: Json): SessionCursor | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return typeof value.uuid === "string" && typeof value.timestamp === "number"
     ? { uuid: value.uuid, timestamp: value.timestamp,
+      ...(typeof value.turn_status === "string" ? { turn_status: value.turn_status } : {}),
       ...(typeof value.target_turn_id === "string" && value.target_turn_id ? { target_turn_id: value.target_turn_id } : {}) }
     : null;
 }
@@ -92,9 +93,10 @@ export function createCheckService({
       try {
         let sub = store.subscriptions.get(id);
         if (!sub) return { status: "not_found" };
-        if (sub.status !== "active") return { status: "inactive" };
+        if (sub.status === "ended") return { status: "inactive" };
         if (now() >= sub.hard_expires_at) return await expireOrFinish(sub);
-        if (now() < sub.expires_at) return { status: "not_due" };
+        if (sub.status !== "active") return { status: "inactive" };
+        if (sub.type === "push") return { status: "not_due" };
         let snap: Snapshot;
         try {
           snap = await adapters
@@ -103,8 +105,10 @@ export function createCheckService({
           if (snap.check_error) throw new Error(snap.check_error);
         } catch (error) {
           sub = store.subscriptions.get(id)!;
-          if (!sub || sub.status !== "active" || now() < sub.expires_at)
+          if (!sub || sub.status === "ended")
             return { status: "inactive" };
+          if (now() >= sub.hard_expires_at) return await expireOrFinish(sub);
+          if (sub.status !== 'active') return { status: 'inactive' };
           const failures = sub.consecutive_failures + 1;
           const reason = error instanceof Error ? error.message : String(error);
           store.subscriptions.update({
@@ -127,11 +131,11 @@ export function createCheckService({
             ? await finish(sub, "unreachable", `连续检查失败：${reason}`)
             : { status: "check_failed" };
         }
-        // 外部查询期间可能发生停止、暂停或人工查阅，重新检查有效期。
+        // 外部查询期间可能发生停止、暂停，重新核对状态与最长存活时间。
         sub = store.subscriptions.get(id)!;
-        if (!sub || sub.status !== "active") return { status: "inactive" };
+        if (!sub || sub.status === "ended") return { status: "inactive" };
         if (now() >= sub.hard_expires_at) return await expireOrFinish(sub);
-        if (now() < sub.expires_at) return { status: "not_due" };
+        if (sub.status !== 'active') return { status: 'inactive' };
         const time = now();
         store.subscriptions.update({
           id,
@@ -149,6 +153,8 @@ export function createCheckService({
         const target = cursor(sub.cursor)?.target_turn_id;
         if (target && snap.finished_turn?.external_ref === target)
           return await finish(sub, snap.finished_turn.result, snap.last_reply?.slice(0, 3000) || "Codex 目标轮次已结束", target);
+        if (!target && snap.finished_turn)
+          return await finish(sub, snap.finished_turn.result, snap.last_reply?.slice(0, 3000) || "外部任务已结束", snap.finished_turn.external_ref);
         const previous = observed(sub.cursor);
         const changed =
           snap.cursor !== null &&
@@ -175,6 +181,7 @@ export function createCheckService({
           });
           return { status: "extended" };
         }
+        if (now() < sub.expires_at) return { status: "watching" };
         return await finish(
           sub,
           snap.finished_turn?.result ?? "idle_timeout",

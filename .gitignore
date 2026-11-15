@@ -18,6 +18,7 @@ Desktop.ini
 .env.*
 !.env.example
 !.env.*.example
+notification-client.json
 
 # 日志与缓存
 *.log

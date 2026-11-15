@@ -90,7 +90,7 @@ export function createNotifications(db: DatabaseSync) {
           Subscription | undefined;
         if (
           !sub ||
-          sub.status !== "active" ||
+          (sub.status !== "active" && !(sub.status === "paused" && sub.type === "poll" && notification.result === "expired" && now >= sub.hard_expires_at)) ||
           sub.notification_recorded_at !== null
         )
           return { outcome: "inactive", notification: null };

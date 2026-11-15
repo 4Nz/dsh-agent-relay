@@ -15,6 +15,7 @@ export interface SessionCursor {
   uuid: string;
   timestamp: number;
   target_turn_id?: string;
+  turn_status?: string;
 }
 export interface SessionInfo {
   id: string;
@@ -42,7 +43,7 @@ export interface Snapshot {
   send_reason?: string;
   // 实际查询失败；与 Codex 正常的实时状态 unknown 说明分开。
   check_error: string | null;
-  // 基线之后开始、且已经结束的最近一轮。
+  // 基线后新完成的轮次（包含订阅时进行中的同轮）；后续轮次活跃不抹掉此完成证据。
   finished_turn: { result: TurnResult; external_ref: string } | null;
   last_reply: string | null;
 }

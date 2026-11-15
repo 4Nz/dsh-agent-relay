@@ -10,11 +10,41 @@ description: 外部 Agent 任务完成后向 DSH Agent Relay 发送一次结果�
 ## 发送前准备
 
 - 只使用当前 Agent 上下文中真实的 `agent` 和 `external_session_id`；不要按标题、工作目录或猜测生成会话 ID。
-- 从 DSH 设置或用户提供的安全配置中读取共享通知凭证。不要把凭证写入会话记录、代码、日志或通知摘要。
+- 使用本 Skill 同目录的 `send.mjs` 发送。脚本每次调用读取本机配置，不要把凭证读出到工具输出、会话记录、命令行、代码、日志或通知摘要。
 - 为本次任务生成稳定且只使用一次的 `request_id`。重试同一个 HTTP 请求时必须复用同一个值，不能为同一结果生成新 ID。
 - 如果调用方已经通过 DSH 侧流程拿到 `subscription_id`，可以带上它以指定已有的接收会话；否则省略该字段，Relay 会按 `request_id` 自动创建一次性 push 订阅和通知会话。
 
 ## 通知请求
+
+### 自动读取凭证（macOS 与 Windows）
+
+需要 Node.js >=24。安装 Skill 时必须同时安装 `SKILL.md` 和同目录的 `send.mjs`；不要只复制说明文件。脚本按以下顺序查找配置：
+
+1. 环境变量 `DSH_AGENT_RELAY_CONFIG` 指定的绝对文件路径（可选）。
+2. `DSH_HOME/agent-relay/notification-client.json`（设置了 `DSH_HOME` 时）。
+3. 当前用户主目录下的 `.dsh/agent-relay/notification-client.json`。
+
+默认路径在 macOS 为 `~/.dsh/agent-relay/notification-client.json`；Windows 为 `%USERPROFILE%\.dsh\agent-relay\notification-client.json`。使用系统用户主目录和 Node 路径 API，不硬编码用户名。自定义 DSH_HOME 且外部 Agent 没继承该变量时，将设置页面显示的配置路径作为 `DSH_AGENT_RELAY_CONFIG`；该变量只包含路径，不包含凭证。
+
+在 DSH「任务跟踪 → 通知凭证设置」生成或重新生成凭证，会同步更新该文件及实际 HTTP 地址。脚本每次读取最新内容，凭证轮换后无需重启 Codex/Claude。旧版本仅保存摘要时无法恢复原文，需要在升级后重新生成一次。配置缺失时说明原因，不搜索无关文件、不猜测凭证，不把哈希摘要作为 Bearer token。
+
+调用同目录发送脚本，并用真实会话 ID 和稳定 request_id 替换占位符；摘要仅包含用户需要的任务结果。默认 Codex 全局 Skill 的示例：
+
+macOS：
+
+```bash
+node "$HOME/.codex/skills/external-agent-notification/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary "<任务结果摘要>"
+```
+
+Windows PowerShell：
+
+```powershell
+node "$env:USERPROFILE/.codex/skills/external-agent-notification/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary "<任务结果摘要>"
+```
+
+Claude 使用实际安装目录的脚本，并将 `--agent` 改为 `claude`。如果 Skill 安装在自定义 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 或项目目录，使用当前 Skill 的实际绝对路径。可选参数为 `--result`、`--subscription-id`、`--external-ref`。默认结果为 `completed`。脚本仅向本机回环 HTTP 地址发送，不跟随重定向；输出只包含接收状态和接收会话 ID，不输出凭证。
+
+以下为协议说明；优先调用脚本，避免手工处理凭证。
 
 向 `POST http://127.0.0.1:37421/api/agent-relay/notifications` 发送 JSON，并设置 `Authorization: Bearer <shared-token>` 与 `Content-Type: application/json`。
 

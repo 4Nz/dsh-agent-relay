@@ -53,9 +53,10 @@ export function createSkillInstallService({
     return readFile(join(root, NOTIFICATION_SKILL, "SKILL.md"), "utf8");
   }
 
-  function buildPrompt(agent: Agent, content: string): string {
+  async function buildPrompt(agent: Agent, content: string): Promise<string> {
     const label = AGENT_LABEL[agent];
     const dir = join(skillDir[agent], NOTIFICATION_SKILL);
+    const readFileSender = await readFile(join(root, NOTIFICATION_SKILL, "send.mjs"), "utf8");
     return [
       `请帮我在本机安装一个名为 ${NOTIFICATION_SKILL} 的 ${label} skill，用于在任务完成后向 DSH Agent Relay 发送一次结果通知。`,
       "",
@@ -65,6 +66,11 @@ export function createSkillInstallService({
       "",
       "```markdown",
       content,
+      "```",
+      "",
+      `同时将发送脚本原样保存为 ${join(dir, "send.mjs")}：`,
+      "```javascript",
+      readFileSender,
       "```",
     ].join("\n");
   }
@@ -77,7 +83,7 @@ export function createSkillInstallService({
         agent,
         skill: NOTIFICATION_SKILL,
         target_dir: join(skillDir[agent], NOTIFICATION_SKILL),
-        prompt: buildPrompt(agent, content),
+        prompt: await buildPrompt(agent, content),
         supported,
         reason: supported
           ? null
@@ -92,7 +98,7 @@ export function createSkillInstallService({
           reason: `${AGENT_LABEL[agent]} 开新会话执行安装为后续版本预留`,
         };
       const content = await readSkill();
-      const prompt = buildPrompt(agent, content);
+      const prompt = await buildPrompt(agent, content);
       const result = await adapter.runPrompt(prompt, {
         addDirs: [skillDir[agent]],
       });

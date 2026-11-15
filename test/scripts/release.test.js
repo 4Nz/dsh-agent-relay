@@ -4,9 +4,10 @@ import { validatePackage } from "../../scripts/release.mjs";
 
 const pkg = { name: "dsh-agent-relay", version: "0.1.0", exports: { ".": { import: "./lib/index.js", types: "./lib/index.d.ts" }, "./client": { default: "./lib/client.js" } }, dsh: { bundle: { patch: "./cordis.patch.yml" } } };
 const files = ["package.json", "lib/index.js", "lib/index.d.ts", "lib/client.js", "cordis.patch.yml", "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/external-agent-notification/SKILL.md", "README.md", "CHANGELOG.md", "docs/operations/T0-T1-T3-T7-plugin-release.md"];
+files.push("skills/external-agent-notification/send.mjs");
 test("发布检查拒绝缺失导出和缺失 Skill", () => {
   assert.doesNotThrow(() => validatePackage(pkg, files, "v0.1.0"));
-  for (const missing of ["lib/index.d.ts", "skills/dsh-agent-relay/SKILL.md"])
+  for (const missing of ["lib/index.d.ts", "skills/dsh-agent-relay/SKILL.md", "skills/external-agent-notification/send.mjs"])
     assert.throws(() => validatePackage(pkg, files.filter((f) => f !== missing)), /缺少/);
 });
 test("发布检查拒绝源码、数据库、凭证和缓存混入安装包", () => {

@@ -7,6 +7,7 @@ import { isAbsolute, resolve, join } from 'node:path';
 import { AdapterError } from '../types.js';
 
 export interface CodexClient {
+  readonly transport?: 'daemon' | 'stdio';
   request(method: string, params: Record<string, unknown>): Promise<unknown>;
   close(): void;
 }
@@ -16,6 +17,7 @@ export interface CodexConnectionOptions {
   writable?: boolean;
   onNotification?: (method: string, params: unknown) => void;
   onClose?: () => void;
+  createConnection?: () => Duplex;
 }
 export function codexEndpoint(options: CodexConnectionOptions = {}): string {
   const path = options.socketPath ?? join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'app-server-control', 'app-server-control.sock');
@@ -125,7 +127,7 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
     } catch { stop(failure('Codex 响应无法解析或超过大小上限')); }
   }
   await new Promise<void>((resolve, reject) => {
-    const req = httpRequest({ socketPath, path: '/', headers: {
+    const req = httpRequest({ socketPath, path: '/', ...(options.createConnection ? {createConnection:options.createConnection} : {}), headers: {
       Host: 'localhost', Upgrade: 'websocket', Connection: 'Upgrade',
       'Sec-WebSocket-Key': key, 'Sec-WebSocket-Version': '13',
     }});
@@ -164,6 +166,7 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
     send({ method: 'initialized' });
   } catch (error) { stop(); throw error; }
   return {
+    transport: 'daemon',
     request(method, params) {
       if (!METHODS.has(method) && !(options.writable && WRITE_METHODS.has(method))) return Promise.reject(new AdapterError('invalid_input', 'Codex 客户端仅允许只读历史查询'));
       return request(method, params);
