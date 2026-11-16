@@ -27,10 +27,16 @@
 
 ## 宿主依据与限制
 
-本机安装根 /Users/nzimp/.local/lib/node_modules/@deepseek-ai/dsh。已读 ScheduleService 的 create/catalog/delete、Agent.status 为 idle/running、followup 会唤醒并可能让运行中的 Agent 在边界消费输入。因此 push 在调用 followup 前必须确认 idle，未知状态不得假定空闲。现代 host-wide schedule 兼容保留。以实际声明确认可用接口，不修改宿主包。
+本机安装根 /Users/nzimp/.local/lib/node_modules/@deepseek-ai/dsh。已读 ScheduleService 的 create/catalog/delete、Agent.status 为 idle/running、followup 排入下一轮并唤醒，steer 才会在运行中的步骤边界插入。因此 push 在调用 followup 前必须确认 idle，未知状态不得假定空闲。现代 host-wide schedule 兼容保留。以实际声明确认可用接口，不修改宿主包。
 
 宿主无截止回调时由插件确定性到期维护删除提醒，并在 relay_check 再拦截；已排进宿主 inbox 的过期提醒不能保证不唤醒，但不能再读外部数据或续订。维护轮询不是关注轮询。push 取消宿主提醒的失败、DSH 未完成判断、重启均须可恢复，不能永久丢失兜底检查。
 
 ## 验证与交付
 
 Node >=24、TypeScript ESM、运行依赖限 DSH 官方包和 Node 内置。文档中文，文件名及一级标题含任务编号。所有修改限独立 worktree；不部署、不合并、不发业务消息。先行为回归红灯，后实现；运行 typecheck、全量单测和 release:prepare。临时数据库测试迁移、并发、去重、忙队列、到期与恢复。真实宿主测试使用独立 DSH_HOME 和确定性模型，不接触业务会话；不能将单测称作 T7 完成。
+
+## 实施补充
+
+会话路由在看板独立列出，首次直接push和清理历史关注后仍可打开原DSH、查看事件与屏蔽；不为显示创建关注期。批次保存创建时的主题/规划/截止上下文与投递目标，重新绑定不改变旧通知目标。模型遗漏确认时按批次恢复，五分钟后用宿主提醒读取原批次；批次创建24小时仍未确认则转需人工处理并释放后续队列，未知事实保留、不盲重发。此恢复不建立新的订阅。
+
+保留基线已有Codex官方queue/add发送路径及专用daemon turn/start区分，本次不改变Adapter的发送权限范围。实际落地与验证记录见对应实施计划末尾。
