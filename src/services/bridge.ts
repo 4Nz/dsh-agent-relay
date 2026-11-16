@@ -522,7 +522,12 @@ export function createBridgeService({
       const b = db.routes().find((x) => x.id === batch.bridge_id)!;
       const s = batch.subscription_id ? subs.get(batch.subscription_id) : null;
       const live = db.live(b);
-      if (live && batch.subscription_id !== live.id) {
+      // 原批次ID和版本已在入口校验。旧批次可消费自己的事实，不能结束、暂停
+      // 或重新规划已推进版本的关注；屏蔽恢复和待人工处理均遵守同一边界。
+      if (
+        (live && batch.subscription_id !== live.id) ||
+        (s && s.decision_version > batch.version)
+      ) {
         db.acknowledge(batch.id, now());
         await service.drain();
         return { ok: true as const, stale_processing_only: true };

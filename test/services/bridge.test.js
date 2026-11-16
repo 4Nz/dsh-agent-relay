@@ -678,6 +678,33 @@ test("屏蔽清理批次恢复提醒，已入队的batch读取也不暴露push�
   await f.bridge.drain();
   assert.equal(f.wakeups.length, 1, "已送达挂起批次不重发");
   assert.equal(f.bridge.batch(batch.id).events[0].body.includes("秘密"), true);
+  const current = f.store.subscriptions.get(s.id);
+  const confirmed = await f.bridge.decide({
+    batch_id: batch.id,
+    decision_version: batch.version,
+    decision: "end",
+    check_interval_seconds: 600,
+  });
+  assert.equal(confirmed.ok, true);
+  assert.equal(confirmed.stale_processing_only, true);
+  assert.equal(f.store.bridge.batch(batch.id).state, "processed");
+  assert.equal(f.store.subscriptions.get(s.id).status, current.status);
+  assert.equal(
+    f.store.subscriptions.get(s.id).decision_version,
+    current.decision_version,
+  );
+  assert.equal(
+    f.store.subscriptions.get(s.id).selected_interval_seconds,
+    current.selected_interval_seconds,
+  );
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "after-unmute-confirm",
+    summary: "后续",
+    result: "completed",
+  });
+  assert.equal(f.wakeups.length, 2, "旧版本确认后队列继续处理新push");
 });
 test("未知批次恢复不重发，窗口结束仍保留未知事实并允许新事件", async (t) => {
   const f = fixture(t);
@@ -711,4 +738,51 @@ test("未知批次恢复不重发，窗口结束仍保留未知事实并允许�
   });
   assert.equal(f.wakeups.length, 2);
   assert.notEqual(f.wakeups[1].id, batch.id);
+});
+
+test("待人工批次版本落后时只确认自身事件，不改变当前关注或新批次", async (t) => {
+  for (const state of ["needs_attention", "unknown_attention"]) {
+    const f = fixture(t),
+      s = (await f.bridge.subscribe(input)).subscription;
+    await f.bridge.push({
+      agent: "claude",
+      external_session_id: "external",
+      request_id: "manual-old",
+      summary: "旧事实",
+      result: "completed",
+    });
+    const route = f.store.bridge.route("claude", "external"),
+      old = f.store.bridge.open(route.id);
+    f.store.bridge.state(old.id, state, 1001);
+    f.setEvents([
+      {
+        id: "new",
+        kind: "assistant",
+        text: "当前进展",
+        cursor: { uuid: "new", timestamp: 2 },
+      },
+    ]);
+    const currentBatch = await f.bridge.check(s.id),
+      current = f.store.subscriptions.get(s.id);
+    assert.notEqual(currentBatch.decision_version, old.version);
+    const outcome = await f.bridge.decide({
+      batch_id: old.id,
+      decision_version: old.version,
+      decision: "needs_user",
+      check_interval_seconds: 600,
+    });
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.stale_processing_only, true);
+    assert.equal(f.store.bridge.batch(old.id).state, "processed");
+    assert.notEqual(f.store.bridge.events(old.id)[0].processed_at, null);
+    assert.equal(
+      f.store.bridge.batch(currentBatch.batch_id).state,
+      "delivered",
+    );
+    assert.equal(
+      f.store.bridge.events(currentBatch.batch_id)[0].processed_at,
+      null,
+    );
+    assert.deepEqual(f.store.subscriptions.get(s.id), current);
+  }
 });
