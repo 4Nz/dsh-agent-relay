@@ -184,7 +184,7 @@ export function createBridgeService({
       batch_id: batch.id,
       decision_version: batch.version,
       subscription_id: batch.subscription_id,
-      events: db.events(batch.id).map((e) => ({
+      events: db.visibleEvents(batch.id).map((e) => ({
         id: e.id,
         kind: e.kind,
         body: e.body,
@@ -220,7 +220,7 @@ export function createBridgeService({
   }
   async function drainRun() {
     for (const b of db.routes()) {
-      if (b.muted || !b.dsh_session_id) continue;
+      if (!b.dsh_session_id) continue;
       let batch = db.open(b.id);
       if (batch?.state === "unknown") {
         const confirmed = await transport
@@ -234,11 +234,12 @@ export function createBridgeService({
           batch.id,
           confirmed === "delivered" ? "delivered" : "pending",
           now(),
+          null,
+          "unknown",
         );
         batch = db.batch(batch.id);
       }
-      if (batch?.state === "delivered" || batch?.state === "delivering")
-        continue;
+      if (batch && !["pending", "exhausted"].includes(batch.state)) continue;
       if (batch?.retry_at && batch.retry_at > now()) continue;
       if (
         !(await transport
@@ -259,7 +260,7 @@ export function createBridgeService({
       }
       const s = db.live(b);
       if (s) await cancel(s);
-      db.state(batch.id, "delivering", now());
+      if (!db.state(batch.id, "delivering", now(), null, "pending")) continue;
       let result;
       try {
         result = await transport.deliver(
@@ -274,6 +275,7 @@ export function createBridgeService({
         result.status === "failed" ? "pending" : result.status,
         now(),
         result.error ?? null,
+        "delivering",
       );
     }
   }
@@ -462,7 +464,8 @@ export function createBridgeService({
               ...facts(batch),
               has_more:
                 page.has_more ||
-                db.pending(b.id).length > db.events(batch.id).length,
+                db.visiblePending(b.id).length >
+                  db.visibleEvents(batch.id).length,
             };
           }
           return { status: "unchanged", events: [], has_more: page.has_more };
@@ -505,6 +508,15 @@ export function createBridgeService({
           input.subscription_id !== batch.subscription_id)
       )
         return conflict("批次或执行版本不匹配");
+      const batchRoute = db
+        .routes()
+        .find((route) => route.id === batch.bridge_id);
+      if (
+        batch.state === "muted" ||
+        (batchRoute?.muted &&
+          db.events(batch.id).some((event) => event.kind === "push"))
+      )
+        return conflict("批次中的push已屏蔽，解除屏蔽后再处理");
       if (batch.state === "processed")
         return { ok: true as const, duplicate: true };
       const b = db.routes().find((x) => x.id === batch.bridge_id)!;
@@ -521,7 +533,7 @@ export function createBridgeService({
         validateInterval(input.check_interval_seconds);
       if (
         input.decision === "end" &&
-        db.pending(b.id).length > db.events(batch.id).length
+        db.visiblePending(b.id).length > db.visibleEvents(batch.id).length
       )
         return conflict(
           "还有增量事件待处理，请先continue确认本批再读取后续批次",
@@ -647,11 +659,46 @@ export function createBridgeService({
       await service.reconcile();
       return { ok: true as const, subscription: subs.get(id)! };
     },
-    mute(agent: Agent, external: string, muted: boolean) {
+    async mute(agent: Agent, external: string, muted: boolean) {
       const b = db.route(agent, external);
       if (!b) return conflict("会话路由不存在");
       db.mute(b.id, muted);
+      if (muted)
+        for (const batch of db.routeBatches(b.id)) {
+          if (batch.recovery_schedule_id && batch.dsh_session_id)
+            try {
+              await scheduler.delete({
+                id: batch.recovery_schedule_id,
+                sessionId: batch.dsh_session_id,
+              });
+            } catch {
+              /* 对账重试 */
+            }
+        }
       return { ok: true as const, muted };
+    },
+    batch(id: string) {
+      const batch = db.batch(id);
+      if (!batch) return { status: "not_found" };
+      const route = db.routes().find((route) => route.id === batch.bridge_id);
+      if (
+        batch.state === "muted" ||
+        (route?.muted && db.events(id).some((event) => event.kind === "push"))
+      )
+        return {
+          status: "muted",
+          batch_id: id,
+          decision_version: batch.version,
+          events: [],
+        };
+      if (batch.state === "processed")
+        return {
+          status: "processed",
+          batch_id: id,
+          decision_version: batch.version,
+          events: [],
+        };
+      return { status: batch.state, ...facts(batch) };
     },
     drain() {
       if (!draining)
@@ -677,6 +724,53 @@ export function createBridgeService({
         return report;
       }
       const wanted = new Set<string>();
+      // 恢复提醒属于批次本身，关注已结束或从未创建也不会失去恢复入口。
+      for (const route of db.routes()) {
+        const batch = db.open(route.id);
+        if (!batch) continue;
+        if (now() - batch.created_at >= 86400000) {
+          db.state(
+            batch.id,
+            ["unknown", "delivering"].includes(batch.state)
+              ? "unknown_attention"
+              : "needs_attention",
+            now(),
+            "批次恢复窗口已结束，保留未确认事件待人工处理",
+            batch.state,
+          );
+          continue;
+        }
+        if (now() - batch.created_at < 300000) continue;
+        const session = batch.dsh_session_id ?? route.dsh_session_id;
+        if (!session) continue;
+        const marker = v2Marker(`batch:${batch.id}`);
+        const existing = tasks.find(
+          (t) =>
+            t.status === "active" &&
+            t.sessionId === session &&
+            t.prompt.startsWith(marker),
+        );
+        if (existing) {
+          wanted.add(existing.id);
+          db.recoveryTask(batch.id, existing.id);
+          continue;
+        }
+        try {
+          const id = await scheduler.create({
+            sessionId: session,
+            title: "Agent Relay 待确认批次",
+            everySeconds: 300,
+            deadline: batch.created_at + 86400000,
+            prompt: `${marker} 调用 relay_batch(batch_id=${JSON.stringify(batch.id)}) 恢复原批次事实。若状态muted则停止，不展示push。根据原主题处理后调用relay_decide，携带原batch_id和decision_version。不创建或恢复关注，不重复发送外部任务。`,
+          });
+          if (db.recoveryTask(batch.id, id)) {
+            wanted.add(id);
+            report.created++;
+          } else await scheduler.delete({ id, sessionId: session });
+        } catch (error) {
+          report.errors.push(String(error));
+        }
+      }
       for (const b of db.routes()) {
         let s = db.live(b);
         if (!s) continue;
@@ -687,25 +781,14 @@ export function createBridgeService({
           continue;
         }
         if (open) {
-          if (now() - open.created_at >= 300000) {
-            const scheduledId = s.schedule_task_id;
-            const existing = tasks.find(
-              (t) => t.id === scheduledId && t.status === "active",
-            );
-            if (existing) wanted.add(existing.id);
-            else
-              try {
-                await schedule(s, true);
-                const id = subs.get(s.id)?.schedule_task_id;
-                if (id) wanted.add(id);
-              } catch (error) {
-                report.errors.push(String(error));
-              }
-          } else await cancel(s);
+          await cancel(s);
           continue;
         }
         // 确认落库后、恢复提醒前崩溃：没有开放批次时安全恢复原规划，不重放已处理事件。
-        if (s.planning_state === "deciding" && !db.pending(b.id).length) {
+        if (
+          s.planning_state === "deciding" &&
+          !db.visiblePending(b.id).length
+        ) {
           subs.update({
             id: s.id,
             expected_status: s.status,

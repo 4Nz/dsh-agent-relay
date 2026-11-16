@@ -120,6 +120,13 @@ export function registerTools(
   ];
   definitions.push(
     {
+      name: "relay_batch",
+      endpoint: "batch",
+      description:
+        "按稳定批次ID恢复尚未确认的会话桥梁事实；不读取外部历史、不创建关注。muted状态不得展示push，使用返回版本调用relay_decide。",
+      parameters: { batch_id: { type: "string", required: true } },
+    },
+    {
       name: "relay_plan",
       endpoint: "plan",
       description:

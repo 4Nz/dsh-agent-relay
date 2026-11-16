@@ -22,6 +22,7 @@ export type RelayResponse =
   | { ok: true; value: unknown }
   | { ok: false; error: { code: string; message: string } };
 export const endpoints = [
+  "batch",
   "events",
   "current",
   "plan",
@@ -120,6 +121,11 @@ export function createRelayService({
         const args = object(payload);
         let value: unknown;
         switch (endpoint) {
+          case "batch": {
+            if (!bridge) throw new Error("桥梁未就绪");
+            value = bridge.batch(text(args.batch_id, "batch_id"));
+            break;
+          }
           case "events": {
             const selected = args.subscription_id
               ? store.subscriptions.get(
@@ -234,7 +240,7 @@ export function createRelayService({
             if (!bridge) throw new Error("会话桥梁未就绪");
             if (typeof args.muted !== "boolean")
               throw new TypeError("muted 必须为布尔值");
-            const result = bridge.mute(
+            const result = await bridge.mute(
               agent(args.agent),
               text(args.external_session_id, "external_session_id"),
               args.muted,

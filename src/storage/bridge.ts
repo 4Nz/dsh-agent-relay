@@ -22,6 +22,8 @@ export interface BridgeEvent {
   processed_at: number | null;
 }
 export interface BridgeBatch {
+  recovery_schedule_id: string | null;
+  suspended_state: string | null;
   dsh_session_id: string | null;
   id: string;
   bridge_id: string;
@@ -123,10 +125,44 @@ export function createBridgeStore(db: DatabaseSync) {
       );
     },
     mute(id: string, muted: boolean) {
-      db.prepare("UPDATE relay_bridge SET muted=? WHERE id=?").run(
-        Number(muted),
-        id,
+      transaction(db, () => {
+        db.prepare("UPDATE relay_bridge SET muted=? WHERE id=?").run(
+          Number(muted),
+          id,
+        );
+        if (muted)
+          db.prepare(
+            "UPDATE relay_bridge_batch SET suspended_state=CASE WHEN state='delivering' THEN 'unknown' ELSE state END,state='muted' WHERE bridge_id=? AND state IN ('pending','delivering','unknown','delivered','exhausted') AND EXISTS(SELECT 1 FROM relay_bridge_event e WHERE e.batch_id=relay_bridge_batch.id AND e.kind='push')",
+          ).run(id);
+      });
+    },
+    visiblePending(id: string) {
+      return db
+        .prepare(
+          "SELECT e.* FROM relay_bridge_event e JOIN relay_bridge r ON r.id=e.bridge_id WHERE e.bridge_id=? AND e.processed_at IS NULL AND (r.muted=0 OR e.kind!='push') AND (e.batch_id IS NULL OR EXISTS(SELECT 1 FROM relay_bridge_batch b WHERE b.id=e.batch_id AND b.state IN ('pending','delivering','unknown','delivered','exhausted'))) ORDER BY e.seq",
+        )
+        .all(id) as unknown as BridgeEvent[];
+    },
+    visibleEvents(id: string) {
+      return db
+        .prepare(
+          "SELECT e.* FROM relay_bridge_event e JOIN relay_bridge r ON r.id=e.bridge_id WHERE e.batch_id=? AND (r.muted=0 OR e.kind!='push') ORDER BY e.seq",
+        )
+        .all(id) as unknown as BridgeEvent[];
+    },
+    recoveryTask(id: string, taskId: string) {
+      return (
+        db
+          .prepare(
+            "UPDATE relay_bridge_batch SET recovery_schedule_id=? WHERE id=? AND state IN ('pending','delivering','unknown','delivered','exhausted')",
+          )
+          .run(taskId, id).changes === 1
       );
+    },
+    routeBatches(id: string) {
+      return db
+        .prepare("SELECT * FROM relay_bridge_batch WHERE bridge_id=?")
+        .all(id) as unknown as BridgeBatch[];
     },
     append(
       b: Bridge,
@@ -198,10 +234,26 @@ export function createBridgeStore(db: DatabaseSync) {
             .get(b.id),
         );
         if (existing) return existing;
+        const routeState = route(b.agent, b.external_session_id)!;
+        if (!routeState.muted) {
+          const suspended = decode<BridgeBatch>(
+            db
+              .prepare(
+                "SELECT * FROM relay_bridge_batch WHERE bridge_id=? AND state='muted' ORDER BY created_at,id LIMIT 1",
+              )
+              .get(b.id),
+          );
+          if (suspended) {
+            db.prepare(
+              "UPDATE relay_bridge_batch SET state=suspended_state,suspended_state=NULL WHERE id=? AND state='muted'",
+            ).run(suspended.id);
+            return batch(suspended.id)!;
+          }
+        }
         if (
           !db
             .prepare(
-              "SELECT seq FROM relay_bridge_event WHERE bridge_id=? AND processed_at IS NULL AND batch_id IS NULL LIMIT 1",
+              "SELECT seq FROM relay_bridge_event WHERE bridge_id=? AND processed_at IS NULL AND batch_id IS NULL AND (kind!='push' OR EXISTS(SELECT 1 FROM relay_bridge r WHERE r.id=bridge_id AND r.muted=0)) LIMIT 1",
             )
             .get(b.id)
         )
@@ -216,20 +268,32 @@ export function createBridgeStore(db: DatabaseSync) {
             "UPDATE relay_subscription SET decision_version=?,planning_state=CASE WHEN selected_interval_seconds IS NULL THEN \u0027pending\u0027 ELSE \u0027deciding\u0027 END WHERE id=?",
           ).run(version, sub.id);
         db.prepare(
-          "UPDATE relay_bridge_event SET batch_id=? WHERE seq IN (SELECT seq FROM relay_bridge_event WHERE bridge_id=? AND processed_at IS NULL AND batch_id IS NULL ORDER BY seq LIMIT 16)",
+          "UPDATE relay_bridge_event SET batch_id=? WHERE seq IN (SELECT seq FROM relay_bridge_event WHERE bridge_id=? AND processed_at IS NULL AND batch_id IS NULL AND (kind!='push' OR EXISTS(SELECT 1 FROM relay_bridge r WHERE r.id=bridge_id AND r.muted=0)) ORDER BY seq LIMIT 16)",
         ).run(id, b.id);
         return batch(id)!;
       });
     },
-    state(id: string, state: string, now: number, error: string | null = null) {
-      db.prepare(
-        "UPDATE relay_bridge_batch SET state=?,attempts=attempts+?,retry_at=?,error=? WHERE id=?",
-      ).run(
-        state,
-        Number(state === "delivering"),
-        state === "pending" ? now + 60000 : null,
-        error,
-        id,
+    state(
+      id: string,
+      state: string,
+      now: number,
+      error: string | null = null,
+      expected?: string,
+    ) {
+      return (
+        db
+          .prepare(
+            "UPDATE relay_bridge_batch SET state=?,attempts=attempts+?,retry_at=?,error=? WHERE id=? AND state NOT IN ('processed','muted','needs_attention','unknown_attention') AND (? IS NULL OR state=?)",
+          )
+          .run(
+            state,
+            Number(state === "delivering"),
+            state === "pending" ? now + 60000 : null,
+            error,
+            id,
+            expected ?? null,
+            expected ?? null,
+          ).changes === 1
       );
     },
     acknowledge(id: string, now: number) {

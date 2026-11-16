@@ -121,4 +121,6 @@ INSERT OR IGNORE INTO relay_bridge_event(id,bridge_id,subscription_id,kind,body,
  WHERE s.type='push' AND s.id LIKE 'push:%';
 CREATE UNIQUE INDEX subscription_one_live_bridge ON relay_subscription(agent,external_session_id) WHERE status!='ended';
 `,
+  `ALTER TABLE relay_bridge_batch ADD COLUMN recovery_schedule_id TEXT;
+ALTER TABLE relay_bridge_batch ADD COLUMN suspended_state TEXT;`,
 ];

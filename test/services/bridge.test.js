@@ -18,6 +18,7 @@ function fixture(t) {
   const wakeups = [],
     tasks = new Map();
   let events = [];
+  let deliverHook, confirmHook;
   let delivery = "delivered",
     confirmation = "delivered";
   const adapter = {
@@ -57,9 +58,11 @@ function fixture(t) {
       idle: async () => !busy,
       deliver: async (s, n) => {
         wakeups.push(n);
+        if (deliverHook) return deliverHook(s, n);
         return { status: delivery };
       },
-      confirm: async () => confirmation,
+      confirm: async (...args) =>
+        confirmHook ? confirmHook(...args) : confirmation,
     },
     createSession: async () => "dsh",
     now: () => time,
@@ -70,6 +73,8 @@ function fixture(t) {
     bridge,
     wakeups,
     tasks,
+    setDeliverHook: (fn) => (deliverHook = fn),
+    setConfirmHook: (fn) => (confirmHook = fn),
     setDelivery: (x) => (delivery = x),
     setConfirmation: (x) => (confirmation = x),
     setTime: (x) => (time = x),
@@ -507,4 +512,203 @@ test("事件详情和通知同毫秒分页不遗漏", async (t) => {
     f.store.bridge.eventPage(route.id, page.next_sequence, 2).items.length,
     1,
   );
+});
+
+test("已确认批次不会被迟到的投递回执复活", async (t) => {
+  const f = fixture(t);
+  let release;
+  f.setDeliverHook(() => new Promise((r) => (release = r)));
+  const push = f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "race",
+    summary: "一",
+    result: "completed",
+  });
+  while (!release) await new Promise(setImmediate);
+  const route = f.store.bridge.route("claude", "external"),
+    batch = f.store.bridge.open(route.id);
+  const decide = f.bridge.decide({
+    batch_id: batch.id,
+    decision_version: batch.version,
+    decision: "continue",
+  });
+  await new Promise(setImmediate);
+  assert.equal(f.store.bridge.batch(batch.id).state, "processed");
+  release({ status: "delivered" });
+  await Promise.all([push, decide]);
+  assert.equal(f.store.bridge.batch(batch.id).state, "processed");
+  f.setDeliverHook(null);
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "next",
+    summary: "二",
+    result: "completed",
+  });
+  assert.equal(f.wakeups.length, 2);
+});
+test("无关注和结束后push都有独立恢复提醒，截止留待人工且不阻塞新push", async (t) => {
+  for (const ended of [false, true]) {
+    const f = fixture(t);
+    if (ended) {
+      const s = (await f.bridge.subscribe(input)).subscription;
+      await f.bridge.stop(s.id);
+    }
+    await f.bridge.push({
+      agent: "claude",
+      external_session_id: "external",
+      request_id: "orphan",
+      summary: "遗留",
+      result: "completed",
+    });
+    const route = f.store.bridge.route("claude", "external"),
+      batch = f.store.bridge.open(route.id);
+    f.setTime(301001);
+    await f.bridge.reconcile();
+    assert.equal(f.tasks.size, 1);
+    assert.match([...f.tasks.values()][0].prompt, /relay_batch/);
+    assert.equal(f.store.bridge.live(route), null);
+    assert.equal(f.reads, 0);
+    f.setTime(86401001);
+    await f.bridge.reconcile();
+    assert.equal(f.tasks.size, 0);
+    assert.equal(f.store.bridge.batch(batch.id).state, "needs_attention");
+    assert.equal(f.store.bridge.events(batch.id)[0].processed_at, null);
+    await f.bridge.push({
+      agent: "claude",
+      external_session_id: "external",
+      request_id: "fresh",
+      summary: "后来",
+      result: "completed",
+    });
+    assert.equal(f.wakeups.length, 2);
+  }
+});
+test("屏蔽push不进入历史检查批次，也不阻止正常历史进展", async (t) => {
+  const f = fixture(t);
+  const s = (await f.bridge.subscribe(input)).subscription;
+  f.bridge.mute("claude", "external", true);
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "secret",
+    summary: "屏蔽内容",
+    result: "completed",
+  });
+  f.setEvents([
+    {
+      id: "normal",
+      kind: "assistant",
+      text: "普通进展",
+      cursor: { uuid: "normal", timestamp: 2 },
+    },
+  ]);
+  const checked = await f.bridge.check(s.id);
+  assert.equal(checked.events.length, 1);
+  assert.equal(checked.events[0].body, "普通进展");
+  await f.bridge.decide({ ...checked, decision: "continue" });
+  assert.equal(f.store.bridge.event("push:secret").processed_at, null);
+});
+
+test("迟到的unknown核对不会覆盖已处理批次", async (t) => {
+  const f = fixture(t);
+  f.setDelivery("unknown");
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "confirm",
+    summary: "一",
+    result: "completed",
+  });
+  let release;
+  f.setConfirmHook(() => new Promise((r) => (release = r)));
+  const drain = f.bridge.drain();
+  while (!release) await new Promise(setImmediate);
+  const batch = f.store.bridge.open(
+    f.store.bridge.route("claude", "external").id,
+  );
+  const decide = f.bridge.decide({
+    batch_id: batch.id,
+    decision_version: batch.version,
+    decision: "continue",
+  });
+  await new Promise(setImmediate);
+  release("not_delivered");
+  await Promise.all([drain, decide]);
+  assert.equal(f.store.bridge.batch(batch.id).state, "processed");
+  f.setTime(62000);
+  await f.bridge.drain();
+  assert.equal(f.wakeups.length, 1);
+});
+test("屏蔽清理批次恢复提醒，已入队的batch读取也不暴露push；历史仍可检查", async (t) => {
+  const f = fixture(t);
+  const s = (await f.bridge.subscribe(input)).subscription;
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "mute-late",
+    summary: "秘密",
+    result: "completed",
+  });
+  const route = f.store.bridge.route("claude", "external"),
+    batch = f.store.bridge.open(route.id);
+  f.setTime(301001);
+  await f.bridge.reconcile();
+  assert.equal(f.tasks.size, 1);
+  await f.bridge.mute("claude", "external", true);
+  assert.equal(f.tasks.size, 0);
+  assert.equal(f.bridge.batch(batch.id).status, "muted");
+  assert.deepEqual(f.bridge.batch(batch.id).events, []);
+  f.setEvents([
+    {
+      id: "visible",
+      kind: "assistant",
+      text: "正常历史",
+      cursor: { uuid: "visible", timestamp: 2 },
+    },
+  ]);
+  const history = await f.bridge.check(s.id);
+  assert.deepEqual(
+    history.events.map((e) => e.body),
+    ["正常历史"],
+  );
+  await f.bridge.decide({ ...history, decision: "continue" });
+  await f.bridge.mute("claude", "external", false);
+  await f.bridge.drain();
+  assert.equal(f.wakeups.length, 1, "已送达挂起批次不重发");
+  assert.equal(f.bridge.batch(batch.id).events[0].body.includes("秘密"), true);
+});
+test("未知批次恢复不重发，窗口结束仍保留未知事实并允许新事件", async (t) => {
+  const f = fixture(t);
+  f.setDelivery("unknown");
+  f.setConfirmation("unknown");
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "uncertain",
+    summary: "不确定",
+    result: "completed",
+  });
+  const route = f.store.bridge.route("claude", "external"),
+    batch = f.store.bridge.open(route.id);
+  f.setTime(301001);
+  await f.bridge.reconcile();
+  await f.bridge.drain();
+  assert.equal(f.tasks.size, 1);
+  assert.equal(f.wakeups.length, 1);
+  f.setTime(86401001);
+  await f.bridge.reconcile();
+  assert.equal(f.store.bridge.batch(batch.id).state, "unknown_attention");
+  assert.equal(f.store.bridge.events(batch.id)[0].processed_at, null);
+  f.setDelivery("delivered");
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "new-after-unknown",
+    summary: "新的",
+    result: "completed",
+  });
+  assert.equal(f.wakeups.length, 2);
+  assert.notEqual(f.wakeups[1].id, batch.id);
 });
