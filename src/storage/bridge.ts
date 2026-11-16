@@ -87,9 +87,9 @@ export function createBridgeStore(db: DatabaseSync) {
       const rows = db
         .prepare(
           `SELECT * FROM (
-        SELECT n.id,n.subscription_id,n.source,n.result,n.summary,n.delivery_status,n.created_at,r.id route_id,r.dsh_session_id,r.agent,r.external_session_id FROM relay_notification n LEFT JOIN relay_subscription s ON s.id=n.subscription_id LEFT JOIN relay_bridge r ON r.agent=s.agent AND r.external_session_id=s.external_session_id
+        SELECT n.id,n.subscription_id,n.source,n.result,n.summary,n.delivery_status,n.created_at,r.id route_id,COALESCE(s.dsh_session_id,r.dsh_session_id) dsh_session_id,r.agent,r.external_session_id FROM relay_notification n LEFT JOIN relay_subscription s ON s.id=n.subscription_id LEFT JOIN relay_bridge r ON r.agent=s.agent AND r.external_session_id=s.external_session_id
         UNION ALL
-        SELECT b.id,b.subscription_id,'bridge' source,'progress' result,(SELECT substr(group_concat(body,char(10)),1,1000) FROM relay_bridge_event e WHERE e.batch_id=b.id) summary,b.state delivery_status,b.created_at,r.id route_id,r.dsh_session_id,r.agent,r.external_session_id FROM relay_bridge_batch b JOIN relay_bridge r ON r.id=b.bridge_id
+        SELECT b.id,b.subscription_id,'bridge' source,'progress' result,(SELECT substr(group_concat(body,char(10)),1,1000) FROM relay_bridge_event e WHERE e.batch_id=b.id) summary,b.state delivery_status,b.created_at,r.id route_id,COALESCE(b.dsh_session_id,r.dsh_session_id) dsh_session_id,r.agent,r.external_session_id FROM relay_bridge_batch b JOIN relay_bridge r ON r.id=b.bridge_id
       ) WHERE created_at>? OR (created_at=? AND ? IS NOT NULL AND id>?) ORDER BY created_at,id LIMIT ?`,
         )
         .all(

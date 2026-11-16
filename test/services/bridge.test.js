@@ -932,3 +932,18 @@ test("纯push路由通过真实RPC注册可管理，清理关注后仍可列出�
   f.store.deleteSubscription({ id: sub.id });
   assert.equal((await rpc("routes")).value.items[0].id, route.id);
 });
+
+test("notify_poll在显式重绑后仍指向旧批次和旧通知的原接收会话",async t=>{
+ const {createRelayService}=await import("../../lib/services/relay.js");const f=fixture(t);
+ const old=(await f.bridge.subscribe({...input,dsh_session_id:"old-dsh"})).subscription;
+ await f.bridge.push({agent:"claude",external_session_id:"external",request_id:"old-notice",summary:"原进展",result:"completed"});
+ const batch=f.store.bridge.open(f.store.bridge.route("claude","external").id);
+ // 旧版通知事实同样保存原订阅的接收会话。
+ f.store.notifications.record({notification:{id:"legacy-notice",subscription_id:old.id,source:"poll",result:"completed",summary:"旧通知"},now:1001});
+ await f.bridge.stop(old.id);await f.bridge.subscribe({...input,dsh_session_id:"new-dsh"});
+ assert.equal(f.store.bridge.route("claude","external").dsh_session_id,"new-dsh");
+ const relay=createRelayService({store:f.store,bridge:f.bridge,adapters:{get:()=>f.adapter},subscriptions:{},checks:{},notifications:{drain:async()=>{}},skillInstall:{},listDshSessions:async()=>[]});
+ const response=await relay.call("notify_poll",{});assert.equal(response.ok,true);
+ assert.equal(response.value.find(n=>n.id===batch.id).dsh_session_id,"old-dsh");
+ assert.equal(response.value.find(n=>n.id==="legacy-notice").dsh_session_id,"old-dsh");
+});
