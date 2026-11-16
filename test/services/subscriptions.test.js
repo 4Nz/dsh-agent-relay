@@ -313,6 +313,20 @@ test("自动接收会话只在外部会话有效时创建", async (t) => {
   assert.equal(created, 0);
 });
 
+test("自动接收会话创建时把命名上下文（Agent/会话/类型）传给工厂", async (t) => {
+  const { service } = fixture(t);
+  let captured = null;
+  const result = await service.subscribe({ ...poll, dsh_session_id: null,
+    create_dsh_session: async (context) => { captured = context; return "new"; } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(captured, {
+    agent: "claude",
+    externalSessionId: SESSION,
+    externalSessionTitle: "测试会话",
+    type: "poll",
+  });
+});
+
 test("发送后订阅传入 baseline_snapshot 时不再读取快照，cursor=null 空历史基线保留", async (t) => {
   const { store, service, claude } = fixture(t);
   const result = await service.subscribe({

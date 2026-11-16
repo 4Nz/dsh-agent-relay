@@ -5,6 +5,7 @@ import type { RelayStore } from "../storage/index.js";
 import type { Agent, Subscription, SubscriptionType } from "../storage/types.js";
 import type { Scheduler, ScheduledTask } from "./scheduler.js";
 import { v2Marker, parseV2Marker, hasLegacyMarker } from "./schedule-marker.js";
+import type { ReceiveSessionContext } from "./receive-session.js";
 
 export interface SubscribeInput {
   id?: string;
@@ -13,7 +14,7 @@ export interface SubscribeInput {
   external_session_id: string;
   // poll 必填；push 不填时，投递时再新建 DSH 会话（T2.5），在此之前不建定时检查。
   dsh_session_id?: string | null;
-  create_dsh_session?: () => Promise<string>;
+  create_dsh_session?: (context: ReceiveSessionContext) => Promise<string>;
   max_consecutive_failures?: number;
   owner?: string;
   idle_timeout_seconds?: number;
@@ -190,7 +191,12 @@ async function closeSession(agent: Agent, externalSessionId: string) {
         input.baseline_snapshot ?? (await adapter.snapshot(input.external_session_id));
       if (base.closed)
         return { ok: false, code: "session_closed", message: "外部会话不存在或已归档" };
-      const receiveSession = input.dsh_session_id ?? (input.create_dsh_session ? await input.create_dsh_session() : null);
+      const receiveSession = input.dsh_session_id ?? (input.create_dsh_session ? await input.create_dsh_session({
+        agent: input.agent,
+        externalSessionId: input.external_session_id,
+        externalSessionTitle: base.title,
+        type: input.type,
+      }) : null);
       const time = now();
       const lifetime = input.max_lifetime_seconds ?? (input.type === 'poll' ? input.idle_timeout_seconds ?? 3600 : 86400);
       const idle = input.type === 'poll' ? lifetime : input.idle_timeout_seconds ?? DEFAULT_IDLE_SECONDS;

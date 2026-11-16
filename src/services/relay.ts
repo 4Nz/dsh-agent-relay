@@ -12,6 +12,7 @@ import type { CheckService } from "./checks.js";
 import type { NotificationService } from "./notifications.js";
 import type { SkillInstallService } from "./skill-install.js";
 import type { SetupService } from "./setup.js";
+import type { ReceiveSessionContext } from "./receive-session.js";
 export interface DshSessionOption {
   id: string;
   title: string;
@@ -92,7 +93,7 @@ export function createRelayService({
   listDshSessions: () => Promise<DshSessionOption[]>;
   // 仅用于存在性验证，不读取标题/正文；失败向上抛 unavailable，不当作不存在。
   hasDshSession?: (id: string) => Promise<boolean>;
-  createDshSession?: () => Promise<string>;
+  createDshSession?: (context: ReceiveSessionContext) => Promise<string>;
   // 消息进入 channel 队列后触发一次推送检查。
   onQueued?: () => Promise<void>;
   // 前置安装接入：按 Agent 安装、自检、卸载与连通测试。

@@ -33,7 +33,7 @@ import { resolveCodexCommand } from "./adapters/codex/cli.js";
 import { createSetupService } from "./services/setup.js";
 import { randomUUID } from "node:crypto";
 import { PLUGIN_VERSION } from "./version.js";
-import { createRelayReceiveSession, RELAY_GROUP_TITLE } from "./services/receive-session.js";
+import { createRelayReceiveSession, RELAY_GROUP_TITLE, type ReceiveSessionContext } from "./services/receive-session.js";
 
 interface RelayHost extends DshDeliveryContext {
   schedule: unknown;
@@ -42,7 +42,8 @@ interface RelayHost extends DshDeliveryContext {
   // 接收会话须经 sessionController.create mint 并 compose 默认 preset，
   // 才能被 resolveAgent 成功 resume；不能用 sessions 的低级 create 只建记录。
   sessionController: DshDeliveryContext["sessionController"] & {
-    create(request: { workspaceId: string }): Promise<{ sessionId: string }>;
+    create(request: { workspaceId: string; agentPreset?: string }): Promise<{ sessionId: string }>;
+    rename(request: { sessionId: string; title: string }): Promise<unknown>;
   };
   workspaceRegistry: { create(path: string, title?: string): Promise<{ id: string }> };
   sessionQuery: DshDeliveryContext["sessionQuery"] & {
@@ -124,7 +125,8 @@ export function apply(ctx: Context): void {
     notificationCredentials,
     log: (text) => ctx.logger.info("[agent-relay] setup: %s", text),
   });
-  const createReceiveSession = () => createRelayReceiveSession(host, relayDir);
+  const createReceiveSession = (context?: ReceiveSessionContext) =>
+    createRelayReceiveSession(host, relayDir, context);
   const dshSessions = createDshSessions(host.sessionQuery);
   const service = createRelayService({
     store,
@@ -177,7 +179,13 @@ export function apply(ctx: Context): void {
     credentials: notificationCredentials,
     store,
     createSubscription: async (input) => subscriptions.createPush(input),
-    createSession: createReceiveSession,
+    createSession: (subscription) =>
+      createReceiveSession({
+        agent: subscription.agent,
+        externalSessionId: subscription.external_session_id,
+        externalSessionTitle: subscription.external_session_title,
+        type: "push",
+      }),
     drain: () => notifications.drain(),
     requireReady: (agent) => setup.requireReady(agent),
   });
