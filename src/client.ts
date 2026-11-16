@@ -3,7 +3,15 @@ import { createElement as h, useEffect, useState, useRef } from "react";
 export const inject = ["slots", "connection", "uiWorkspace"];
 const PANEL_ID = "agent-relay";
 const labels: Record<string, string> = {
-  active: "订阅中",
+  active: "关注中",
+  processed: "已处理",
+  not_found: "记录不存在",
+  progress: "新增进展",
+  muted: "已屏蔽 push",
+  needs_attention: "待人工处理",
+  unknown_attention: "投递未知，待人工核对",
+  events: "增量事实已交给 DSH 判断",
+  unchanged: "暂无新变化",
   paused: "已暂停",
   ended: "已结束",
   completed: "任务完成",
@@ -73,15 +81,17 @@ const checkText = (sub: any) => {
     return `检查失败 ${sub.consecutive_failures}/${sub.max_consecutive_failures} · ${ago}`;
   return `检查成功 · ${ago}`;
 };
+const planningText = (sub: any) => ({ pending: "待 DSH 规划", ready: "频率已规划", deciding: "待 DSH 判断" }[sub.planning_state as string] ?? "—");
+const frequencyText = (sub: any) => sub.selected_interval_seconds ? `每 ${sub.selected_interval_seconds / 60} 分钟` : "尚未选择频率";
 const deliveryText = (sub: any) => {
-  const n = sub.notification;
-  if (!n) return "—";
-  return label(n.delivery_status);
+  const batch = sub.decision_batch;
+  if (batch) return `${label(batch.state)} · ${sub.pending_events ?? 0} 条待处理事件`;
+  return sub.pending_events ? `${sub.pending_events} 条事件排队中` : sub.notification ? `旧通知：${label(sub.notification.delivery_status)}` : "—";
 };
 const deliveryTone = (sub: any) => {
-  const s = sub.notification?.delivery_status;
-  if (s === "delivered") return "good";
-  if (s === "failed") return "bad";
+  const state = sub.decision_batch?.state ?? sub.notification?.delivery_status;
+  if (state === "processed") return "good";
+  if (["failed", "needs_attention", "unknown_attention"].includes(state)) return "warn";
   return "muted";
 };
 interface Rpc {
@@ -196,7 +206,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const [agent, setAgent] = useState("claude"),
     [external, setExternal] = useState(""),
     [target, setTarget] = useState(""),
-    [minutes, setMinutes] = useState("60");
+    [topic, setTopic] = useState("");
   const [candidates, setCandidates] = useState<any[]>([]),
     [targets, setTargets] = useState<any[]>([]),
     [candidateLoading, setCandidateLoading] = useState(false),
@@ -204,7 +214,12 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const [capabilities, setCapabilities] = useState<any[]>([]);
   const [snapshot, setSnapshot] = useState<any>(null);
   const [inspecting, setInspecting] = useState(false);
-  const [failures, setFailures] = useState("3"), [interval, setIntervalValue] = useState("1");
+  const [failures, setFailures] = useState("3");
+  const [conflict, setConflict] = useState<any>(null);
+  const [events, setEvents] = useState<any[]>([]), [eventNext, setEventNext] = useState<number | null>(null);
+  const [eventsLoading, setEventsLoading] = useState(false), [eventsError, setEventsError] = useState("");
+  const [recoveredBatch, setRecoveredBatch] = useState<any>(null);
+  const eventsGen = useRef(0);
   const [message, setMessage] = useState("");
   const [candidateRevision, setCandidateRevision] = useState(0);
   const [installAgent, setInstallAgent] = useState("claude");
@@ -221,12 +236,14 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const current = items.find((s) => s.id === selected);
   const close = () => {
     inspectGen.current++;
+    eventsGen.current++;
+    setConflict(null);
     setInspecting(false);
     setDrawer("");
   };
   async function call(endpoint: string, payload: unknown = {}) {
     const response = await rpc.call("/api", `agent-relay/${endpoint}`, payload);
-    if (!response.ok) throw Error(response.error?.message ?? "操作失败");
+    if (!response.ok) throw Object.assign(Error(response.error?.message ?? "操作失败"), response.error);
     return response.value;
   }
   async function refresh() {
@@ -258,6 +275,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   useEffect(() => () => {
     // 卸载时使在途查阅响应失效。
     inspectGen.current++;
+    eventsGen.current++;
   }, []);
   useEffect(() => {
     if (!creating) return;
@@ -319,6 +337,27 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   useEffect(() => {
     if (drawer === "detail" && current?.agent === "codex") void inspect(current);
   }, [drawer, current?.id]);
+  useEffect(() => {
+    setEvents([]); setEventNext(null); setRecoveredBatch(null); setEventsError("");
+    if (drawer === "detail" && current) void loadEvents(current, 0);
+    return () => { eventsGen.current++; };
+  }, [drawer, current?.id]);
+  async function loadEvents(sub: any, after: number) {
+    const gen = ++eventsGen.current;
+    setEventsLoading(true); setEventsError("");
+    try {
+      const value = await call("events", { subscription_id: sub.id, after_sequence: after, limit: 20 });
+      if (gen === eventsGen.current) { setEvents((previous) => after ? [...previous, ...value.items] : value.items); setEventNext(value.next_sequence); }
+    } catch (e) { if (gen === eventsGen.current) setEventsError((e as Error).message); }
+    finally { if (gen === eventsGen.current) setEventsLoading(false); }
+  }
+  async function readBatch(id: string) {
+    const gen = ++eventsGen.current;
+    setEventsLoading(true); setEventsError("");
+    try { const value = await call("batch", { batch_id: id }); if (gen === eventsGen.current) setRecoveredBatch(value); }
+    catch (e) { if (gen === eventsGen.current) setEventsError((e as Error).message); }
+    finally { if (gen === eventsGen.current) setEventsLoading(false); }
+  }
   const capability = (agent: string, key: string) =>
     capabilities.find((a) => a.agent === agent)?.capabilities?.[key] === true;
   function sendAllowed(sub: any) {
@@ -347,8 +386,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   async function saveConfig(sub: any) {
     setBusy(true); setError("");
     try {
-      await call("update", { subscription_id: sub.id, max_lifetime_seconds: Number(minutes) * 60,
-        max_consecutive_failures: Number(failures), ...(sub.type === "poll" ? { check_interval_seconds: Number(interval) * 60 } : {}) });
+      await call("update", { subscription_id: sub.id, max_consecutive_failures: Number(failures) });
       setNotice("订阅配置已保存。"); setRefreshVersion((v) => v + 1); close();
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
@@ -381,7 +419,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setError("");
     try {
       await call("stop", { subscription_id: id });
-      setNotice("订阅已停止。");
+      setNotice("关注已结束；后续 push 仍送原会话，可单独屏蔽。");
       setRefreshVersion((version) => version + 1);
       setDrawer("");
     } catch (e) {
@@ -390,31 +428,62 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       setBusy(false);
     }
   }
-  async function resubscribe(sub: any) {
-    // 主动通知重建后新 ID 外部 Agent 并不知道，等于一条收不到推送的死订阅。
-    if (sub.type !== "poll") {
-      setError("主动通知订阅不能重新订阅；如需主动检查，请新建主动订阅。");
-      return;
+  async function createSubscription(payload: any) {
+    {
+      const current = await call("current", { agent: payload.agent, external_session_id: payload.external_session_id });
+      const normalized = payload.topic?.trim() || "定期汇报新的进展或回复";
+      if (current.subscription && (current.subscription.topic !== normalized || (payload.dsh_session_id && payload.dsh_session_id !== current.route?.dsh_session_id))) {
+        setConflict({ current: current.subscription, payload });
+        return;
+      }
     }
-    setBusy(true);
-    setError("");
     try {
-      const value = await call("subscribe", {
-        type: sub.type,
-        agent: sub.agent,
-        external_session_id: sub.external_session_id,
-        ...(sub.dsh_session_id ? { dsh_session_id: sub.dsh_session_id } : {}),
-        max_consecutive_failures: sub.max_consecutive_failures,
-        max_lifetime_seconds: sub.max_lifetime_seconds,
-        ...(sub.type === "poll" && sub.check_interval_seconds ? { check_interval_seconds: sub.check_interval_seconds } : {}),
-      });
-      setNotice(value.schedule_ready ? "已重新订阅。" : "已重新订阅，但定时提醒尚未建立，后台将继续对账。");
-      setRefreshVersion((version) => version + 1);
+      const value = await call("subscribe", payload);
+      setDrawer(""); setConflict(null);
+      setNotice(value.subscription?.planning_state === "pending" ? "关注已保存，等待 DSH 按主题规划频率；最长 24 小时。" : value.schedule_ready ? "关注已保存，宿主提醒已就绪。" : "关注已保存，等待 DSH 判断或宿主提醒对账。");
+      if (cursor) setCursor(null); else setRefreshVersion((v) => v + 1);
     } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
+      if ((e as any).code !== "conflict") throw e;
+      const current = await call("current", { agent: payload.agent, external_session_id: payload.external_session_id });
+      if (!current.subscription) throw e;
+      setConflict({ current: current.subscription, payload });
     }
+  }
+  async function continueConflict() {
+    if (!conflict) return;
+    setBusy(true); setError("");
+    try {
+      const sub = conflict.current;
+      if (sub.status === "paused") await call("resume", { subscription_id: sub.id });
+      else if (sub.muted) await call("mute", { agent: sub.agent, external_session_id: sub.external_session_id, muted: false });
+      setRefreshVersion((v) => v + 1); close();
+      if (sub.dsh_session_id) openSession(sub.dsh_session_id);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  async function restartConflict() {
+    if (!conflict) return;
+    setBusy(true); setError("");
+    try { await call("stop", { subscription_id: conflict.current.id }); await createSubscription(conflict.payload); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  async function resubscribe(sub: any) {
+    setBusy(true); setError("");
+    try {
+      await createSubscription({ type: "poll", agent: sub.agent, external_session_id: sub.external_session_id,
+        topic: sub.topic, max_consecutive_failures: sub.max_consecutive_failures });
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  async function muteRoute(sub: any) {
+    setBusy(true); setError("");
+    try {
+      await call("mute", { agent: sub.agent, external_session_id: sub.external_session_id, muted: !sub.muted });
+      setNotice(sub.muted ? "已解除 push 屏蔽，原批次按原状态恢复。" : "已屏蔽 push，保留事件；历史关注仍继续。");
+      setRefreshVersion((v) => v + 1);
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
   }
   async function removeSubscription(sub: any) {
     setBusy(true);
@@ -479,22 +548,9 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setBusy(true);
     setError("");
     try {
-      const value = await call("subscribe", {
-        agent,
-        external_session_id: external,
-        ...(target ? { dsh_session_id: target } : {}),
-        max_consecutive_failures: Number(failures),
-        max_lifetime_seconds: Number(minutes) * 60,
-        check_interval_seconds: Number(interval) * 60,
-      });
-      setDrawer("");
-      setNotice(
-        value.schedule_ready
-          ? "订阅已创建，定时检查已就绪。"
-          : "订阅已保存，但定时提醒尚未建立；后台将继续对账。",
-      );
-      if (cursor) setCursor(null);
-      else setRefreshVersion((version) => version + 1);
+      await createSubscription({ agent, external_session_id: external,
+        ...(target ? { dsh_session_id: target } : {}), topic,
+        max_consecutive_failures: Number(failures) });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -589,7 +645,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           "button",
           {
             disabled: busy,
-            title: "立即读取外部会话，发现新完成结果即通知；尚未完成则继续关注",
+            title: "读取增量事实，由 DSH 按关注主题判断是否汇报或结束",
             onClick: () => void action("check", sub.id),
           },
           "立即检查",
@@ -602,7 +658,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             onClick: () =>
               void action(sub.status === "paused" ? "resume" : "pause", sub.id),
           },
-          sub.status === "paused" ? "恢复" : "暂停",
+          sub.status === "paused" ? "继续关注" : "暂停",
         ),
       sub.status !== "ended" &&
         h(
@@ -614,9 +670,10 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
               setDrawer("stop");
             },
           },
-          "停止",
+          "结束关注",
         ),
-      // 主动通知没有可重建的检查语义：新订阅 ID 外部 Agent 并不知道，重建出来也收不到推送。
+      h("button", { disabled: busy, onClick: () => void muteRoute(sub) }, sub.muted ? "解除 push 屏蔽" : "屏蔽 push"),
+      // push 不进行历史检查；如需关注历史，通过新建关注显式开启。
       sub.status === "ended" &&
         sub.type === "poll" &&
         h(
@@ -685,6 +742,9 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         "td",
         { className: "subscription-state" },
         h("span", { className: `badge state-${sub.status}` }, label(sub.status)),
+        h("div", { className: "small muted" }, planningText(sub)),
+        h("div", { className: "small muted" }, frequencyText(sub)),
+        sub.muted ? h("div", { className: "small warn" }, "push 已屏蔽") : null,
       ),
       h(
         "td",
@@ -780,20 +840,19 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           target,
           setTarget,
           [
-            ["", "自动新建通知会话"],
+            ["", "复用原接收会话（首次自动新建）"],
             ...targets.map((s) => [s.id, s.title] as [string, string]),
           ],
           {},
         ),
-        fieldInput("检查频率（分钟）", interval, setIntervalValue, { min: 1, max: 60 }),
-        fieldInput("订阅超时（分钟）", minutes, setMinutes, { min: 1, max: 1440 }),
+        h("label", null, "关注主题（可选）", h("input", { "aria-label": "关注主题（可选）", value: topic, maxLength: 1000, placeholder: "定期汇报新的进展或回复", onChange: (e: any) => setTopic(e.target.value) })),
         fieldInput("连续失败阈值", failures, setFailures, { min: 1, max: 100 }),
         candidateError &&
           h("p", { className: "error", role: "alert" }, candidateError),
         h(
           "p",
           { className: "muted small" },
-          "默认每 1 分钟检查，60 分钟后订阅超时；检查频率可设为 1～60 分钟，订阅超时可设为 1～1440 分钟。超时从创建起计算，不随活动顺延；完成后只整理汇报。",
+          "关注最长 24 小时，从创建起计算，不因活动或暂停顺延。可在主题中说明频率，用户指定优先；未指定时由 DSH 选择并告知。无变化静默，单轮完成不自动结束关注。",
         ),
         h(
           "footer",
@@ -837,6 +896,10 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             "订阅状态",
             `${label(sub.status)}${sub.end_reason ? ` · ${label(sub.end_reason)}` : ""}`,
           ],
+          ["关注主题", sub.topic ?? "定期汇报新的进展或回复"],
+          ["DSH 调度状态", planningText(sub)],
+          ["实际检查频率", frequencyText(sub)],
+          ["push 接收", sub.muted ? "已屏蔽，事件保留" : "接收中"],
           ["开始时间", formatStart(sub.created_at)],
           [
             "有效期",
@@ -845,7 +908,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           ["最近检查", checkText(sub)],
           ["会话消息", deliveryText(sub)],
           ["接收会话", sub.dsh_session_id ?? "—"],
-          ["通知摘要", sub.notification?.summary ?? "尚未生成通知"],
+          ...(sub.notification ? [["旧通知摘要", sub.notification.summary ?? "—"]] : []),
         ].flatMap(([k, v]) => [
           h("dt", { key: `${k}-k` }, k),
           h("dd", { key: k }, v),
@@ -853,14 +916,13 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       ),
       h("div", { className: "row" },
         h("button", { disabled: busy || inspecting || !capability(sub.agent, "snapshot"),
-          title: capability(sub.agent, "snapshot") ? "查阅成功将顺延有效期" : "该 Agent 不支持查阅或能力尚未加载",
+          title: capability(sub.agent, "snapshot") ? "读取快照，不延长关注截止时间" : "该 Agent 不支持查阅或能力尚未加载",
           onClick: () => void inspect(sub) }, "查阅外部会话"),
         h("button", { disabled: busy || !sendAllowed(sub),
           title: sendAllowed(sub) ? "核对目标后发送" : sendReason(sub),
           onClick: () => { setMessage(""); setDrawer("send"); } }, "发送消息"),
         sub.status !== "ended" && h("button", { disabled: busy, onClick: () => {
-          setMinutes(String(sub.max_lifetime_seconds / 60)); setFailures(String(sub.max_consecutive_failures));
-          setIntervalValue(String((sub.check_interval_seconds ?? 60) / 60)); setDrawer("edit");
+          setFailures(String(sub.max_consecutive_failures)); setDrawer("edit");
         } }, "修改配置")),
       sub.agent === "codex" && !sendAllowed(sub) && h("p", { className: "muted small" }, inspecting ? "正在核对会话状态…" : sendReason(sub)),
       snapshot &&
@@ -881,8 +943,25 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         ),
       sub.status === "active" &&
         sub.type === "poll" &&
-        !sub.schedule_task_id &&
-        h("p", { className: "error" }, "定时检查尚未就绪，等待对账。"),
+        sub.planning_state === "ready" && !sub.schedule_task_id &&
+        h("p", { className: "warn" }, "已选频率，宿主提醒尚未就绪，等待对账。"),
+      h("section", { "aria-label": "事件与批次" },
+        h("h2", null, "事件与批次"),
+        h("p", { className: "muted small" }, "忙时事件排队合批；已送达仍需 DSH 判断。未知投递先核对，不盲目重发。"),
+        eventsError && h("p", { role: "alert", className: "error" }, eventsError),
+        ...events.map((event) => h("article", { key: event.id, className: "notice small" },
+          h("p", null, `#${event.seq} · ${event.kind} · ${label(event.delivery_state)} · ${date(event.created_at)}`),
+          h("details", null, h("summary", null, "事件标识与恢复信息"), h("p", { className: "muted" }, `事件 ${event.id} · 批次 ${event.batch_id ?? "待合批"} · 版本 ${event.decision_version ?? "—"}`)),
+          h("p", { style: { whiteSpace: "pre-wrap" } }, event.body),
+          event.batch_id && h("button", { disabled: eventsLoading, onClick: () => void readBatch(event.batch_id) }, "读取原批次"))),
+        eventsLoading && h("p", null, "正在读取事件…"),
+        !eventsLoading && !events.length && !eventsError && h("p", { className: "muted" }, "暂无事件"),
+        eventNext !== null && h("button", { disabled: eventsLoading, onClick: () => void loadEvents(sub, eventNext) }, "更多事件"),
+        recoveredBatch && h("div", { className: "notice" },
+          h("p", null, `原批次：${label(recoveredBatch.status)}（读取事实不等于确认处理）`),
+          recoveredBatch.batch_id && h("details", null, h("summary", null, "DSH 恢复指令"), h("p", null, `请调用 relay_batch({batch_id:"${recoveredBatch.batch_id}"}) 读取原事实，按原主题判断后用 relay_decide 确认，decision_version:${recoveredBatch.decision_version}。`)),
+          ...(recoveredBatch.events ?? []).map((event: any) => h("p", { key: event.id, style: { whiteSpace: "pre-wrap" } }, event.body)),
+          h("p", { className: "muted small" }, "打开原接收会话，由 DSH 使用 relay_batch 读取，再以原 batch_id 与 decision_version 调用 relay_decide。屏蔽中的批次请先解除屏蔽；待核对状态不能视为已处理。"))),
       sub.agent === "codex" &&
         h(
           "p",
@@ -912,12 +991,12 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const stopDrawer = (sub: any) =>
     h(
       Drawer,
-      { title: "停止订阅", onClose: close },
+      { title: "结束关注", onClose: close },
       h("p", null, `停止关注「${sub.external_session_title ?? sub.external_session_id}」？`),
       h(
         "p",
         { className: "muted" },
-        "停止后不再发起新的通知投递；已在途或已送达的消息不会撤回。",
+        "结束后不再定时检查；后续 push 仍送原 DSH 会话且不会自动重启关注。若不想接收 push，请单独屏蔽。已在途或已送达消息不会撤回。",
       ),
       h(
         "footer",
@@ -930,14 +1009,13 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             disabled: busy,
             onClick: () => void stopCurrent(sub.id),
           },
-          busy ? "正在停止…" : "停止订阅",
+          busy ? "正在停止…" : "结束关注",
         ),
       ),
     );
   const editDrawer = (sub: any) => h(Drawer, { title: "修改订阅配置", onClose: close },
-    fieldInput("订阅超时（分钟）", minutes, setMinutes, { min: 1, max: 1440 }),
+    h("p", { className: "muted" }, "固定创建后 24 小时截止；检查频率交由 DSH 按主题及用户要求规划。"),
     fieldInput("连续失败阈值", failures, setFailures, { min: 1, max: 100 }),
-    sub.type === "poll" && fieldInput("检查频率（分钟）", interval, setIntervalValue, { min: 1, max: 60 }),
     error && h("p", { role: "alert", className: "error" }, error),
     h("button", { disabled: busy, onClick: () => void saveConfig(sub) }, "保存"));
   const sendDrawer = (sub: any) => h(Drawer, { title: "发送消息", onClose: close },
@@ -1052,7 +1130,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         ),
         h(
           "button",
-          { className: "primary", onClick: () => { setMinutes("60"); setIntervalValue("1"); setFailures("3"); setTarget(""); setError(""); setDrawer("create"); } },
+          { className: "primary", onClick: () => { setTopic("");  setFailures("3"); setTarget(""); setError(""); setDrawer("create"); } },
           "新建订阅",
         ),
       ),
@@ -1196,7 +1274,12 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             ),
         ),
     ),
-    drawer === "create" && createDrawer(),
+    conflict && h(Drawer, { title: "已有关注主题", onClose: () => setConflict(null) },
+      h("p", null, `当前关注：${conflict.current.topic}`),
+      h("p", { className: "muted" }, "同一外部会话只能有一个有效关注。继续将保留原主题和接收会话；停止重新来会结束原关注后创建新关注期。"),
+      h("button", { disabled: busy, onClick: () => void continueConflict() }, "继续原关注"),
+      h("button", { disabled: busy, onClick: () => void restartConflict() }, "停止重新来")),
+    !conflict && drawer === "create" && createDrawer(),
     drawer === "detail" && current && detailDrawer(current),
     drawer === "stop" && current && stopDrawer(current),
     drawer === "edit" && current && editDrawer(current),
@@ -1236,7 +1319,7 @@ const NOTIFY_STORAGE_KEY = "dsh-agent-relay:notify:lastSeen";
 const NOTIFY_POLL_INTERVAL_MS = 30_000;
 
 function notifyText(item: any) {
-  const status = label(item.result);
+  const status = `${label(item.result)} · ${label(item.delivery_status)}`;
   const summary = String(item.summary ?? "").trim().slice(0, 200);
   return summary ? `${status}：${summary}` : status;
 }
@@ -1247,31 +1330,36 @@ function useNotifyPolling(rpc: Rpc | undefined) {
     if (!rpc || !browserNotifyChannel.available()) return;
     const conn = rpc;
     let stopped = false;
+    let polling = false;
     async function poll() {
-      if (stopped || !(await browserNotifyChannel.request())) return;
-      const lastSeen =
-        Number(localStorage.getItem(NOTIFY_STORAGE_KEY) ?? "0") || 0;
-      let result: { ok: boolean; value?: any; error?: { message: string } };
+      if (stopped || polling) return;
+      polling = true;
       try {
-        result = await conn.call("/api", "agent-relay/notify_poll", {
-          after: lastSeen,
-          limit: 50,
-        });
-      } catch {
-        return;
-      }
-      if (!result.ok || !Array.isArray(result.value)) return;
-      const items = result.value;
-      if (!items.length) return;
-      const latest = items[items.length - 1].created_at;
-      if (lastSeen === 0) {
-        // 首次仅校准游标，避免把历史通知一股脑弹出来
-        localStorage.setItem(NOTIFY_STORAGE_KEY, String(latest));
-        return;
-      }
-      for (const item of items)
-        browserNotifyChannel.notify("Agent Relay 通知", notifyText(item));
-      localStorage.setItem(NOTIFY_STORAGE_KEY, String(latest));
+        if (!(await browserNotifyChannel.request()) || stopped) return;
+        const stored = localStorage.getItem(NOTIFY_STORAGE_KEY) ?? "0";
+        let cursor: { created_at: number; id?: string };
+        try { const parsed = JSON.parse(stored); cursor = typeof parsed === "number" ? { created_at: parsed } : parsed; }
+        catch { cursor = { created_at: 0 }; }
+        if (!cursor || !Number.isFinite(cursor.created_at)) cursor = { created_at: 0 };
+        const initial = cursor.created_at === 0;
+        while (!stopped) {
+          const result = await conn.call("/api", "agent-relay/notify_poll", {
+            after: cursor.created_at, ...(cursor.id ? { after_id: cursor.id } : {}), limit: 50,
+          });
+          if (stopped || !result.ok || !Array.isArray(result.value) || !result.value.length) return;
+          const items = result.value;
+          if (!initial) for (const item of items) {
+            if (item.delivery_status !== "muted") browserNotifyChannel.notify("Agent Relay 通知", notifyText(item));
+          }
+          const last = items[items.length - 1];
+          const next = last.cursor ?? { created_at: last.created_at, id: last.id };
+          if (next.created_at === cursor.created_at && next.id === cursor.id) return;
+          cursor = next;
+          localStorage.setItem(NOTIFY_STORAGE_KEY, JSON.stringify(cursor));
+          if (items.length < 50) return;
+        }
+      } catch { /* 下轮使用已持久化游标重试。 */ }
+      finally { polling = false; }
     }
     void poll();
     const timer = setInterval(poll, NOTIFY_POLL_INTERVAL_MS);

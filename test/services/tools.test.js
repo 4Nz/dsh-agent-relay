@@ -29,8 +29,10 @@ test("工具把 DSH 执行会话传入共用服务，注册所有 M2 工具", as
     "relay_list",
     "relay_list_sessions",
     "relay_mute",
+    "relay_pause",
     "relay_ping",
     "relay_plan",
+    "relay_resume",
     "relay_send",
     "relay_setup_check",
     "relay_setup_install",
@@ -39,11 +41,16 @@ test("工具把 DSH 执行会话传入共用服务，注册所有 M2 工具", as
   ]);
   const tool = tools.get("relay_subscribe");
   await tool.execute(
-    { agent: "claude", external_session_id: "external", check_interval_seconds:300, max_lifetime_seconds:7200 },
+    { agent: "claude", external_session_id: "external", check_interval_seconds:300, topic:"等待测试完成" },
     { agent: { session: { id: "current-dsh" } } },
   );
   assert.equal(received[0], "subscribe");
   assert.equal(received[2], "current-dsh");
   assert.equal(received[1].check_interval_seconds,300);
-  assert.equal(received[1].max_lifetime_seconds,7200);
+  assert.equal(received[1].topic,"等待测试完成");
+  for (const endpoint of ["pause", "resume"]) {
+    await tools.get(`relay_${endpoint}`).execute({subscription_id:"sub"}, {agent:{session:{id:"current-dsh"}}});
+    assert.equal(received[0],endpoint);
+    assert.equal(received[1].subscription_id,"sub");
+  }
 });

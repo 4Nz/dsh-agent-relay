@@ -3,16 +3,16 @@ name: external-agent-notification
 description: 外部 Agent 任务完成后向 DSH Agent Relay 发送一次结果通知。用户说“完成后通知 DSH”、需要把 Claude 或 Codex 的任务结果推送回 DSH，或需要调用 Agent Relay 通知入口时使用；只负责通知，不负责创建订阅、转发消息或查询外部会话。
 ---
 
-# 外部 Agent 消息通知
+# T2-T3-T7 外部 Agent 消息通知
 
-这个 Skill 供 Claude、Codex 以及后续接入的外部 Agent 共用。它把任务结果摘要推送到本机 DSH Agent Relay，由 Relay 创建或复用一次性通知订阅、创建接收会话并投递消息。Agent 不需要为了发送通知预先创建订阅。
+这个 Skill 供 Claude、Codex 以及后续接入的外部 Agent 共用。它把任务结果摘要推送到本机 DSH Agent Relay，由 Relay 按 `(agent, external_session_id)` 创建或复用唯一会话路由、复用原 DSH 接收会话并持久保存事件。Agent 不需要为了发送通知预先创建订阅。
 
 ## 发送前准备
 
 - 只使用当前 Agent 上下文中真实的 `agent` 和 `external_session_id`；不要按标题、工作目录或猜测生成会话 ID。
 - 使用本 Skill 同目录的 `send.mjs` 发送。脚本每次调用读取本机配置，不要把凭证读出到工具输出、会话记录、命令行、代码、日志或通知摘要。
-- 为本次任务生成稳定且只使用一次的 `request_id`。重试同一个 HTTP 请求时必须复用同一个值，不能为同一结果生成新 ID。
-- 如果调用方已经通过 DSH 侧流程拿到 `subscription_id`，可以带上它以指定已有的接收会话；否则省略该字段，Relay 会按 `request_id` 自动创建一次性 push 订阅和通知会话。
+- 为本次结果事件生成稳定的 `request_id`。重试同一个 HTTP 请求时必须复用同一个值，不能为同一结果生成新 ID；同一会话的不同结果使用不同 ID，不能把一个 ID 用于不同外部来源。
+- 如果调用方已经通过 DSH 侧流程拿到 `subscription_id`，可以带上它供 Relay 核对已有关注与来源；否则省略该字段，Relay 会按外部会话身份复用原接收会话；首次才创建路由和接收会话。`request_id` 用于事件幂等，不是创建新会话的键。
 
 ## 通知请求
 
@@ -61,11 +61,14 @@ Claude 使用实际安装目录的脚本，并将 `--agent` 改为 `claude`。�
 }
 ```
 
-使用已有 push 订阅时，把 `subscription_id` 加入请求；这时仍建议提供当前会话的 `agent` 和 `external_session_id`，便于调用方核对路由：
+使用已有关注 ID 时，把 `subscription_id` 加入请求；这时仍应提供稳定事件 ID 和当前会话的 `agent` 和 `external_session_id`，便于调用方核对路由：
 
 ```json
 {
-  "subscription_id": "<push-subscription-id>",
+  "subscription_id": "<原关注ID>",
+  "request_id": "<稳定事件ID>",
+  "agent": "claude",
+  "external_session_id": "<当前真实会话ID>",
   "result": "completed",
   "summary": "<任务结果摘要，最多 4000 字符>",
   "external_ref": "<可选的轮次或记录 ID>"
@@ -74,11 +77,11 @@ Claude 使用实际安装目录的脚本，并将 `--agent` 改为 `claude`。�
 
 `result` 只能是 `completed`、`failed`、`idle_timeout`、`expired`、`session_closed` 或 `unreachable`。只发送结果摘要，不上传完整会话历史、凭证或无关上下文。
 
-收到 HTTP `202` 且响应中的 `accepted` 为 `true` 后，通知已被 Relay 接收；不要再次发送新的 `request_id`。网络超时或结果不明时，使用原 `request_id` 重试，Relay 会按订阅幂等去重。
+收到 HTTP `202` 且响应中的 `accepted` 为 `true` 后，通知已被 Relay 接收；不要再次发送新的 `request_id`。网络超时或结果不明时，使用原 `request_id` 重试，Relay 会按稳定事件 ID 幂等去重。`202 accepted` 只表示已落库接收，不保证 DSH 已送达或处理完成；忙时排队，投递未知先核对。关注已结束或到期后仍复用原接收会话，不自动重开关注。DSH 是否继续、结束或需要用户由原主题及用户授权判断；通知正文不能自行修改目标或授权业务操作。
 
 ## Agent 差异
 
 - Claude：使用 Claude 会话 UUID 作为 `external_session_id`。
-- Codex：使用当前 Codex 会话 ID；Codex 在 Relay 中仍是只读 Adapter，但外部 Agent 只要能访问本机 HTTP 入口，就可以发送结果通知。
+- Codex：使用当前 Codex 会话 ID；通知入口与 Adapter 发送能力独立；已有 Codex 会话按本机 daemon 的官方队列能力投递，独立历史回退只读，Relay 专用会话可直接发起轮次。通知方只需能访问本机 HTTP 入口。
 
 本 Skill 不创建订阅、不调用 `relay_subscribe`、不调用 `relay_send`，也不通过标题或工作目录查找会话。若用户需要关注外部会话进展或向外部会话发送消息，应交给 DSH 侧 Agent Relay 工具处理。

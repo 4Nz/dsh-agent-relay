@@ -43,7 +43,7 @@ export function registerTools(
       name: "relay_inspect",
       endpoint: "inspect",
       description:
-        "查阅指定外部会话快照与最后回复节选；成功查阅顺延有效期，发现会话关闭则生成通知。unknown 不代表任务完成。",
+        "查阅指定外部会话快照与最后回复节选；查阅不延长固定24小时关注期，发现会话关闭则登记关闭事实。unknown 不代表任务完成。",
       parameters: {
         agent,
         external_session_id: { type: "string", required: true },
@@ -68,7 +68,7 @@ export function registerTools(
       name: "relay_send",
       endpoint: "send",
       description:
-        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递：先为 queued，会话空闲后推送为 sent，Claude 确认后记录 acked_at；未启用 channel 时 rejected。Codex 桌面会话经队列排队投递，专用后台会话直接开始新轮。可选发送成功后创建一次 poll 订阅。",
+        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递：先为 queued，会话空闲后推送为 sent，Claude 确认后记录 acked_at；未启用 channel 时 rejected。Codex 桌面会话经队列排队投递，专用后台会话直接开始新轮。可显式选择发送成功后复用或创建持续关注，随后按主题规划；不无条件创建重复订阅。",
       parameters: {
         agent,
         external_session_id: { type: "string", required: true },
@@ -103,6 +103,18 @@ export function registerTools(
         limit: { type: "integer" },
         cursor: { type: "object", additionalProperties: true },
       },
+    },
+    {
+      name: "relay_pause",
+      endpoint: "pause",
+      description: "暂停指定关注并删除下一次提醒；不延长固定24小时截止。过期后须明确重新关注。",
+      parameters: subscription,
+    },
+    {
+      name: "relay_resume",
+      endpoint: "resume",
+      description: "明确继续暂停中的原主题关注并解除push屏蔽；不延长固定截止，已过期须重新relay_subscribe，不能靠同主题subscribe代替恢复。",
+      parameters: subscription,
     },
     {
       name: "relay_stop",

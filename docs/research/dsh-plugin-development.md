@@ -136,14 +136,14 @@ defineDomain({ name, version, tables, layout?, global?, compatibleVersions?, inv
 
 `dsh-schedule` 提供 `ctx.schedule`（`ScheduleService`），并配套 `schedule_create` / `schedule_list` / `schedule_delete` / `schedule_update` 工具与"定时任务"页面（`ui-schedule`）。任务持久化在 `schedule` 域，重启自动恢复。
 
-关键语义：schedule 到点后，**把提醒文本作为 user 消息投递到绑定的会话**（`sessionController.resolveAgent` → `agent.followup`），由该会话的 agent 醒来读文本、采取行动。`ScheduleService` 只暴露管理方法（`create` / `list` / `catalog` / `delete` / `update`），定时器驱动（`ScheduleRuntime`）是私有实现，插件不能挂回调。
+关键语义：schedule 到点后，**把提醒文本作为 user 消息投递到绑定的会话**（`sessionController.resolveAgent` → `agent.followup`），followup 是排入下一轮并唤醒；steer 才是运行步骤边界插入。Relay push 必须先确认 idle，running/未知只落库，不能把 followup 当作“不唤醒”。由该会话的 agent 醒来读文本、采取行动。`ScheduleService` 只暴露管理方法（`create` / `list` / `catalog` / `delete` / `update`），定时器驱动（`ScheduleRuntime`）是私有实现，插件不能挂回调。
 
-**结论**：第一版主动订阅（poll）用 `schedule_create` 做定时检查——订阅时创建一条周期提醒（`every_seconds`），到点唤醒接收会话的 agent，agent 调 `relay_check` 工具查外部会话。由此带来的边界：
+**当前结论（2026-11-16，T2/T3/T6/T7）**：持续关注采用宿主周期提醒（`every_seconds`），由 DSH 根据用户频率/主题选择后调用 relay_plan 建立；未规划为 pending，无默认60秒。到点模型调用 relay_check 读取增量、relay_decide 确认继续/结束/需要用户。旧2026-11-15插件直接每分钟查历史方案已被替代。关注固定创建后24小时截止，维护只对账、队列与截止。由此带来的边界：
 
 1. 检查是"模型执行"而非"代码执行"：触发者是 agent，可靠性/延迟取决于 agent 正确读懂提醒并调用工具。Adapter 的 `snapshot` 逻辑仍在服务层，作为 `relay_check` 工具的实现。
 2. 每条 poll 订阅对应一条 schedule 任务，`relay_subscription.schedule_task_id` 存任务 id；订阅结束需 `schedule_delete` 删提醒，两步非原子，需启动/下次触发时对账。
 3. `dsh_session_id` 需在订阅时确定（`schedule_create` 必须绑定会话），"为空时通知到达再新建"不适用。
-4. `every_seconds` 最小 60 秒，且每次触发 = 一次模型唤醒，检查周期建议分钟级（默认待定，产品上再定）。
+4. `every_seconds` 最小 60 秒，且每次触发 = 一次模型唤醒，检查周期最小60秒，用户频率优先，未指定时由DSH选择并告知。
 
 备选（未采用）：`cordis-plugin-timer` 的 `ctx.interval(cb, ms)` / `ctx.timeout()` 可让插件自己跑定时器、直接执行检查代码（不经模型），但 interval 是内存态，需自持久化 + 重启对账，且任务不出现于 DSH 定时任务页面。
 

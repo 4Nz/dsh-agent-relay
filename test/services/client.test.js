@@ -57,7 +57,8 @@ test("新建订阅选择已有 Codex 会话，不展示专用会话创建和过�
   if(method.endsWith('/list'))return {ok:true,value:{items:[],next_cursor:null}};
   if(method.endsWith('/sessions'))return {ok:true,value:args.agent==='codex'?[{id:'desktop-id',title:'已有桌面聊天',cwd:'C:/Project'}]:[]};
   if(method.endsWith('/dsh_sessions'))return dshFailure?{ok:false,error:{message:'接收会话暂不可用'}}:{ok:true,value:[]};
-  if(method.endsWith('/subscribe')){subscriptions.push(args);return{ok:true,value:{schedule_ready:true}};}
+  if(method.endsWith('/current'))return{ok:true,value:{route:null,subscription:null}};
+  if(method.endsWith('/subscribe')){subscriptions.push(args);return{ok:true,value:{schedule_ready:false,subscription:{planning_state:'pending'}}};}
   throw Error(method);
  }};
  const nodes=tree=>[tree,...tree.children.filter(x=>typeof x==='object').flatMap(nodes)];
@@ -71,20 +72,18 @@ test("新建订阅选择已有 Codex 会话，不展示专用会话创建和过�
  tree=render();await flush();tree=render();
  assert.ok(nodes(tree).some(n=>n.type==='option'&&n.props.value==='desktop-id'));
  const fields=()=>nodes(tree).filter(n=>n.type==='input');
- assert.equal(fields().find(n=>n.props['aria-label']==='检查频率（分钟）').props.value,'1');
- assert.equal(fields().find(n=>n.props['aria-label']==='订阅超时（分钟）').props.value,'60');
- assert.equal(fields().find(n=>n.props['aria-label']==='检查频率（分钟）').props.max,60);
- assert.equal(fields().find(n=>n.props['aria-label']==='订阅超时（分钟）').props.max,1440);
- fields().find(n=>n.props['aria-label']==='检查频率（分钟）').props.onChange({target:{value:'60'}});
- fields().find(n=>n.props['aria-label']==='订阅超时（分钟）').props.onChange({target:{value:'1440'}});
+ assert.equal(fields().some(n=>n.props['aria-label']==='检查频率（分钟）'),false);
+ assert.equal(fields().some(n=>n.props['aria-label']==='订阅超时（分钟）'),false);
+ assert.equal(fields().find(n=>n.props['aria-label']==='连续失败阈值').props.value,'3');
+ fields().find(n=>n.props['aria-label']==='关注主题（可选）').props.onChange({target:{value:'等待测试与审查完成，每5分钟汇报'}});
  tree=render();
  await nodes(tree).find(n=>n.type==='form').props.onSubmit({preventDefault(){}});
- assert.equal(subscriptions[0].check_interval_seconds,3600);
- assert.equal(subscriptions[0].max_lifetime_seconds,86400);
+ assert.equal(subscriptions[0].topic,'等待测试与审查完成，每5分钟汇报');
+ assert.equal('check_interval_seconds' in subscriptions[0],false);
+ assert.equal('max_lifetime_seconds' in subscriptions[0],false);
  tree=render();nodes(tree).find(n=>n.type==='button'&&n.children.includes('新建订阅')).props.onClick();
  tree=render();await flush();tree=render();
- assert.equal(fields().find(n=>n.props['aria-label']==='检查频率（分钟）').props.value,'1');
- assert.equal(fields().find(n=>n.props['aria-label']==='订阅超时（分钟）').props.value,'60');
+ assert.equal(fields().find(n=>n.props['aria-label']==='关注主题（可选）').props.value,'');
  const text=nodes(tree).flatMap(n=>n.children.filter(x=>typeof x==='string')).join(' ');
  assert.equal(text.includes('新建 Codex 专用会话'),false);
  assert.equal(text.includes('仅支持向 Relay 创建'),false);
@@ -154,4 +153,105 @@ test('订阅列表：主动通知不显示立即检查与重新订阅，最近�
  assert.ok(pushEnded.includes('打开会话')===false);
  assert.ok(rowButtons(rowOf('检查中的会话')).includes('立即检查'));
  assert.ok(rowButtons(rowOf('已结束的检查')).includes('重新订阅'));
+});
+
+function clientHarness(rpc, extra = {}) {
+ let plugin, cursor = 0; const states = [], effects = [], timers = [], opened = [];
+ const react = {
+  createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity).filter(x => x !== null && x !== false && x !== undefined) }),
+  useState(initial) { const i = cursor++; if (!(i in states)) states[i] = initial; return [states[i], v => { states[i] = typeof v === 'function' ? v(states[i]) : v; }]; },
+  useRef(initial) { const i = cursor++; return states[i] ??= { current: initial }; },
+  useEffect(run, deps) { const i = cursor++; if (!states[i] || deps.some((d, j) => d !== states[i][j])) { states[i] = deps; effects.push(run); } },
+ };
+ runInNewContext(readFileSync(new URL('../../lib/client.js', import.meta.url), 'utf8'), {
+  window: { __ModuleLoader__: { load(e) { plugin = e.factory(() => react); } } },
+  setInterval(run) { timers.push(run); return timers.length; }, clearInterval() {}, ...extra,
+ });
+ const nodes = tree => [tree, ...tree.children.filter(x => typeof x === 'object').flatMap(nodes)];
+ const render = () => { cursor = 0; return plugin.AgentRelayPanel({ rpc, openSession(id) { opened.push(id); } }); };
+ const flush = async () => { for (const run of effects.splice(0)) run(); await new Promise(r => setImmediate(r)); };
+ return { nodes, render, flush, timers, opened, mountIcon() {
+  let icon;
+  plugin.apply({ slots: { inject(_n, run) { return run(); }, register(options, component) { if (options.name === 'sidebar.panellist') icon = component; return () => {}; } }, connection: { rpc }, uiWorkspace: { openSession() {} } });
+  cursor = 0; icon({ rpc });
+ } };
+}
+
+const bridgeSub = (extra = {}) => ({ id: 'old', agent: 'claude', type: 'poll', external_session_id: 'ext', external_session_title: '原关注会话', status: 'active', topic: '等待审查完成', muted: 0, dsh_session_id: 'original-dsh', planning_state: 'pending', selected_interval_seconds: null, pending_events: 2, decision_batch: { id: 'batch', state: 'unknown_attention' }, max_consecutive_failures: 3, consecutive_failures: 0, created_at: Date.now(), expires_at: Date.now()+86400000, ...extra });
+
+test('主题冲突通过精确current询问，继续保留原主题并恢复，停止重新来才创建', async () => {
+ const calls = []; let current = bridgeSub({ status: 'paused', muted: 1 });
+ const rpc = { async call(_channel, method, args) {
+  const endpoint = method.split('/').at(-1); calls.push({ endpoint, args });
+  const values = { agents: [], list: { items: [], next_cursor: null }, sessions: [{ id:'ext', title:'原关注会话' }], dsh_sessions: [], current: { route:{ dsh_session_id:'original-dsh' }, subscription: current }, resume:{}, stop:{}, subscribe:{ subscription:bridgeSub(), schedule_ready:false } };
+  if (endpoint === 'stop') current = null;
+  return { ok:true, value:values[endpoint] };
+ } };
+ const ui = clientHarness(rpc); const { nodes } = ui;
+ let tree = ui.render(); await ui.flush(); tree = ui.render();
+ async function createConflict() {
+  nodes(tree).find(n=>n.type==='button'&&n.children.includes('新建订阅')).props.onClick(); tree=ui.render(); await ui.flush(); tree=ui.render();
+  const external=nodes(tree).find(n=>n.type==='label'&&n.children.includes('外部会话')); nodes(external).find(n=>n.type==='select').props.onChange({target:{value:'ext'}});
+  nodes(tree).find(n=>n.props['aria-label']==='关注主题（可选）').props.onChange({target:{value:'等待发布'}});
+  tree=ui.render(); await nodes(tree).find(n=>n.type==='form').props.onSubmit({preventDefault(){}}); tree=ui.render();
+ }
+ await createConflict();
+ assert.equal(calls.some(c=>c.endpoint==='subscribe'),false);
+ assert.equal(calls.filter(c=>c.endpoint==='current').at(-1).args.external_session_id,'ext');
+ await nodes(tree).find(n=>n.type==='button'&&n.children.includes('继续原关注')).props.onClick(); await ui.flush(); tree=ui.render();
+ assert.equal(calls.some(c=>c.endpoint==='resume'&&c.args.subscription_id==='old'),true);
+ assert.equal(calls.some(c=>c.endpoint==='stop'),false); assert.deepEqual(ui.opened,['original-dsh']);
+ await createConflict();
+ await nodes(tree).find(n=>n.type==='button'&&n.children.includes('停止重新来')).props.onClick(); await ui.flush(); tree=ui.render();
+ const mutation=calls.filter(c=>['stop','subscribe'].includes(c.endpoint));
+ assert.deepEqual(mutation.map(c=>c.endpoint),['stop','subscribe']); assert.equal(mutation[1].args.topic,'等待发布');
+ assert.equal('dsh_session_id' in mutation[1].args,false);
+});
+
+test('详情真实显示规划与批次状态，事件续页保留旧页，原批次只读恢复', async () => {
+ const calls=[]; const sub=bridgeSub(); let missingBatch=false;
+ const rpc={async call(_channel,method,args){const endpoint=method.split('/').at(-1);calls.push({endpoint,args});
+  return{ok:true,value:endpoint==='agents'?[]:endpoint==='list'?{items:[sub]}:endpoint==='events'?args.after_sequence===0?{items:[{seq:1,id:'e1',kind:'push',body:'第一条进展',batch_id:'b1',decision_version:1,delivery_state:'muted',created_at:Date.now()}],next_sequence:1}:{items:[{seq:2,id:'e2',kind:'history',body:'第二条进展',batch_id:'b2',decision_version:2,delivery_state:'needs_attention',created_at:Date.now()}],next_sequence:null}:endpoint==='batch'?missingBatch?{status:'not_found'}:{status:'unknown_attention',batch_id:'b1',decision_version:1,events:[{id:'e1',body:'原事实'}]}:{}};
+ }};
+ const ui=clientHarness(rpc);const{nodes}=ui;let tree=ui.render();await ui.flush();tree=ui.render();
+ const text=()=>nodes(tree).flatMap(n=>n.children.filter(c=>typeof c==='string')).join(' ');
+ assert.ok(text().includes('关注中'));assert.ok(text().includes('待 DSH 规划'));assert.ok(text().includes('尚未选择频率'));assert.ok(text().includes('投递未知，待人工核对'));
+ nodes(tree).find(n=>n.type==='button'&&n.children.includes('原关注会话')).props.onClick();tree=ui.render();await ui.flush();tree=ui.render();
+ assert.ok(text().includes('第一条进展'));assert.ok(text().includes('已屏蔽 push'));
+ await nodes(tree).find(n=>n.type==='button'&&n.children.includes('更多事件')).props.onClick();await ui.flush();tree=ui.render();
+ assert.ok(text().includes('第一条进展'));assert.ok(text().includes('第二条进展'));assert.ok(text().includes('待人工处理'));
+ assert.equal(calls.filter(c=>c.endpoint==='events').at(-1).args.after_sequence,1);
+ await nodes(tree).find(n=>n.type==='button'&&n.children.includes('读取原批次')).props.onClick();await ui.flush();tree=ui.render();
+ assert.ok(text().includes('原事实'));assert.equal(calls.some(c=>c.endpoint==='decide'),false);
+ missingBatch=true;await nodes(tree).find(n=>n.type==='button'&&n.children.includes('读取原批次')).props.onClick();await ui.flush();tree=ui.render();
+ assert.ok(text().includes('记录不存在'));
+});
+
+test('重新关注不带旧时间或强制接收会话，编辑仅改失败阈值，屏蔽独立调用', async () => {
+ const calls=[];let sub=bridgeSub({status:'ended'});
+ const rpc={async call(_channel,method,args){const endpoint=method.split('/').at(-1);calls.push({endpoint,args});return{ok:true,value:endpoint==='agents'?[]:endpoint==='list'?{items:[sub]}:endpoint==='current'?{route:{dsh_session_id:'original-dsh'},subscription:null}:endpoint==='subscribe'?{subscription:sub,schedule_ready:false}:endpoint==='events'?{items:[],next_sequence:null}:{}};}};
+ const ui=clientHarness(rpc);const{nodes}=ui;let tree=ui.render();await ui.flush();tree=ui.render();
+ await nodes(tree).find(n=>n.type==='button'&&n.children.includes('重新订阅')).props.onClick();await ui.flush();tree=ui.render();
+ const renew=calls.find(c=>c.endpoint==='subscribe').args;
+ assert.equal(renew.topic,'等待审查完成');assert.equal('dsh_session_id' in renew,false);assert.equal('max_lifetime_seconds' in renew,false);assert.equal('check_interval_seconds' in renew,false);
+ await nodes(tree).find(n=>n.type==='button'&&n.children.includes('屏蔽 push')).props.onClick();await ui.flush();tree=ui.render();
+ assert.equal(calls.find(c=>c.endpoint==='mute').args.muted,true);assert.equal(calls.some(c=>c.endpoint==='stop'),false);
+ sub={...sub,status:'active'};nodes(tree).find(n=>n.type==='button'&&n.children.includes('刷新')).props.onClick();await ui.flush();tree=ui.render();
+ nodes(tree).find(n=>n.type==='button'&&n.children.includes('原关注会话')).props.onClick();tree=ui.render();await ui.flush();tree=ui.render();
+ nodes(tree).find(n=>n.type==='button'&&n.children.includes('修改配置')).props.onClick();tree=ui.render();
+ assert.equal(nodes(tree).some(n=>n.type==='input'&&n.props['aria-label']?.includes('分钟')),false);
+ await nodes(tree).find(n=>n.type==='button'&&n.children.includes('保存')).props.onClick();await ui.flush();
+ assert.deepEqual(Object.keys(calls.find(c=>c.endpoint==='update').args).sort(),['max_consecutive_failures','subscription_id']);
+});
+
+test('通知分页使用时间加ID游标，同毫秒50条续页不漏报并持久保存', async () => {
+ const calls=[],notifications=[];const storage=new Map([['dsh-agent-relay:notify:lastSeen','100']]);
+ class Notify { static permission='granted'; constructor(title,options){notifications.push({title,...options});} }
+ const first=Array.from({length:50},(_,i)=>({id:`n${i}`,created_at:101,cursor:{created_at:101,id:`n${i}`},result:'progress',delivery_status:'delivered',summary:`进展${i}`}));
+ const rpc={async call(_c,_method,args){calls.push(args);return{ok:true,value:calls.length===1?first:calls.length===2?[{id:'z',created_at:101,cursor:{created_at:101,id:'z'},result:'progress',delivery_status:'unknown_attention',summary:'最后进展'}]:[]};}};
+ const ui=clientHarness(rpc,{Notification:Notify,localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v)}});
+ ui.mountIcon();await ui.flush();
+ assert.equal(notifications.length,51);assert.equal(calls[1].after,101);assert.equal(calls[1].after_id,'n49');
+ assert.deepEqual(JSON.parse(storage.get('dsh-agent-relay:notify:lastSeen')),{created_at:101,id:'z'});
+ await ui.timers[0]();assert.equal(calls[2].after_id,'z');assert.ok(notifications.at(-1).body.includes('待人工核对'));
 });

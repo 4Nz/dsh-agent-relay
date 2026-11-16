@@ -4,7 +4,11 @@
 
 DSH Agent Relay 是 DSH 的外部 Agent 任务订阅、通知与消息转发插件，目标是在 DSH 中关注指定外部会话，并向原会话补充消息。
 
-当前已实现 T1 SQLite 存储、Claude 与 Codex Adapter、T2.2～T2.8、T3.1～T3.3、T4、T6.1～T6.6，并已接入插件入口。提供 M2 订阅工具、M3 `relay_send`、外部 Agent 通知 Skill、push HTTP、共享凭证、消息与订阅 RPC、订阅看板与新建通知会话、前置安装接入（T6.6，Claude 含通知 Skill 与 channel 配置、自检、卸载和连通测试，Codex 只有通知 Skill）、Claude 终端持有会话的 channel 排队投递（T2.7、T5.1）；直接 push 不要求外部 Agent 预先创建订阅，Relay 会按 `request_id` 自动创建一次性 push 订阅和接收会话；Codex 对未登记和桌面会话保持只读，支持向 Relay 创建登记的专用 daemon 会话发送。已有接收会话不会迁移到 Agent Relay 分组，已补 T2.3 查阅工具/RPC、页面可选接收会话与配置编辑、能力驱动操作及 T6.5 原生设置页注册；真实宿主验收归 T7。实现与验收边界见 `docs/superpowers/plans/T2.4-T2.5-T3.1-T4-T6-M2-implementation.md`、`docs/superpowers/plans/2026-11-11-M3-relay-forward.md` 和 `docs/superpowers/plans/T2.6-T3.2-T3.3-T4-T6.3-T6.5-M4-implementation.md`。T7 真实端到端验收尚未完成，不能以单元测试代替。Node.js >=24，TypeScript（ESM），运行依赖为 DSH 官方包和 Node.js 内置模块。先运行 `rtk npm ci --cache ./.npm-cache`；`rtk npm run typecheck` 检查服务端与前端类型，`rtk npm test` 构建并运行单元测试。真实冒烟单独运行 `rtk proxy node test/smoke/claude-smoke.js`、`rtk proxy node test/smoke/m2-smoke.js` 或 `rtk proxy node test/smoke/codex-smoke.js`，会新建专用 Agent 会话并产生费用。Codex 发送专项真实宿主验证已通过，见 `docs/research/T2.7-T5.2-T6-T7-codex-daemon-send-validation.md`；其余 T7 场景仍需验收。
+当前已实现 T1 SQLite、T2/T3/T4 会话桥梁、Claude/Codex Adapter 和 T6 看板/前置安装接入。2026-11-16 的会话桥梁替代旧一次性通知：`(agent,external_session_id)` 唯一路由，固定最长 24 小时的主题关注，DSH 规划/判断，宿主定时，push 忙时持久排队与稳定批次恢复。页面提供主题、失败阈值、实际规划状态/频率、冲突选择、事件分页、结束关注和独立 push 屏蔽。设计见 `docs/superpowers/specs/T1-T2-T3-T4-T6-T7-session-bridge-design.md`，接口与验收范围见 `docs/roadmap/tasks.md`。
+
+Codex 本机 daemon 支持已有桌面/CLI 会话官方 `queue/add`；只有独立历史回退连接只读，旧“未登记/桌面均只读”说明已过时。Relay 登记专用会话使用 `turn/start`，不能同时交给其他执行实例。Claude 终端持有会话仍须 channel，未启用拒绝发送。前置安装接入为两个 Agent 直接安装通知 Skill，Claude 另含 channel 配置、自检、卸载和连通测试；凭证自动生成于本机私有配置，原独立设置页已移除。
+
+Node.js >=24，TypeScript ESM，运行依赖限 DSH 官方包和 Node 内置模块。先 `rtk npm ci --cache ./.npm-cache`；`rtk npm run typecheck` 与 `rtk npm test` 分别检查类型与全量单测。真实冒烟 `test/smoke/claude-smoke.js`、`m2-smoke.js`、`codex-smoke.js` 会创建专用会话并产生费用，且部分旧脚本语义需按新桥梁验收更新，不能以旧脚本通过冒充新验收。历史 Codex 专项记录见 `docs/research/T2.7-T5.2-T6-T7-codex-daemon-send-validation.md`；本轮完整真实 T7 仍未完成，单测与打包冒烟不能替代。
 
 ## 开发语言与插件形态
 
@@ -39,11 +43,11 @@ DSH Agent Relay 是 DSH 的外部 Agent 任务订阅、通知与消息转发插�
 
 - DSH 和外部 Agent 部署在同一台机器，按本机单用户设计；第一版接入 Claude 和 Codex，WorkBuddy 留待后续。
 - 优先完成 `docs/roadmap/tasks.md` 的 T0，确认真实的 DSH 插件、存储、定时、投递与前端扩展点，再确定实现方式。T0 已确认 DSH KV 不满足事务需求，T1 使用 `node:sqlite` 自建数据库，不存在 `dsh-storage-sqlite`。
-- `poll` 和 `push` 订阅均只产生一次通知，随后结束；通知只包含结果摘要，不同步全部外部会话上下文。
+- 持续关注只有语义目标达成、用户结束、固定截止、关闭或失败阈值才结束；单轮完成不自动结束。无变化静默，外部事件只作资料，不构成业务授权。
 - 按明确的 Agent 和外部会话 ID 路由；标题与工作目录仅用于展示和人工核对。
 - 工具与页面接口共用服务层；各 Agent 通过 Adapter 声明能力，不支持的操作应明确返回原因。
-- Codex 支持会话发现和快照查阅；仅 Relay 创建并登记到当前 daemon 端点的专用会话支持发送，其他会话只读。专用会话不得同时交给桌面或 CLI 执行；会话绑定不是全局排他锁。daemon 可读持久化历史，不代表它掌握桌面会话的实时状态；`notLoaded` 不等于空闲或任务完成。
-- Claude 被终端持有的会话通过 Agent Relay channel 投递：消息先排队，会话空闲时再推送，Claude 处理后调用 `ack` 确认；会话未启用 channel 时拒绝并说明原因。无进程持有的会话沿用 `claude -p --resume`。不用 `--resume` 向被持有的会话注入。等空闲排队只用于 channel 会话，btw 不在第一版范围内。方案与实测见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md`。代码已实施并通过单元测试，真实宿主验收（T7.4）尚未完成。
+- Codex 支持会话发现和快照查阅；本机 daemon 的已有会话通过官方队列发送，独立历史回退只读；Relay 创建登记专用会话直接发起轮次。专用会话不得同时交给桌面或 CLI 执行；会话绑定不是全局排他锁。daemon 可读持久化历史，不代表它掌握桌面会话的实时状态；`notLoaded` 不等于空闲或任务完成。
+- Claude 被终端持有的会话通过 Agent Relay channel 投递：消息先排队，会话空闲时再推送，Claude 处理后调用 `ack` 确认；会话未启用 channel 时拒绝并说明原因。无进程持有的会话沿用 `claude -p --resume`。不用 `--resume` 向被持有的会话注入。Claude 等空闲排队限 channel 会话，Codex 使用官方队列；btw 不在第一版范围内。方案与实测见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md`。代码已实施并通过单元测试，真实宿主验收（T7.4）尚未完成。
 
 ## 状态、数据与验证
 

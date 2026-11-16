@@ -1,4 +1,4 @@
-# 第一版任务拆解
+# T0-T1-T2-T3-T4-T5-T6-T7 第一版任务拆解
 
 交付补充（T0、T1、T3、T7）：安装包生成、Skill 链接更新与草稿上传流程见 `docs/operations/T0-T1-T3-T7-plugin-release.md`。`release:prepare` 的安装包冒烟不替代本文件的真实 T7 场景。
 
@@ -16,7 +16,7 @@
 
 - 判断主动通知后下一步做什么。`push` 由 DSH 模型结合消息及当前上下文自行推理；`poll` 仅整理汇报订阅会话的进展与结果，不重新执行外部任务。
 - 进展的逐条同步。通知只发结果摘要，不搬运外部会话的上下文。
-- Agent 层面的增强能力，比如 btw 提问，以及 Claude channel 会话以外的排队。
+- Agent 层面的增强能力，比如 btw 提问；Claude 排队限 channel，Codex 已有会话使用官方 daemon queue/add。
 - WorkBuddy 接入。
 - 多用户鉴权。第一版按本机单用户设计，表里保留所有者字段。
 
@@ -24,47 +24,27 @@
 
 ## 核心模型
 
-### 两种订阅
+### T1-T2 会话路由、关注期、事件与批次
 
-| 类型 | 怎么发现结果 | 什么时候结束 |
-| --- | --- | --- |
-| 主动订阅（`poll`） | 插件默认每分钟读取外部会话历史 | 发现新完成轮次；或无活动超时；或满 24 小时；或外部会话已归档、删除；或连续检查失败达到阈值 |
-| 主动通知（`push`） | 外部 Agent 通过 Skill 发通知给 DSH | 通知送达 DSH 会话；或按 `poll` 同样的规则到期、失效 |
+2026-11-16 用户确认的会话桥梁规则替代一次性 poll/push、无活动顺延、可配置总超时和插件默认每分钟读历史。设计见 `docs/superpowers/specs/T1-T2-T3-T4-T6-T7-session-bridge-design.md`。
 
-两种订阅都只发**一次**通知，订阅随即结束。之后还要关注，需要重新订阅。
+- `(agent,external_session_id)` 唯一路由，一对一绑定 DSH 接收会话；标题/目录仅展示。一个有效关注期只有一个主题，active/paused 共占名额；同主题复用，不同主题/接收会话冲突必须让用户选择停止重新来或继续原关注。
+- 关注固定从创建起 24 小时截止；查阅、发送、暂停、重启不顺延，到期不取消外部任务。结束后重新关注默认复用原 DSH 会话，仅用户明确选择才重绑新会话。
+- `poll` 关注期间可多次汇报相关进展；无变化静默，单轮完成不自动结束。DSH 模型根据用户语义目标决定 continue/end/needs_user；需要用户则暂停，用户停止、截止、外部关闭、失败阈值也会结束。
+- 用户频率优先；未指定则 DSH 选择并告知。`pending` 待规划，`ready` 已选频率，`deciding` 待批次判断；实际频率未选为 null，不隐式每 60 秒。间隔至少 60 秒，不能超过剩余关注期。
+- 调度由宿主持久提醒维护，页面新建会发送规划事件，当前 DSH 工具调用创建由当前模型继续规划。插件 30 秒维护只收敛截止、对账宿主提醒、处理队列/未知投递，不默认轮询外部历史。
+- `push` 按稳定 request_id 幂等并进入相同路由；同一会话的不同 request_id 不新建重复会话。已有关注时取消下一次定时等待，忙或未知先落库，明确空闲后合批，原回答不被打断。结束后 push 仍进原接收会话，不自动重订阅。
+- 停止关注与屏蔽 push 分离。屏蔽保留事件；明确订阅/恢复解除屏蔽。外部消息和轮次状态是数据，不能作为修改主题、扩大业务权限的授权。
 
-典型用法：Codex 正在干活，用户让它完成后通知 DSH。Codex 完成时调用通知 Skill，DSH 收到一条结果摘要，这条订阅结束。
+### T2 检查与投递状态
 
-### 通知内容
+`relay_check` 返回持久增量事实，DSH 按主题判断，再通过稳定 `batch_id` 与 `decision_version` 调 `relay_decide` 确认。有更多事件先确认再继续读，不能跳过游标；过时确认最多处理原批次事实，不结束或修改新关注。Claude UUID 游标与 Codex 跨轮增量分页，不只看最后回复；目前只交付进展/回复文本和轮次状态，不宣称同步全部工具上下文。
 
-- 结果：`completed`（任务完成）、`failed`（执行失败）、`idle_timeout`（到期时无新消息，且无法确认任务完成）、`expired`（满 24 小时仍有活动，强制结束）、`session_closed`（外部会话已归档或删除）、`unreachable`（连续检查失败，DSH 已无法获取会话状态）。
-- 摘要：外部 Agent 最后一条回复的节选，以及外部会话标题和 ID，方便用户回到原会话。
-- 同一订阅只会产生一条通知，由唯一约束保证。
+单次检查失败增加连续计数，成功清零，无变化不计失败；默认 3 次达阈值停止并说明最近错误。检查失败不是任务失败。模型语义目标完成、确定性结束原因、发送回执和投递状态分别记录。
 
-### 检查失败
+批次状态 pending/delivering/unknown/delivered/processed 分别是待投递、投递中、结果未知、已送达、已处理。muted 表示已屏蔽；needs_attention 表示待人工处理；unknown_attention 表示投递未知待人工核对。未知先核对宿主日志/flush，不能盲重发或删除事件。五分钟未确认的持久批次安排恢复提醒，通过 `relay_batch` 读取原事实；最长批次创建后 24 小时，之后保留待人工状态，不创建或复活关注。恢复间隔不是关注默认频率。
 
-检查失败指 DSH 拿不到外部会话的状态，例如会话文件无法解析、CLI 调用报错、Codex daemon 连不上。这和任务执行失败（`failed`）是两回事，也和会话已归档、删除（`session_closed`）不同：后者是确定结果，不计入失败次数。
-
-- 单次失败：只更新订阅上的“最近检查状态”和 `consecutive_failures`，不发通知、不结束订阅，无活动超时顺延，按检查周期重试。下一次检查成功后计数清零。
-- 连续失败达到阈值（默认 3 次，可按订阅配置）：生成一条 `unreachable` 通知，写明最近一次的错误，然后结束订阅。
-
-这样每条订阅最终都有一个明确结果，不会因为一直查不到状态而永远停在 `active`。
-
-### 有效期
-
-2026-11-15 用户明确调整时效要求：`poll` 默认每分钟由插件直接检查，发现基线后的完成轮次即汇报；订阅默认从创建起 60 分钟超时，最大 24 小时，不随活动或暂停顺延。检查频率可配 1～60 分钟，总超时可配 1～1440 分钟，会话工具与新建订阅页面均支持。`push` 仍由外部 Agent 主动提交结果。
-
-- 新 poll 用 `max_lifetime_seconds` 设置订阅总超时，默认 3600 秒，最大 86400 秒；`expires_at` 与 `hard_expires_at` 同为创建时间加总超时。新接口不以可顺延的无活动超时替代订阅总超时。push 及旧记录保留原兼容规则。
-- 以下活动把 `expires_at` 顺延为“活动时间 + 1 小时”：通过 Relay 向该外部会话发送消息；用户或 DSH 模型通过 Relay 查阅该会话内容。到期检查自身调用的 `snapshot` 不算活动。
-- 每次检查外部会话：
-  - 会话已归档或删除：生成 `session_closed` 通知，结束订阅。
-  - 基线之后有明确已结束轮次且不处于 `busy`：按 Adapter 判定生成 `completed` 或 `failed`，不等待超时；精确目标轮次完成不受后续轮次 busy 影响。
-  - 无完成证据，但上次检查之后有新消息或处于 `busy`：顺延 1 小时，不发通知。
-  - 无完成证据且无新活动：未到无活动超时则继续关注；到期生成 `idle_timeout` 通知并结束。
-- `hard_expires_at = 创建时间 + max_lifetime_seconds`，到点生成 `expired` 汇报并结束；即使检查间隔尚未到达或订阅暂停，也执行总超时处理。24 小时为可配置上限。
-- 检查之外的时间发现会话已归档或删除（例如用户查阅或发送时），立即按 `session_closed` 结束，不等到期。
-
-已知限制：正常读取下通知延迟约一个检查周期再加查询与投递耗时。Codex 持久化历史与桌面显示可能有延迟，实时状态未知不能当作完成证据。旧订阅保留其已配置周期，可在页面修改。
+通知轮询 `notify_poll` 使用 `(after,after_id)` 双游标分页；事件详情用 `events` 的 `after_sequence`，不得用旧单条 notification 代表全部新事件。
 
 ## T0 插件骨架与 DSH 接入点确认
 
@@ -74,7 +54,7 @@
 | --- | --- | --- |
 | T0.1 | 插件骨架 | 服务端插件、前端 `client-ui` 插件、工具和 Skill 分别怎么写，怎么打包，怎么挂到 profile 的 `cordis.patch.yml` |
 | T0.2 | 存储 | 已核实：`dsh-storage-sqlite` 不存在，DSH 自带存储是 KV 模型（`dsh-storage` + `dsh-storage-json` + `dsh-storage-domain`），缺唯一约束/分页/事务。第一版自建 SQLite（`node:sqlite`）建表 |
-| T0.3 | 定时 | 已核实宿主 `dsh-schedule` 会唤醒模型。2026-11-15 改为插件 Node 定时器直接检查，不产生检查模型调用；持久化订阅在重启时对账恢复，清理旧 Relay 宿主提醒 |
+| T0.3 | 定时 | 宿主 `dsh-schedule` 唤醒模型，由模型调用 relay_check；DSH 按用户主题规划周期，启动对账旧任务与持久提醒，插件维护不默认读历史 |
 | T0.4 | 投递与会话分组 | 插件怎么把通知送进 DSH 会话，是新建会话还是投到已有会话；会话能不能打标签或分组 |
 | T0.5 | 前端扩展点 | 怎么注册菜单页面，怎么在会话列表里加分组，前端怎么调用插件的后端接口 |
 | T0.6 | 外部通知入口 | 外部 Agent 怎么把通知送到 DSH：本机 HTTP 接口或 CLI，以及调用方怎么认证 |
@@ -94,19 +74,21 @@
 | `agent` | `claude` / `codex` |
 | `external_session_id` | 外部会话 ID，只按 ID 路由 |
 | `external_session_title`、`external_cwd` | 展示用，方便人工核对 |
-| `dsh_session_id` | 接收通知的 DSH 会话。poll 保存时必填，页面未选时先自动新建；push 可在投递时新建并回填 |
+| `dsh_session_id` | 接收 DSH 会话；由会话路由复用，首次未选才自动新建，结束后默认不迁移 |
 | `status` | `active` / `paused` / `ended` |
 | `end_reason` | `completed` / `failed` / `idle_timeout` / `expired` / `session_closed` / `unreachable` / `delivered` / `user_stopped` |
-| `idle_timeout_seconds`、`max_lifetime_seconds` | poll 总超时默认 3600、上限 86400，新建时两者相同；push 默认最长存活 86400。旧无活动超时字段保留兼容 |
-| `expires_at`、`hard_expires_at` | 有效期截止时间，发送消息或查阅内容时顺延；`hard_expires_at` 创建时确定，不顺延 |
-| `check_interval_seconds`、`max_consecutive_failures` | 只用于 `poll`；检查周期默认 60，`max_consecutive_failures` 默认 3 |
-| `schedule_task_id` | 插件计时器标识；升级前为 DSH 定时任务 ID，由启动对账迁移 |
+| `idle_timeout_seconds`、`max_lifetime_seconds` | 旧兼容字段；新关注固定 86400 秒，不接受页面自定义总超时 |
+| `expires_at`、`hard_expires_at` | 新关注同为创建后24小时；发送、查阅、暂停不顺延 |
+| `check_interval_seconds`、`max_consecutive_failures` | 实际频率未规划为 null，由 DSH 选择；失败阈值默认 3 |
+| `schedule_task_id` | DSH 宿主持久提醒 ID；启动对账清理旧插件计时标识 |
 | `cursor`、`last_activity_at` | 订阅时设成外部会话的当前位置，避免把历史当成新内容 |
 | `last_checked_at`、`last_check_status`、`last_check_error`、`consecutive_failures` | |
 | `notification_recorded_at` | 首次生成通知时原子写入，通知清理后保留用于防重 |
 | `created_at`、`updated_at`、`ended_at` | |
 
-**`relay_notification`**：通知。每条订阅最多一条。
+**`relay_bridge` / `relay_bridge_event` / `relay_bridge_batch`**：唯一路由、按序事件、稳定版本批次。SQLite v4/v5 追加迁移，收敛旧重复活跃关注，保留既有投递事实不重放；批次持久保存原投递目标、恢复提醒与屏蔽前状态。
+
+**`relay_notification`**：旧版单次通知兼容表，不作为新桥梁事件详情源。每条旧订阅最多一条。
 
 | 字段 | 说明 |
 | --- | --- |
@@ -129,9 +111,9 @@
 | `external_ref` | 发送成功后对应的外部记录 |
 | `created_at`、`sent_at` | |
 
-通知和消息按 created_at 满 30 天统一删除，所有状态适用；订阅及 notification_recorded_at 保留用于防重。每日清理由 T2.8 调度。
+旧通知与消息按既有保留期清理；新路由、事件、未知/待人工批次持久保留，不随7天订阅清理删除。未来事件清理必须保留push幂等键。
 
-T1 已提供独立存储模块；接口、迁移与限制见 `docs/superpowers/plans/T1-storage-design.md`。共享 token 不存业务表，在 DSH 设置页面统一配置和重置，本机 Agent 共用；认证与配置接入由 T2.6/T6 实现。
+T1 已提供独立存储模块；接口、迁移与限制见 `docs/superpowers/plans/T1-storage-design.md`。共享 token 不存业务表；前置安装接入自动生成本机私有客户端配置并安装通知 Skill，不再单独开放凭证设置页。
 
 ## T2 抽象层
 
@@ -139,17 +121,14 @@ T1 已提供独立存储模块；接口、迁移与限制见 `docs/superpowers/p
 | --- | --- | --- |
 | T2.1 | `AgentAdapter` 接口 | `listSessions()` 列出候选会话；`snapshot(sessionId)` 返回当前位置、最近活动时间、运行状态（`idle` / `busy` / `unknown`）、会话是否已归档或删除、基线之后是否有已结束的轮次及其结果、最后一条回复；`sendMessage(sessionId, text)`；`capabilities()` 声明支持哪些操作，不支持的操作返回“不支持” |
 | T2.2 | Adapter 注册表 | 按 `agent` 字段查找。新增 Agent 只需加一个 Adapter |
-| T2.3 | 订阅服务 | 创建：先取一次 `snapshot` 作为基线，写订阅，再建立插件周期检查。写入 `expires_at` 和 `hard_expires_at`。查阅内容、发送消息时顺延 `expires_at`（不超过 `hard_expires_at`）；发现会话已归档或删除时立即以 `session_closed` 结束。暂停、恢复、手动停止。启动时按订阅表恢复计时器，清理旧 Relay 宿主提醒 |
-| T2.4 | 检查执行器 | 由插件计时器或 `relay_check` 触发，按订阅加锁，上一轮没跑完就跳过。调用 `snapshot`，按“有效期”一节判定完成、继续关注或超时，到 `hard_expires_at` 时生成 `expired`。检查失败时累加 `consecutive_failures`，成功时清零，达到阈值生成 `unreachable` 通知并结束订阅。只更新检查状态，不写逐条进展 |
-| T2.5 | 通知服务 | 两种订阅共用。poll 生成通知和结束订阅同事务；push 在送达 DSH 会话并触发处理后结束为 delivered，不等待回复完成。投递最多尝试 3 次，使用稳定幂等标识；未知结果先核对，不盲目重发 |
+| T2.3 | 订阅服务 | 创建时建立基线与主题关注，唯一约束保护 active/paused；固定24小时，暂停/继续/结束不改截止。默认复用原接收会话，异主题冲突由用户选择。启动对账宿主提醒 |
+| T2.4 | 检查执行器 | 宿主提醒触发 relay_check，读取可分页增量并交 DSH 判断；无变化静默。连续失败计数成功清零，达阈值结束说明；到期/关闭确定性拦截。规划与确认使用 relay_plan/relay_decide |
+| T2.5 | 通知服务 | 会话事件合批，忙/未知排队，明确空闲投递；持久批次ID/版本，未知先核对，relay_batch 恢复原事实，旧确认不能影响新关注。已送达不等于已处理 |
 | T2.6 | 外部通知入口 | 接收 `push` 通知，校验插件级共享 token，交给通知服务。重复通知按唯一约束忽略 |
-| T2.7 | 转发服务 | 写入 `relay_message`，调用 Adapter 发送。会话处理中或不支持发送时记为 `rejected` 并写明原因。Claude channel 会话的消息先记为 `queued`，空闲推送后为 `sent`，ack 记 `acked_at`，ack 超时记 `unknown` 不重发。可选“发送后订阅”：发送成功后自动创建一条 `poll` 订阅，任务完成时通知 |
+| T2.7 | 转发服务 | 保留能力驱动转发、Claude channel queued/sent/ack 与 Codex queue/add/专用turn/start；unknown 不盲重发。显式发送后关注复用路由/有效关注，不无条件新增重复任务 |
 | T2.8 | 历史清理 | 每天清理超过保留期限的通知和消息 |
 
-“任务结束”的判定交给各 Adapter：
-
-- Claude：最后一条 assistant 记录的 `stop_reason` 是 `end_turn`，并且会话不在 `busy` 状态。
-- Codex：最近一轮的 `turn.status` 是 `completed` 或 `failed`。
+Adapter 只提供轮次状态与进展事实，单轮结束不自动结束关注；语义目标完成由 DSH 根据原主题判断。
 
 ## T3 对话入口：工具与 Skill
 
@@ -157,9 +136,9 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 
 | 编号 | 任务 | 内容 |
 | --- | --- | --- |
-| T3.1 | 工具 | `relay_list_sessions`：列出某个 Agent 的候选会话。`relay_subscribe`：创建主动订阅。`relay_list`：查看订阅及状态。`relay_stop`：停止订阅。`relay_check`：立即检查，暂停或结束时跳过。`relay_send`：转发消息，支持“发送后订阅” |
+| T3.1 | 工具 | 会话发现/查阅/发送；relay_subscribe、relay_list、relay_pause、relay_resume、relay_stop、relay_plan、relay_check、relay_batch、relay_decide、relay_mute，分别负责关注、规划、增量、恢复、语义确认与屏蔽 |
 | T3.2 | DSH 侧 Skill | 什么时候订阅；有多个候选会话时先让用户确认；发送前复述目标会话；区分“已发送”和“已完成” |
-| T3.3 | 外部 Agent 侧通知 Skill | 给 Claude、Codex 用：用户说“完成后通知 DSH”时，读取共享 token，携带稳定 `request_id` 调用 T2.6 的入口发送结果摘要。可省略 `subscription_id`，由 Relay 按请求自动创建一次性 push 订阅和接收会话；也可带已有 push 订阅指定接收会话 |
+| T3.3 | 外部 Agent 侧通知 Skill | Claude/Codex 共用通知 Skill，用真实来源与稳定事件 request_id push，不创建关注；首次建路由，后续复用原DSH，结束后push不自动重订阅 |
 
 工具与 T4 的 HTTP 接口共用 T2 的服务层，不重复实现业务逻辑。
 
@@ -171,7 +150,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | `GET /agents/:agent/sessions` | 可订阅的外部会话 |
 | `POST /subscriptions` | 创建订阅（`poll` 或 `push`）。返回订阅 ID；不生成独立 token |
 | `GET /subscriptions`、`GET /subscriptions/:id` | 列表（按 Agent、类型、状态筛选）和详情 |
-| `PATCH /subscriptions/:id` | 修改检查周期和有效期，暂停、恢复 |
+| `PATCH /subscriptions/:id` | 修改失败阈值或模型显式频率；不改总截止；暂停、恢复 |
 | `POST /subscriptions/:id/stop` | 手动停止 |
 | `POST /subscriptions/:id/check` | 立即检查一次 |
 | `POST /notifications` | 外部通知入口，见 T2.6；可直接 push，也可带预注册 `subscription_id` |
@@ -184,7 +163,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | 编号 | 任务 | 第一版能力 |
 | --- | --- | --- |
 | T5.1 | Claude Adapter | 列出会话、`snapshot`、发送消息。无进程持有的会话用 `--resume` 发送；被终端持有的会话通过 Agent Relay channel 在空闲时投递，未启用 channel 时拒绝并说明原因。方案见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md` |
-| T5.2 | Codex Adapter | 列出会话、`snapshot`；新增 Relay 专用 daemon 会话创建、持久绑定和受限发送，其他会话只读。发送后订阅按 `turnId` 跟踪。真实 DSH 宿主专项验证通过，见 `docs/research/T2.7-T5.2-T6-T7-codex-daemon-send-validation.md`；历史只读设计见 `docs/superpowers/plans/T5.2-codex-adapter-design.md` |
+| T5.2 | Codex Adapter | 列会话/快照/增量；本机daemon已有会话官方queue/add，独立历史回退只读；登记专用会话turn/start，不绕过权限或并行接管。历史专项记录不代表新桥梁T7完成 |
 
 每个 Adapter 都要有针对真实会话的冒烟测试，测试会话和业务会话分开。
 
@@ -192,21 +171,17 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 
 | 编号 | 任务 | 内容 |
 | --- | --- | --- |
-| T6.1 | 订阅看板菜单 | 订阅列表：Agent、类型、外部会话标题、状态和结束原因、最近检查时间和结果、通知是否送达。有效期截止时间。操作按钮：暂停、恢复、停止、立即检查、跳转到对应的 DSH 会话。支持按 Agent、类型、状态筛选。检查失败和投递失败用醒目样式标出 |
-| T6.2 | 新建订阅 | 选 Agent、选择已有外部会话、选接收通知的 DSH 会话（可选），分别设置检查频率（默认 1 分钟、上限 60 分钟）和订阅总超时（默认 60 分钟、上限 1440 分钟）；Codex 不要求先创建专用后台会话 |
+| T6.1 | 订阅看板菜单 | 分页/筛选列表保留；分别显示关注状态、pending/ready/deciding、实际频率与真实批次状态；事件详情分页、只读恢复原批次、打开原接收会话；暂停/继续、结束关注与屏蔽push分离 |
+| T6.2 | 新建订阅 | Agent、已有外部会话、可选接收DSH、可选关注主题、失败阈值默认3。取消所有时间输入，说明固定24h与频率由用户要求/DSH决定；冲突明确停止重新来或继续；重订阅默认复用原DSH |
 | T6.3 | 通知会话分组 | 在 DSH 会话列表里，把由 Relay 新建的通知会话归到一个分组；用户指定的已有会话保留原工作目录与分组，避免改变其后续执行环境。复用 T0.4/T0.5 确认的 workspace 机制。 |
-| T6.4 | 能力提示 | 不支持的操作置灰并说明原因，例如“仅 Relay 创建的 Codex 专用后台会话支持发送” |
-| T6.6 | 前置安装接入 | 页面入口「前置安装接入」，分 Claude 和 Codex 两部分。通知 Skill：向 Claude 开新会话执行安装提示词，把 `external-agent-notification` 写入 `~/.claude/skills`；Codex 只读，预留接口并给可复制提示词。Claude 另由插件一次配好 channel：MCP 登记、`~/.claude/agent-relay.md` 规则及 `CLAUDE.md` 引用、`claude` shell 函数；重复安装先自检，逐项返回 `ok` / `missing` / `outdated` / `conflict` / `unavailable` 和下一步提示 |
+| T6.4 | 能力提示 | 按实时Adapter能力提示；Codex依当前连接/会话send_allowed决定，不将桌面聊天一律只读 |
+| T6.6 | 前置安装接入 | 两个Agent直接安装通知Skill并自检；Claude另配置channel/MCP/规则/shell及连通测试。修改前备份，冲突不自动覆盖，不开模型会话安装 |
 
 会话内的对话、回复和后续处理都用 DSH 原生能力，插件不另做聊天界面。
 
 ### T6.5 共享通知凭证设置
 
-DSH 设置页面统一配置和重置插件级共享 token；本机所有 Agent 共用。只保存摘要，生成时一次展示明文，重置后旧凭证失效。不再为每条订阅生成 token。
-
-### T6.6 前置安装接入
-
-订阅看板的「安装通知 Skill」按钮改为「前置安装接入」，内分 Claude 和 Codex 两部分，各自安装和自检。Claude 部分包含通知 Skill 和 channel 配置，见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md` 第 3.3、3.4 节；Codex 部分只有通知 Skill。channel 部分已实施，真实宿主验收归 T7.4。通知 Skill 沿用原安装方式：向 Claude 开新会话执行安装提示词，把随包 `external-agent-notification` 通知 Skill 写入 `~/.claude/skills/external-agent-notification/SKILL.md`；Codex 第一版只读，预留接口并给可复制提示词。实现见 `docs/superpowers/plans/T2.1-T3.1-T3.3-T5.1-T6.6-skill-install.md`。
+凭证由「前置安装接入」自动生成，明文仅落本机私有 `notification-client.json`，两个 Agent 的通知脚本每次读取；旧独立设置页和 credential RPC 已移除。通知 Skill 安装为直接文件操作，无需模型调用；Claude channel 的真实验收仍归 T7.4。
 
 ## T7 验收
 
@@ -214,13 +189,13 @@ DSH 设置页面统一配置和重置插件级共享 token；本机所有 Agent 
 
 | 编号 | 场景 |
 | --- | --- |
-| T7.1 | 主动订阅：订阅 Claude 会话 → 任务结束 → DSH 收到一条通知 → 订阅结束，看板显示 `completed` |
-| T7.2 | 完成证据：超时前发现新完成轮次 → 一条 `completed` 或 `failed` 通知并结束；无活动超时 → 一条 `idle_timeout`；仍有新消息或 `busy` → 顺延 1 小时；发送消息或查阅内容 → `expires_at` 顺延；满 24 小时 → 一条 `expired`；重启恢复与投递防重 |
+| T7.1 | 隔离宿主：主题关注→规划→多轮增量→按原主题汇报→continue保留关注，真正语义达成才end；空变化静默 |
+| T7.2 | 隔离宿主：用户指定频率优先、pending补规划、24h固定截止/暂停硬截止、检查失败达阈值、旧批次不结束新关注，重启恢复宿主提醒 |
 | T7.2a | 会话失效：订阅后归档或删除测试会话 → 一条 `session_closed` 通知 → 订阅结束，不计入检查失败 |
 | T7.2b | 无法访问：订阅后让检查调用失败（如停掉 Codex daemon、让会话文件不可解析） → 连续 3 次检查失败 → 一条 `unreachable` 通知，带最近错误 → 订阅结束；中途恢复一次则计数清零 |
-| T7.3 | 主动通知：外部 Agent 发通知 → 送达 → 订阅结束；重复发送不会产生第二条通知 |
+| T7.3 | 隔离宿主：同一来源多push复用DSH，忙时落库/空闲合批、重复事件幂等、结束后push不重订阅，屏蔽恢复保留状态，未知先核对与人工恢复 |
 | T7.3a | 用户消息提醒：外部 Agent 通知写入 DSH 会话后，已授权且保持打开的 DSH 浏览器前端显示消息通知；核验首条新通知、历史不补弹、重复请求和刷新防重、权限拒绝/不支持、断网恢复。步骤与判定见 `docs/superpowers/plans/T7.3a-external-notification-acceptance.md`；当前待真实浏览器验收 |
-| T7.4 | 转发：会话空闲时发送成功；处理中时被拒绝并显示原因；“发送后订阅”在任务完成时收到通知。Claude 终端持有的会话：空闲时经 channel 送达并收到 ack；忙碌时保持 `queued`，空闲后送达；未启用 channel 时被拒绝并提示重新进入；ack 超时记 `unknown` 不重发；重复安装返回自检结果 |
+| T7.4 | 转发：依Adapter能力核验拒绝或排队；Codex已有会话queue/add与专用turn/start分开验收；显式发送后关注复用路由，由DSH按主题规划/确认。Claude 终端持有的会话：空闲时经 channel 送达并收到 ack；忙碌时保持 `queued`，空闲后送达；未启用 channel 时被拒绝并提示重新进入；ack 超时记 `unknown` 不重发；重复安装返回自检结果 |
 | T7.5 | 异常：检查失败、外部会话不存在、投递失败重试、DSH 重启后订阅和定时任务恢复、检查重叠 |
 
 ## 依赖与顺序
@@ -241,6 +216,8 @@ T7 最后做端到端验收
 3. **M3 转发与会话分组**：T2.7、`relay_send` 工具、T6.3。跑通 T7.4。
 4. **M4 主动通知与 Codex**：T2.6、T3.3、Codex Adapter。跑通 T7.3、T7.5。
 
+
+> 以下里程碑为历史实施记录；涉及一次性通知、顺延、旧只读限制和插件计时的结论以本文当前桥梁规则为准。
 
 ## M2 实施状态（2026-11-11）
 
