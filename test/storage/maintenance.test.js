@@ -94,3 +94,65 @@ test("pending 与 sending 同样满30天删除，未满保留", () => {
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("删除单条订阅连带其通知与消息，不影响其他订阅", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "relay-"));
+  const store = openRelayStore({ dataDir });
+  try {
+    store.subscriptions.create(subscription("s", "push"));
+    store.subscriptions.create(subscription("keep", "push"));
+    store.messages.create({ ...message("m1"), subscription_id: "s" });
+    store.messages.create({ ...message("m2"), subscription_id: "keep" });
+    store.notifications.record({
+      notification: { id: "n", subscription_id: "s", source: "push", result: "completed", summary: "结果" },
+      now: 100,
+    });
+    assert.deepEqual(store.deleteSubscription({ id: "s" }), {
+      notifications: 1,
+      messages: 1,
+      subscriptions: 1,
+    });
+    assert.equal(store.subscriptions.get("s"), null);
+    assert.equal(store.notifications.getBySubscription("s"), null);
+    assert.equal(store.messages.get("m1"), null);
+    assert.ok(store.subscriptions.get("keep"));
+    assert.ok(store.messages.get("m2"));
+  } finally {
+    store.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("批量清理删除创建超过 7 天的订阅及关联数据，保留近期", () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "relay-"));
+  const store = openRelayStore({ dataDir });
+  try {
+    store.subscriptions.create({ ...subscription("old", "push"), created_at: 100, updated_at: 100 });
+    store.messages.create({ ...message("mold"), subscription_id: "old", created_at: 100 });
+    store.notifications.record({
+      notification: { id: "nold", subscription_id: "old", source: "push", result: "completed", summary: "旧" },
+      now: 100,
+    });
+    const recentAt = 100 + 6 * 86400000;
+    store.subscriptions.create({ ...subscription("recent", "push"), created_at: recentAt, updated_at: recentAt });
+    store.messages.create({ ...message("mrecent"), subscription_id: "recent", created_at: recentAt });
+    store.notifications.record({
+      notification: { id: "nrecent", subscription_id: "recent", source: "push", result: "completed", summary: "新" },
+      now: recentAt,
+    });
+    assert.deepEqual(store.cleanupSubscriptions({ now: 100 + 7 * 86400000 }), {
+      subscriptions: 1,
+      notifications: 1,
+      messages: 1,
+    });
+    assert.equal(store.subscriptions.get("old"), null);
+    assert.ok(store.subscriptions.get("recent"));
+    assert.equal(store.notifications.getBySubscription("old"), null);
+    assert.ok(store.notifications.getBySubscription("recent"));
+    assert.equal(store.messages.get("mold"), null);
+    assert.ok(store.messages.get("mrecent"));
+  } finally {
+    store.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

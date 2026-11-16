@@ -327,6 +327,19 @@ test("自动接收会话创建时把命名上下文（Agent/会话/类型）传�
   });
 });
 
+test("删除订阅清理定时任务并删除记录，不存在时返回 not_found", async (t) => {
+  const { store, service, sched } = fixture(t);
+  const sub = (await service.subscribe(poll)).subscription;
+  assert.ok(sched.tasks.has(sub.schedule_task_id));
+  const result = await service.delete(sub.id);
+  assert.equal(result.ok, true);
+  assert.equal(store.subscriptions.get(sub.id), null);
+  assert.equal(sched.tasks.has(sub.schedule_task_id), false);
+  const missing = await service.delete("missing");
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, "not_found");
+});
+
 test("发送后订阅传入 baseline_snapshot 时不再读取快照，cursor=null 空历史基线保留", async (t) => {
   const { store, service, claude } = fixture(t);
   const result = await service.subscribe({

@@ -312,6 +312,15 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       }
       return result;
     },
+    // 删除单条订阅：先清理定时任务，再删除订阅及其关联通知与消息。
+    // 不删除 DSH 接收会话；删除后如有孤儿定时任务由对账收敛。
+    async delete(id: string): Promise<ChangeResult> {
+      const current = subs.get(id);
+      if (!current) return { ok: false, code: "not_found", message: "订阅不存在" };
+      await unscheduleQuietly(current);
+      store.deleteSubscription({ id });
+      return { ok: true, subscription: current };
+    },
     // 通过 Relay 查阅会话内容：顺延该会话所有订阅的有效期；会话已关闭时结束这些订阅。
     async inspect(agent: Agent, externalSessionId: string): Promise<Snapshot> {
       const snapshot = await adapters.get(agent).snapshot(externalSessionId);

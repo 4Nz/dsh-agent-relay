@@ -236,7 +236,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       const result = await call("list", {
         ...Object.fromEntries(Object.entries(filter).filter(([, v]) => v)),
         cursor,
-        limit: 30,
+        limit: 10,
       });
       if (version === revision.current) {
         setItems(result.items);
@@ -409,6 +409,39 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         ...(sub.type === "poll" && sub.check_interval_seconds ? { check_interval_seconds: sub.check_interval_seconds } : {}),
       });
       setNotice(value.schedule_ready ? "已重新订阅。" : "已重新订阅，但定时提醒尚未建立，后台将继续对账。");
+      setRefreshVersion((version) => version + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function removeSubscription(sub: any) {
+    setBusy(true);
+    setError("");
+    try {
+      await call("delete_subscription", { subscription_id: sub.id });
+      setNotice("订阅已删除。");
+      if (selected === sub.id) {
+        setSelected("");
+        setDrawer("");
+      }
+      setRefreshVersion((version) => version + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function cleanupOld() {
+    setBusy(true);
+    setError("");
+    try {
+      const value = await call("cleanup_subscriptions", {});
+      setNotice(
+        `已清理：删除订阅 ${value.subscriptions} 条、通知 ${value.notifications} 条、消息 ${value.messages} 条。`,
+      );
+      setCursor(null);
       setRefreshVersion((version) => version + 1);
     } catch (e) {
       setError((e as Error).message);
@@ -594,6 +627,22 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           },
           "重新订阅",
         ),
+      h(
+        "button",
+        {
+          disabled: busy,
+          title: "删除该订阅及其关联通知与消息",
+          onClick: () => {
+            if (
+              window.confirm(
+                `删除订阅「${sub.external_session_title ?? sub.external_session_id}」及其关联通知与消息？此操作不可恢复。`,
+              )
+            )
+              void removeSubscription(sub);
+          },
+        },
+        "删除",
+      ),
     );
   const renderRow = (sub: any) =>
     h(
@@ -1072,6 +1121,22 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           "button",
           { onClick: () => void refresh(), disabled: loading || busy },
           loading ? "加载中…" : "刷新",
+        ),
+        h(
+          "button",
+          {
+            onClick: () => {
+              if (
+                window.confirm(
+                  "删除所有创建超过 7 天的订阅数据（含关联通知与消息）？此操作不可恢复。",
+                )
+              )
+                void cleanupOld();
+            },
+            disabled: loading || busy,
+            title: "删除创建超过 7 天的订阅及其关联通知与消息",
+          },
+          "清理 7 天前",
         ),
       ),
       !loading && !error && !items.length

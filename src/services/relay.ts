@@ -44,6 +44,8 @@ export const endpoints = [
   "resume",
   "stop",
   "check",
+  "delete_subscription",
+  "cleanup_subscriptions",
 ] as const;
 export type Endpoint = (typeof endpoints)[number];
 function object(value: unknown): Record<string, unknown> {
@@ -476,6 +478,28 @@ export function createRelayService({
                 };
               value = result.subscription;
             }
+            break;
+          }
+          case "delete_subscription": {
+            const id = text(args.subscription_id, "subscription_id");
+            const result = await subscriptions.delete(id);
+            if (!result.ok)
+              return {
+                ok: false,
+                error: { code: result.code, message: result.message },
+              };
+            value = { deleted: true };
+            break;
+          }
+          case "cleanup_subscriptions": {
+            const retentionDays =
+              args.retention_days === undefined
+                ? 7
+                : integer(args.retention_days, "retention_days", 1, 3650);
+            value = store.cleanupSubscriptions({
+              now: Date.now(),
+              retention_days: retentionDays,
+            });
             break;
           }
           default:
