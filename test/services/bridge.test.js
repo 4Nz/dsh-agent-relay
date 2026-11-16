@@ -786,3 +786,149 @@ test("待人工批次版本落后时只确认自身事件，不改变当前关�
     assert.deepEqual(f.store.subscriptions.get(s.id), current);
   }
 });
+
+test("发送后关注复用自定义主题与暂停状态，不续期不重建", async (t) => {
+  const { createRelayService } = await import("../../lib/services/relay.js");
+  const f = fixture(t);
+  const sub = (
+    await f.bridge.subscribe({
+      ...input,
+      topic: "等审查结束",
+      check_interval_seconds: 300,
+    })
+  ).subscription;
+  await f.bridge.pause(sub.id);
+  f.adapter.capabilities = () => ({ snapshot: true, sendMessage: true });
+  f.adapter.sendMessage = async () => ({
+    status: "sent",
+    external_ref: "turn",
+  });
+  const before = f.store.subscriptions.get(sub.id);
+  const relay = createRelayService({
+    store: f.store,
+    bridge: f.bridge,
+    adapters: { get: () => f.adapter },
+    subscriptions: {
+      touch() {
+        throw Error("不得更新原关注生命周期");
+      },
+    },
+    notifications: { drain: async () => {} },
+    checks: {},
+    skillInstall: {},
+    listDshSessions: async () => [],
+  });
+  const sent = await relay.call(
+    "send",
+    {
+      agent: "claude",
+      external_session_id: "external",
+      content: "继续",
+      subscribe_after_send: true,
+    },
+    "other",
+  );
+  assert.equal(sent.value.message.status, "sent");
+  assert.equal(sent.value.subscription_error, undefined);
+  assert.equal(sent.value.subscription.id, sub.id);
+  assert.deepEqual(f.store.subscriptions.get(sub.id), before);
+});
+test("规划恢复批次保留原主题与原状态，旧关注清理后不替换为新主题", async (t) => {
+  const f = fixture(t);
+  f.setDelivery("failed");
+  const old = (
+    await f.bridge.subscribe({
+      ...input,
+      check_interval_seconds: undefined,
+      topic: "等待专项验收，每5分钟汇报",
+    })
+  ).subscription;
+  const batch = f.store.bridge.open(
+    f.store.bridge.route("claude", "external").id,
+  );
+  f.setTime(301001);
+  await f.bridge.reconcile();
+  const recovered = f.bridge.batch(batch.id);
+  assert.equal(recovered.topic, old.topic);
+  assert.equal(recovered.planning_state, "pending");
+  assert.equal(recovered.subscription_status, "active");
+  assert.equal(recovered.selected_interval_seconds, null);
+  assert.equal(recovered.hard_expires_at, old.hard_expires_at);
+  await f.bridge.stop(old.id);
+  f.store.deleteSubscription({ id: old.id });
+  await f.bridge.subscribe({ ...input, topic: "新目标" });
+  assert.equal(f.bridge.batch(batch.id).topic, old.topic);
+});
+test("纯push路由通过真实RPC注册可管理，清理关注后仍可列出并解析通知目标", async (t) => {
+  const { createRelayService } = await import("../../lib/services/relay.js"),
+    { registerRelayApi } = await import("../../lib/api.js");
+  const f = fixture(t);
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "route-only",
+    summary: "进展",
+    result: "completed",
+  });
+  const relay = createRelayService({
+    store: f.store,
+    bridge: f.bridge,
+    adapters: { get: () => f.adapter },
+    subscriptions: {},
+    checks: {},
+    notifications: { drain: async () => {} },
+    skillInstall: {},
+    listDshSessions: async () => [],
+  });
+  const registered = [];
+  registerRelayApi(
+    {
+      fetch: {
+        register: (r) => {
+          registered.push(r);
+          return () => {};
+        },
+      },
+    },
+    relay,
+  );
+  async function rpc(endpoint, payload = {}) {
+    const route = registered.find(
+      (r) => r.path === `/api/agent-relay/${endpoint}`,
+    );
+    assert.ok(route, endpoint);
+    const res = await route.fetch(
+      new Request(`http://localhost/api/agent-relay/${endpoint}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "client-request",
+          rpcId: "test",
+          method: `agent-relay/${endpoint}`,
+          payload,
+        }),
+      }),
+    );
+    return (await res.json()).result;
+  }
+  const routes = await rpc("routes");
+  assert.equal(routes.value.items.length, 1);
+  const route = routes.value.items[0];
+  assert.equal(route.kind, "route");
+  assert.equal(route.subscription, null);
+  assert.equal(route.dsh_session_id, "dsh");
+  assert.equal((await rpc("list")).value.items.length, 0);
+  const notice = (await rpc("notify_poll")).value[0];
+  assert.equal(notice.route_id, route.id);
+  assert.equal(notice.dsh_session_id, "dsh");
+  await rpc("mute", {
+    agent: route.agent,
+    external_session_id: route.external_session_id,
+    muted: true,
+  });
+  assert.equal((await rpc("routes")).value.items[0].muted, true);
+  const sub = (await f.bridge.subscribe(input)).subscription;
+  await f.bridge.stop(sub.id);
+  f.store.deleteSubscription({ id: sub.id });
+  assert.equal((await rpc("routes")).value.items[0].id, route.id);
+});

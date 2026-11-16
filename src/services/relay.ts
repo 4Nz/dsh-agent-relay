@@ -22,6 +22,7 @@ export type RelayResponse =
   | { ok: true; value: unknown }
   | { ok: false; error: { code: string; message: string } };
 export const endpoints = [
+  "routes",
   "batch",
   "events",
   "current",
@@ -121,6 +122,18 @@ export function createRelayService({
         const args = object(payload);
         let value: unknown;
         switch (endpoint) {
+          case "routes": {
+            if (!bridge) throw new Error("桥梁未就绪");
+            value = bridge.routes(
+              args.cursor === undefined || args.cursor === null
+                ? ""
+                : text(args.cursor, "cursor"),
+              args.limit === undefined
+                ? 20
+                : integer(args.limit, "limit", 1, 100),
+            );
+            break;
+          }
           case "batch": {
             if (!bridge) throw new Error("桥梁未就绪");
             value = bridge.batch(text(args.batch_id, "batch_id"));
@@ -543,23 +556,29 @@ export function createRelayService({
               let createdSubscription = null;
               let subscriptionError: string | null = null;
               if (saved.status === "sent" || saved.status === "queued") {
-                subscriptions.touch(selected, external);
+                if (!bridge) subscriptions.touch(selected, external);
                 if (subscribeAfterSend) {
                   try {
-                    const subscribed = await (
-                      bridge ?? subscriptions
-                    ).subscribe({
-                      type: "poll",
-                      agent: selected,
-                      external_session_id: external,
-                      dsh_session_id: receiveSession,
-                      ...(baselineSnapshot
-                        ? { baseline_snapshot: baselineSnapshot }
-                        : {}),
-                      ...(selected === "codex" && saved.external_ref
-                        ? { target_turn_id: saved.external_ref }
-                        : {}),
-                    });
+                    const existingRoute = bridge
+                      ? store.bridge.route(selected, external)
+                      : null;
+                    const existingWatch = existingRoute
+                      ? store.bridge.live(existingRoute)
+                      : null;
+                    const subscribed = existingWatch
+                      ? { ok: true as const, subscription: existingWatch }
+                      : await (bridge ?? subscriptions).subscribe({
+                          type: "poll",
+                          agent: selected,
+                          external_session_id: external,
+                          dsh_session_id: receiveSession,
+                          ...(baselineSnapshot
+                            ? { baseline_snapshot: baselineSnapshot }
+                            : {}),
+                          ...(selected === "codex" && saved.external_ref
+                            ? { target_turn_id: saved.external_ref }
+                            : {}),
+                        });
                     if (subscribed.ok)
                       createdSubscription = bridge
                         ? bridge.view(subscribed.subscription)

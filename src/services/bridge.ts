@@ -180,7 +180,17 @@ export function createBridgeService({
       throw new TypeError("检查间隔必须为 60～86400 秒");
   }
   function facts(batch: BridgeBatch) {
+    const context = batch.watch_context
+      ? JSON.parse(batch.watch_context)
+      : {
+          topic: null,
+          subscription_status: null,
+          planning_state: null,
+          selected_interval_seconds: null,
+          hard_expires_at: null,
+        };
     return {
+      ...context,
       batch_id: batch.id,
       decision_version: batch.version,
       subscription_id: batch.subscription_id,
@@ -281,6 +291,20 @@ export function createBridgeService({
   }
   const service = {
     view,
+    routes(after: string, limit: number) {
+      const page = db.routePage(after, limit);
+      return {
+        ...page,
+        items: page.items.map((route) => ({
+          ...route,
+          kind: "route" as const,
+          muted: !!route.muted,
+          subscription: db.live(route) ? view(db.live(route)!) : null,
+          pending_events: db.pending(route.id).length,
+          decision_batch: db.open(route.id),
+        })),
+      };
+    },
     async subscribe(
       input: SubscribeInput & { topic?: string; request_planning?: boolean },
     ): Promise<SubscribeResult> {

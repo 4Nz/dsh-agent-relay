@@ -39,7 +39,7 @@ description: 用户需要在 DSH 中发现、查阅、持续关注 Claude 或 Co
 
 push 与历史进展进入同一路由。push 取消下一次定时等待，DSH 忙或状态未知时只落库排队，明确空闲后合批处理；不打断正在进行的回答。处理后仍须 `relay_decide` 判断继续或结束。
 
-收到恢复提醒或需要核对批次时调用 `relay_batch({batch_id})`，只取原事实，不读取外部历史、不创建关注；使用返回版本确认。`delivered` 只是送达，不是已处理；`unknown` 必须先核对，不能盲目重发。`needs_attention` 为待人工处理，`unknown_attention` 为投递未知待人工核对；事实仍保留，不能宣称完成。`muted` 不展示 push，须用户明确解除屏蔽后再处理。
+收到恢复提醒或需要核对批次时调用 `relay_batch({batch_id})`，只取原事实及原关注上下文（topic、subscription_status、planning_state、selected_interval_seconds、hard_expires_at），不读取外部历史、不创建关注；使用返回版本确认。恢复的主题来自原批次，不能换成当前新关注的主题；主题为空时先澄清，不猜测用户原意。`delivered` 只是送达，不是已处理；`unknown` 必须先核对，不能盲目重发。`needs_attention` 为待人工处理，`unknown_attention` 为投递未知待人工核对；事实仍保留，不能宣称完成。`muted` 不展示 push，须用户明确解除屏蔽后再处理。
 
 `relay_stop` 仅结束关注并删除定时提醒；`relay_mute({agent,external_session_id,muted:true})` 单独屏蔽 push，事件保留。明确调用 `relay_resume` 或重新订阅会解除屏蔽；active 关注只需解除屏蔽时调用 `relay_mute` 并传 `muted:false`。关注结束或到期后 push 仍去原 DSH 会话，不自动启动关注；仅有 push 的恢复提醒也不能被当成新关注。
 

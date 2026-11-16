@@ -22,6 +22,7 @@ export interface BridgeEvent {
   processed_at: number | null;
 }
 export interface BridgeBatch {
+  watch_context: string | null;
   recovery_schedule_id: string | null;
   suspended_state: string | null;
   dsh_session_id: string | null;
@@ -58,6 +59,15 @@ export function createBridgeStore(db: DatabaseSync) {
     );
   return {
     route,
+    routePage(after: string, limit: number) {
+      const rows = db
+        .prepare("SELECT * FROM relay_bridge WHERE id>? ORDER BY id LIMIT ?")
+        .all(after, limit + 1) as unknown as Bridge[];
+      return {
+        items: rows.slice(0, limit),
+        next_cursor: rows.length > limit ? rows[limit - 1]!.id : null,
+      };
+    },
     eventPage(bridgeId: string, after: number, limit: number) {
       const rows = db
         .prepare(
@@ -77,9 +87,9 @@ export function createBridgeStore(db: DatabaseSync) {
       const rows = db
         .prepare(
           `SELECT * FROM (
-        SELECT id,subscription_id,source,result,summary,delivery_status,created_at FROM relay_notification
+        SELECT n.id,n.subscription_id,n.source,n.result,n.summary,n.delivery_status,n.created_at,r.id route_id,r.dsh_session_id,r.agent,r.external_session_id FROM relay_notification n LEFT JOIN relay_subscription s ON s.id=n.subscription_id LEFT JOIN relay_bridge r ON r.agent=s.agent AND r.external_session_id=s.external_session_id
         UNION ALL
-        SELECT b.id,b.subscription_id,'bridge' source,'progress' result,(SELECT substr(group_concat(body,char(10)),1,1000) FROM relay_bridge_event e WHERE e.batch_id=b.id) summary,b.state delivery_status,b.created_at FROM relay_bridge_batch b
+        SELECT b.id,b.subscription_id,'bridge' source,'progress' result,(SELECT substr(group_concat(body,char(10)),1,1000) FROM relay_bridge_event e WHERE e.batch_id=b.id) summary,b.state delivery_status,b.created_at,r.id route_id,r.dsh_session_id,r.agent,r.external_session_id FROM relay_bridge_batch b JOIN relay_bridge r ON r.id=b.bridge_id
       ) WHERE created_at>? OR (created_at=? AND ? IS NOT NULL AND id>?) ORDER BY created_at,id LIMIT ?`,
         )
         .all(
@@ -91,6 +101,10 @@ export function createBridgeStore(db: DatabaseSync) {
         ) as unknown as {
         id: string;
         subscription_id: string | null;
+        route_id: string | null;
+        dsh_session_id: string | null;
+        agent: Agent | null;
+        external_session_id: string | null;
         source: string;
         result: string;
         summary: string | null;
@@ -263,6 +277,19 @@ export function createBridgeStore(db: DatabaseSync) {
         db.prepare(
           "INSERT INTO relay_bridge_batch(id,bridge_id,subscription_id,dsh_session_id,version,state,created_at) VALUES(?,?,?,?,?,\u0027pending\u0027,?)",
         ).run(id, b.id, sub?.id ?? null, b.dsh_session_id, version, now);
+        if (sub)
+          db.prepare(
+            "UPDATE relay_bridge_batch SET watch_context=? WHERE id=?",
+          ).run(
+            JSON.stringify({
+              topic: sub.topic,
+              subscription_status: sub.status,
+              planning_state: sub.planning_state,
+              selected_interval_seconds: sub.selected_interval_seconds,
+              hard_expires_at: sub.hard_expires_at,
+            }),
+            id,
+          );
         if (sub)
           db.prepare(
             "UPDATE relay_subscription SET decision_version=?,planning_state=CASE WHEN selected_interval_seconds IS NULL THEN \u0027pending\u0027 ELSE \u0027deciding\u0027 END WHERE id=?",

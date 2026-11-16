@@ -123,4 +123,6 @@ CREATE UNIQUE INDEX subscription_one_live_bridge ON relay_subscription(agent,ext
 `,
   `ALTER TABLE relay_bridge_batch ADD COLUMN recovery_schedule_id TEXT;
 ALTER TABLE relay_bridge_batch ADD COLUMN suspended_state TEXT;`,
+  `ALTER TABLE relay_bridge_batch ADD COLUMN watch_context TEXT;
+UPDATE relay_bridge_batch SET watch_context=(SELECT json_object('topic',s.topic,'subscription_status',s.status,'planning_state',s.planning_state,'selected_interval_seconds',s.selected_interval_seconds,'hard_expires_at',s.hard_expires_at) FROM relay_subscription s WHERE s.id=relay_bridge_batch.subscription_id);`,
 ];

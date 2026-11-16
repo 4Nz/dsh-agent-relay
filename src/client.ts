@@ -193,6 +193,7 @@ function Drawer({ title, onClose, children }: any) {
 }
 
 export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
+  const [routes,setRoutes]=useState<any[]>([]),[routeCursor,setRouteCursor]=useState<string|null>(null),[routeNext,setRouteNext]=useState<string|null>(null),[routeError,setRouteError]=useState("");
   const [items, setItems] = useState<any[]>([]),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
@@ -233,7 +234,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   // 查阅代次：关闭/切换/卸载时递增，过期响应不得更新界面。
   const inspectGen = useRef(0);
   const creating = drawer === "create";
-  const current = items.find((s) => s.id === selected);
+  const current = drawer==="route"?routes.find(route=>route.id===selected):items.find((s) => s.id === selected);
   const close = () => {
     inspectGen.current++;
     eventsGen.current++;
@@ -266,6 +267,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       if (version === revision.current) setLoading(false);
     }
   }
+  useEffect(()=>{let live=true;void call("routes",{cursor:routeCursor,limit:20}).then(page=>{if(live){setRoutes(page?.items??[]);setRouteNext(page?.next_cursor??null);setRouteError("");}}).catch(e=>{if(live)setRouteError(e.message);});return()=>{live=false;};},[routeCursor,refreshVersion]);
   useEffect(() => {
     void refresh();
     return () => {
@@ -339,14 +341,14 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   }, [drawer, current?.id]);
   useEffect(() => {
     setEvents([]); setEventNext(null); setRecoveredBatch(null); setEventsError("");
-    if (drawer === "detail" && current) void loadEvents(current, 0);
+    if ((drawer === "detail" || drawer === "route") && current) void loadEvents(current, 0);
     return () => { eventsGen.current++; };
   }, [drawer, current?.id]);
   async function loadEvents(sub: any, after: number) {
     const gen = ++eventsGen.current;
     setEventsLoading(true); setEventsError("");
     try {
-      const value = await call("events", { subscription_id: sub.id, after_sequence: after, limit: 20 });
+      const value = await call("events", { ...(sub.kind==="route"?{agent:sub.agent,external_session_id:sub.external_session_id}:{subscription_id: sub.id}), after_sequence: after, limit: 20 });
       if (gen === eventsGen.current) { setEvents((previous) => after ? [...previous, ...value.items] : value.items); setEventNext(value.next_sequence); }
     } catch (e) { if (gen === eventsGen.current) setEventsError((e as Error).message); }
     finally { if (gen === eventsGen.current) setEventsLoading(false); }
@@ -487,6 +489,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setBusy(true); setError("");
     try {
       await call("mute", { agent: sub.agent, external_session_id: sub.external_session_id, muted: !sub.muted });
+      setRoutes(previous=>previous.map(route=>route.agent===sub.agent&&route.external_session_id===sub.external_session_id?{...route,muted:!sub.muted}:route));
       setNotice(sub.muted ? "已解除 push 屏蔽，原批次按原状态恢复。" : "已屏蔽 push，保留事件；历史关注仍继续。");
       setRefreshVersion((v) => v + 1);
     } catch (e) { setError((e as Error).message); }
@@ -877,6 +880,31 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         ),
       ),
     );
+  const eventSection=(sub:any)=>h("section", { "aria-label": "事件与批次" },
+        h("h2", null, "事件与批次"),
+        h("p", { className: "muted small" }, "忙时事件排队合批；已送达仍需 DSH 判断。未知投递先核对，不盲目重发。"),
+        eventsError && h("p", { role: "alert", className: "error" }, eventsError),
+        ...events.map((event) => h("article", { key: event.id, className: "notice small" },
+          h("p", null, `#${event.seq} · ${event.kind} · ${label(event.delivery_state)} · ${date(event.created_at)}`),
+          h("details", null, h("summary", null, "事件标识与恢复信息"), h("p", { className: "muted" }, `事件 ${event.id} · 批次 ${event.batch_id ?? "待合批"} · 版本 ${event.decision_version ?? "—"}`)),
+          h("p", { style: { whiteSpace: "pre-wrap" } }, event.body),
+          event.batch_id && h("button", { disabled: eventsLoading, onClick: () => void readBatch(event.batch_id) }, "读取原批次"))),
+        eventsLoading && h("p", null, "正在读取事件…"),
+        !eventsLoading && !events.length && !eventsError && h("p", { className: "muted" }, "暂无事件"),
+        eventNext !== null && h("button", { disabled: eventsLoading, onClick: () => void loadEvents(sub, eventNext) }, "更多事件"),
+        recoveredBatch && h("div", { className: "notice" },
+          h("p", null, `原批次：${label(recoveredBatch.status)}（读取事实不等于确认处理）`),
+          recoveredBatch.batch_id && h("details", null, h("summary", null, "DSH 恢复指令"), h("p", null, `请调用 relay_batch({batch_id:"${recoveredBatch.batch_id}"}) 读取原事实，按原主题判断后用 relay_decide 确认，decision_version:${recoveredBatch.decision_version}。`)),
+          ...(recoveredBatch.events ?? []).map((event: any) => h("p", { key: event.id, style: { whiteSpace: "pre-wrap" } }, event.body)),
+          h("p", { className: "muted small" }, "打开原接收会话，由 DSH 使用 relay_batch 读取，再以原 batch_id 与 decision_version 调用 relay_decide。屏蔽中的批次请先解除屏蔽；待核对状态不能视为已处理。")));
+  const routeControls=(route:any)=>h("div",{className:"row"},
+    route.dsh_session_id&&h("button",{onClick:()=>openSession(route.dsh_session_id)},"打开原会话"),
+    h("button",{disabled:busy,onClick:()=>void muteRoute(route)},route.muted?"解除屏蔽":"屏蔽 push"),
+    !route.subscription&&h("button",{disabled:busy,onClick:()=>void resubscribe({...route,topic:"定期汇报新的进展或回复",max_consecutive_failures:3})},"开始关注"));
+  const routeDrawer=(route:any)=>h(Drawer,{title:"会话路由",onClose:close},
+    h("h2",null,route.external_session_id),h("p",{className:"muted"},`${agentName(route.agent)} · ${route.subscription?"已有关注":"仅接收 push，未开启关注"}`),
+    h("p",null,"开始关注后最长 24 小时，检查频率由 DSH 按用户意图选择。停止关注或清理历史不删除此接收关系。"),
+    routeControls(route),eventSection(route));
   const detailDrawer = (sub: any) =>
     h(
       Drawer,
@@ -952,23 +980,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         sub.type === "poll" &&
         sub.planning_state === "ready" && !sub.schedule_task_id &&
         h("p", { className: "warn" }, "已选频率，宿主提醒尚未就绪，等待对账。"),
-      h("section", { "aria-label": "事件与批次" },
-        h("h2", null, "事件与批次"),
-        h("p", { className: "muted small" }, "忙时事件排队合批；已送达仍需 DSH 判断。未知投递先核对，不盲目重发。"),
-        eventsError && h("p", { role: "alert", className: "error" }, eventsError),
-        ...events.map((event) => h("article", { key: event.id, className: "notice small" },
-          h("p", null, `#${event.seq} · ${event.kind} · ${label(event.delivery_state)} · ${date(event.created_at)}`),
-          h("details", null, h("summary", null, "事件标识与恢复信息"), h("p", { className: "muted" }, `事件 ${event.id} · 批次 ${event.batch_id ?? "待合批"} · 版本 ${event.decision_version ?? "—"}`)),
-          h("p", { style: { whiteSpace: "pre-wrap" } }, event.body),
-          event.batch_id && h("button", { disabled: eventsLoading, onClick: () => void readBatch(event.batch_id) }, "读取原批次"))),
-        eventsLoading && h("p", null, "正在读取事件…"),
-        !eventsLoading && !events.length && !eventsError && h("p", { className: "muted" }, "暂无事件"),
-        eventNext !== null && h("button", { disabled: eventsLoading, onClick: () => void loadEvents(sub, eventNext) }, "更多事件"),
-        recoveredBatch && h("div", { className: "notice" },
-          h("p", null, `原批次：${label(recoveredBatch.status)}（读取事实不等于确认处理）`),
-          recoveredBatch.batch_id && h("details", null, h("summary", null, "DSH 恢复指令"), h("p", null, `请调用 relay_batch({batch_id:"${recoveredBatch.batch_id}"}) 读取原事实，按原主题判断后用 relay_decide 确认，decision_version:${recoveredBatch.decision_version}。`)),
-          ...(recoveredBatch.events ?? []).map((event: any) => h("p", { key: event.id, style: { whiteSpace: "pre-wrap" } }, event.body)),
-          h("p", { className: "muted small" }, "打开原接收会话，由 DSH 使用 relay_batch 读取，再以原 batch_id 与 decision_version 调用 relay_decide。屏蔽中的批次请先解除屏蔽；待核对状态不能视为已处理。"))),
+      eventSection(sub),
       sub.agent === "codex" &&
         h(
           "p",
@@ -1281,6 +1293,16 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             ),
         ),
     ),
+    h("section",{className:"card","aria-label":"会话路由管理"},
+      h("h2",null,"会话路由"),h("p",{className:"muted small"},"独立管理外部会话与接收会话的关系。仅接收 push 的会话也会保留在这里。"),
+      routeError&&h("p",{role:"alert",className:"error"},routeError),
+      h("button",{disabled:busy,onClick:()=>setRefreshVersion(v=>v+1)},"刷新路由"),
+      ...routes.map(route=>h("article",{className:"notice",key:route.id},
+        h("button",{className:"link",onClick:()=>{setSelected(route.id);setDrawer("route");}},route.external_session_id),
+        h("p",{className:"muted small"},`${agentName(route.agent)} · ${route.subscription?label(route.subscription.status):"仅接收 push，未开启关注"} · ${route.muted?"已屏蔽 push":"接收 push"} · ${route.pending_events??0} 条待处理事件`),routeControls(route))),
+      !routes.length&&!routeError&&h("p",{className:"muted"},"暂无会话路由"),
+      routeCursor&&h("button",{onClick:()=>setRouteCursor(null)},"路由首页"),routeNext&&h("button",{onClick:()=>setRouteCursor(routeNext)},"下一页路由")),
+    drawer==="route"&&current&&routeDrawer(current),
     conflict && h(Drawer, { title: conflict.paused ? "原关注已暂停" : "已有关注主题", onClose: conflict.paused ? close : () => setConflict(null) },
       h("p", null, `当前关注：${conflict.current.topic}`),
       h("p", { className: "muted" }, conflict.paused
@@ -1302,7 +1324,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
 interface NotifyChannel {
   available(): boolean;
   request(): Promise<boolean>;
-  notify(title: string, body: string): void;
+  notify(title: string, body: string, open?:()=>void): void;
 }
 
 const browserNotifyChannel: NotifyChannel = {
@@ -1317,9 +1339,10 @@ const browserNotifyChannel: NotifyChannel = {
       return false;
     }
   },
-  notify(title: string, body: string) {
+  notify(title: string, body: string, open?:()=>void) {
     try {
-      new Notification(title, { body });
+      const notification=new Notification(title, { body });
+      if(open)notification.onclick=()=>open();
     } catch {
       /* 通知弹窗失败时静默，不影响事件投递 */
     }
@@ -1336,7 +1359,7 @@ function notifyText(item: any) {
 }
 
 // 常驻轮询：侧边栏图标挂载期间，定时拉取 notify_poll 的新增通知并弹浏览器通知。
-function useNotifyPolling(rpc: Rpc | undefined) {
+function useNotifyPolling(rpc: Rpc | undefined, openSession?: (id:string)=>void) {
   useEffect(() => {
     if (!rpc || !browserNotifyChannel.available()) return;
     const conn = rpc;
@@ -1360,7 +1383,7 @@ function useNotifyPolling(rpc: Rpc | undefined) {
           if (stopped || !result.ok || !Array.isArray(result.value) || !result.value.length) return;
           const items = result.value;
           if (!initial) for (const item of items) {
-            if (item.delivery_status !== "muted") browserNotifyChannel.notify("Agent Relay 通知", notifyText(item));
+            if (item.delivery_status !== "muted") browserNotifyChannel.notify("Agent Relay 通知", notifyText(item),item.dsh_session_id&&openSession?()=>openSession(item.dsh_session_id):undefined);
           }
           const last = items[items.length - 1];
           const next = last.cursor ?? { created_at: last.created_at, id: last.id };
@@ -1378,11 +1401,11 @@ function useNotifyPolling(rpc: Rpc | undefined) {
       stopped = true;
       clearInterval(timer);
     };
-  }, [rpc]);
+  }, [rpc,openSession]);
 }
 
-function AgentRelayIcon({ rpc }: { rpc: Rpc }) {
-  useNotifyPolling(rpc);
+function AgentRelayIcon({ rpc,openSession }: { rpc: Rpc;openSession?:(id:string)=>void }) {
+  useNotifyPolling(rpc,openSession);
   return h(
     "span",
     {
@@ -1457,7 +1480,7 @@ export function apply(ctx: RelayClientContext): void {
             id: PANEL_ID,
             order: 50,
             label: () => "任务跟踪",
-            inject: () => ({ rpc: ctx.connection.rpc }),
+            inject: () => ({ rpc: ctx.connection.rpc,openSession:(id:string)=>ctx.uiWorkspace.openSession(id) }),
           },
           AgentRelayIcon,
         );
