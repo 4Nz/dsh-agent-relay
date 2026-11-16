@@ -24,9 +24,17 @@ const SETTLE_GRACE_MS = 1000;
 
 // 不经过 shell，参数原样作为 argv 传入。
 export function createRunner(bin = "claude"): ClaudeRunner {
+  return createResolvedRunner((args) => ({ command: bin, args }));
+}
+
+// 由命令解析器决定实际可执行与参数，供 codex 等需要解析启动脚本（Windows .cmd/.exe）的场景复用。
+export function createResolvedRunner(
+  resolveCommand: (args: string[]) => { command: string; args: string[] },
+): ClaudeRunner {
   return (args, { cwd, input, timeoutMs } = {}) =>
     new Promise((resolve, reject) => {
-      const child = spawn(bin, args, {
+      const launch = resolveCommand(args);
+      const child = spawn(launch.command, launch.args, {
         cwd,
         stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       });

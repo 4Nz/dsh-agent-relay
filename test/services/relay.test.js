@@ -68,27 +68,20 @@ function setup(t, options = {}) {
       catalog: async () => [],
     },
   });
-  const credentials = {
-    get: () => ({ configured: true, digest: "digest", created_at: 1 }),
-    generate: () => ({ token: "token", digest: "digest", created_at: 2 }),
-    reset: () => ({ token: "new-token", digest: "new-digest", created_at: 3 }),
-    reveal: () => ({ token: "current-token" }),
-  };
   const relay = createRelayService({
     store,
     adapters,
     subscriptions,
     checks: { check: async () => ({ status: "not_due" }) },
     notifications: { drain: async () => {} },
-    credentials,
     skillInstall: {
       preview: async (agent) => ({ agent, skill: "external-agent-notification", target_dir: `/tmp/${agent}/skills`, prompt: "请安装", supported: true, reason: null }),
       install: async (agent) => ({ supported: true, prompt: "请安装", result: { status: "completed", output: "已安装" } }),
     },
     setup: {
-      check: async (agent) => ({ agent, overall: "ok", claude_version: null, items: [], next_steps: [] }),
-      install: async (agent) => ({ agent, overall: "ok", claude_version: null, items: [], next_steps: [] }),
-      uninstall: async () => ({ agent: "claude", overall: "ok", claude_version: null, items: [], next_steps: [] }),
+      check: async (agent) => ({ agent, overall: "ok", version: null, items: [], next_steps: [] }),
+      install: async (agent) => ({ agent, overall: "ok", version: null, items: [], next_steps: [] }),
+      uninstall: async () => ({ agent: "claude", overall: "ok", version: null, items: [], next_steps: [] }),
       probeStart: () => ({ status: "idle" }),
       probeStatus: () => ({ status: "idle" }),
       requireReady: async (agent) => {
@@ -110,7 +103,6 @@ function setup(t, options = {}) {
     setSendResult(result) {
       nextSendResult = result;
     },
-    credentials,
     adapters,
   };
 }
@@ -257,14 +249,6 @@ test("消息 RPC 按 Agent 和外部会话分页查询", async (t) => {
   assert.equal(result.ok, true);
   assert.equal(result.value.items.length, 1);
   assert.equal(result.value.items[0].content, "查询我");
-});
-
-test("凭证 RPC 只通过服务层暴露生成、查询和重置", async (t) => {
-  const { relay } = setup(t);
-  assert.deepEqual((await relay.call("credential_get", {})).value.configured, true);
-  assert.equal((await relay.call("credential_generate", {})).value.token, "token");
-  assert.equal((await relay.call("credential_reset", {})).value.token, "new-token");
-  assert.equal((await relay.call("credential_reveal", {})).value.token, "current-token");
 });
 
 test("已注册的 Skill 预览和安装 RPC 必须实际分发到服务", async(t)=>{

@@ -217,6 +217,30 @@ test("对账：补建缺失的定时任务，删除孤儿任务，不碰其他�
   assert.deepEqual(await service.reconcile(), { created: 0, deleted: 0, errors: [] });
 });
 
+test("主动通知即使有接收会话也不建定时任务，对账清掉历史遗留任务", async (t) => {
+  const { store, sched, service } = fixture(t);
+  const push = (await service.subscribe({ ...poll, type: "push" })).subscription;
+  assert.equal(push.type, "push");
+  assert.equal(push.schedule_task_id, null);
+  assert.equal(sched.tasks.size, 0);
+  // 模拟旧版本遗留：push 订阅上挂着 v2 定时任务。
+  sched.tasks.set("legacy", {
+    id: "legacy",
+    sessionId: "dsh-1",
+    prompt: v2Marker(push.id),
+    status: "active",
+  });
+  store.subscriptions.update({
+    id: push.id,
+    expected_status: "active",
+    patch: { schedule_task_id: "legacy" },
+  });
+  const report = await service.reconcile();
+  assert.deepEqual({ created: report.created, deleted: report.deleted }, { created: 0, deleted: 1 });
+  assert.equal(sched.tasks.has("legacy"), false);
+  assert.equal(store.subscriptions.get(push.id).schedule_task_id, null);
+});
+
 test("历史清理：启动时执行一次，按间隔重复，出错不中断", async () => {
   const calls = [];
   let fail = true;

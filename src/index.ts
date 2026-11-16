@@ -22,13 +22,14 @@ import { createDshSessions } from "./services/dsh-sessions.js";
 import { acquireRuntimeLock } from "./services/lock.js";
 import { startRelayRuntime } from "./services/runtime.js";
 import { registerRelayApi, type RelayConnection } from "./api.js";
-import { createCredentialService } from "./services/credentials.js";
+import { createChannelCredentialService, createNotificationCredentialService } from "./services/credentials.js";
 import { createSkillInstallService } from "./services/skill-install.js";
 import { createPushHandler, createPushServer } from "./services/push.js";
 import { createClaudeChannelService } from "./services/claude-channel.js";
 import { createChannelRoutes } from "./services/channel-http.js";
 import { createClaudeAgentList } from "./adapters/claude/agents.js";
-import { createRunner } from "./adapters/claude/runner.js";
+import { createRunner, createResolvedRunner } from "./adapters/claude/runner.js";
+import { resolveCodexCommand } from "./adapters/codex/cli.js";
 import { createSetupService } from "./services/setup.js";
 import { randomUUID } from "node:crypto";
 import { PLUGIN_VERSION } from "./version.js";
@@ -71,10 +72,11 @@ export function apply(ctx: Context): void {
   const host = ctx as unknown as RelayHost;
   const dataDir = join(resolveDshHome(), "agent-relay");
   const relayDir = join(dataDir, "conversations");
-  const credentials = createCredentialService({ dataDir, clientConfig: {
-    path: join(dataDir, "notification-client.json"),
+  // 通知凭证：明文单文件，随前置安装接入自动生成；外部 Agent 发送脚本直接读取。
+  const notificationCredentials = createNotificationCredentialService({
+    file: join(dataDir, "notification-client.json"),
     endpoint: `http://127.0.0.1:${Number(process.env.DSH_AGENT_RELAY_PORT ?? 37421)}/api/agent-relay/notifications`,
-  } });
+  });
   const releaseLock = acquireRuntimeLock(dataDir);
   let store: ReturnType<typeof openRelayStore>;
   try {
@@ -85,8 +87,9 @@ export function apply(ctx: Context): void {
   }
   const codex = createCodexAdapter({ bindings: store.codexSessions });
   // Claude channel：独立凭证，明文由前置安装接入写入 Claude 侧供 channel server 读取。
-  const channelCredentials = createCredentialService({ dataDir, name: "claude-channel-credential.json" });
+  const channelCredentials = createChannelCredentialService({ dataDir });
   const claudeRunner = createRunner();
+  const codexRunner = createResolvedRunner((args) => resolveCodexCommand({ cliArgs: args }));
   const listClaudeAgents = createClaudeAgentList(claudeRunner);
   const channel = createClaudeChannelService({
     store,
@@ -114,10 +117,11 @@ export function apply(ctx: Context): void {
   const skillInstall = createSkillInstallService({ adapters });
   const setup = createSetupService({
     run: claudeRunner,
+    codexRunner,
     channel,
     listAgents: listClaudeAgents,
     channelCredentials,
-    skillInstall,
+    notificationCredentials,
     log: (text) => ctx.logger.info("[agent-relay] setup: %s", text),
   });
   const createReceiveSession = () => createRelayReceiveSession(host, relayDir);
@@ -128,7 +132,6 @@ export function apply(ctx: Context): void {
     subscriptions,
     checks,
     notifications,
-    credentials,
     skillInstall,
     createDshSession: createReceiveSession,
     listDshSessions: () => dshSessions.list(),
@@ -171,7 +174,7 @@ export function apply(ctx: Context): void {
   let stopApi = () => {};
   let stopCleanup = () => {};
   const pushHandler = createPushHandler({
-    credentials,
+    credentials: notificationCredentials,
     store,
     createSubscription: async (input) => subscriptions.createPush(input),
     createSession: createReceiveSession,

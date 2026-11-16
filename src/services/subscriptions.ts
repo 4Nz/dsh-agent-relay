@@ -68,6 +68,9 @@ export function createSubscriptionService({
     };
   }
   async function schedule(sub: Subscription) {
+    // 主动通知（push）只等外部 Agent 推送结果，不轮询外部会话，也不建定时任务；
+    // 最长存活由 runtime 每轮对账的到期扫描收敛。
+    if (sub.type !== "poll") return null;
     if (!sub.dsh_session_id) return null;
     return scheduler.create({
       sessionId: sub.dsh_session_id,
@@ -325,6 +328,12 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       const wanted = new Set<string>();
       for (const sub of [...unfinished()]) {
         if (!sub.dsh_session_id) continue;
+        // 主动通知不需要定时任务：清掉历史遗留的任务引用，让下方孤儿循环删除任务本身。
+        if (sub.type !== "poll") {
+          if (sub.schedule_task_id)
+            subs.update({ id: sub.id, expected_status: sub.status, patch: { schedule_task_id: null, updated_at: now() } });
+          continue;
+        }
         const existing = sub.schedule_task_id ? live.get(sub.schedule_task_id) : undefined;
         if (existing && existing.sessionId === sub.dsh_session_id && parseV2Marker(existing.prompt) === sub.id) {
           wanted.add(existing.id);

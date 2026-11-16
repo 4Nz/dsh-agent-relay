@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createCredentialService } from "../../lib/services/credentials.js";
+import { join, dirname } from "node:path";
+import { createChannelCredentialService, createNotificationCredentialService } from "../../lib/services/credentials.js";
 
 function variableBytes() {
   let n = 0;
@@ -14,85 +14,71 @@ function variableBytes() {
   };
 }
 
-test("共享凭证只保存摘要，生成后可校验，明文不落盘", () => {
-  const dir = mkdtempSync(join(tmpdir(), "relay-credentials-"));
+test("channel 凭证只保存摘要，reset 后可校验，明文不落盘", () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-channel-credential-"));
   try {
-    const service = createCredentialService({ dataDir: dir, randomBytes: variableBytes() });
-    assert.equal(service.get().configured, false);
-    const first = service.generate();
+    const service = createChannelCredentialService({ dataDir: dir, randomBytes: variableBytes() });
+    const first = service.reset();
     assert.equal(first.token.length, 43);
     assert.equal(service.verify(first.token), true);
     assert.equal(service.verify("错误凭证"), false);
-    const saved = readFileSync(join(dir, "notification-credential.json"), "utf8");
+    const saved = readFileSync(join(dir, "claude-channel-credential.json"), "utf8");
     assert.equal(saved.includes(first.token), false);
-    assert.equal(service.get().configured, true);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("通知客户端配置同步原文和端点，重置后重开读取最新凭证，查询不泄露", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "relay 凭证-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const clientConfig = { path: join(dir, "notification-client.json"), endpoint: "http://127.0.0.1:37429/api/agent-relay/notifications" };
-  const service = createCredentialService({ dataDir: dir, clientConfig, randomBytes: variableBytes() });
-  const first = service.generate();
-  assert.equal(JSON.parse(readFileSync(clientConfig.path)).token, first.token);
-  assert.equal(JSON.parse(readFileSync(clientConfig.path)).endpoint, clientConfig.endpoint);
-  assert.equal(JSON.stringify(service.get()).includes(first.token), false);
-  assert.equal(service.get().client_configured, true);
-  assert.equal(service.reveal().token, first.token);
-  const second = service.reset();
-  const reopened = createCredentialService({ dataDir: dir, clientConfig });
-  assert.equal(reopened.reveal().token, second.token);
-  assert.equal(reopened.verify(first.token), false);
-  if (process.platform !== "win32") assert.equal(statSync(clientConfig.path).mode & 0o777, 0o600);
-  rmSync(clientConfig.path);
-  assert.equal(reopened.get().client_configured, false);
-  assert.throws(() => reopened.reveal(), /重新生成/);
-  reopened.reset();
-  assert.equal(reopened.get().client_configured, true);
-});
-
-test("客户端写入失败保留旧凭证；摘要写入失败恢复旧客户端文件", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "relay-credentials-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "notification-client.json");
-  const options = { dataDir: dir, clientConfig: { path, endpoint: "http://127.0.0.1:37421/api/agent-relay/notifications" }, randomBytes: variableBytes() };
-  const service = createCredentialService(options);
-  const first = service.generate();
-  rmSync(path); mkdirSync(path);
-  assert.throws(() => service.reset());
-  assert.equal(service.verify(first.token), true);
-  rmSync(path, { recursive: true });
-  // 恢复客户端，再令摘要文件不可被原子替换。
-  service.reset();
-  const currentClient = readFileSync(path, "utf8");
-  const digestPath = join(dir, "notification-credential.json");
-  rmSync(digestPath); mkdirSync(digestPath);
-  assert.throws(() => service.reset());
-  assert.equal(readFileSync(path, "utf8"), currentClient);
-});
-
-test("generate 已有凭证时冲突且旧 token 仍有效；reset 替换后旧 token 失效", () => {
-  const dir = mkdtempSync(join(tmpdir(), "relay-credentials-"));
-  try {
-    const service = createCredentialService({ dataDir: dir, randomBytes: variableBytes() });
-    const first = service.generate();
-    assert.equal(service.verify(first.token), true);
-    // 同一服务再次 generate 冲突，旧 token 仍有效。
-    assert.throws(() => service.generate(), (e) => e?.code === "conflict");
-    assert.equal(service.verify(first.token), true);
-    // reset 替换为全新 token，旧 token 失效。
     const second = service.reset();
-    assert.notEqual(second.token, first.token);
     assert.equal(service.verify(first.token), false);
     assert.equal(service.verify(second.token), true);
-    // 重开服务（新实例、同一文件）再次 generate 仍冲突。
-    const reopened = createCredentialService({ dataDir: dir, randomBytes: variableBytes() });
-    assert.throws(() => reopened.generate(), (e) => e?.code === "conflict");
-    assert.equal(reopened.verify(second.token), true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("通知凭证 ensure 幂等生成明文，verify 读文件比对，端点变化视为缺失", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-notification-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "notification-client.json");
+  const endpoint = "http://127.0.0.1:37421/api/agent-relay/notifications";
+  const service = createNotificationCredentialService({ file, endpoint, randomBytes: variableBytes() });
+
+  // 首次 ensure 生成新 token。
+  const first = service.ensure();
+  assert.equal(first.created, true);
+  assert.equal(first.token.length, 43);
+  assert.equal(service.status().configured, true);
+  assert.equal(service.verify(first.token), true);
+  assert.equal(service.verify("错误凭证"), false);
+
+  // 文件内容是明文 token + endpoint，供发送脚本直接读取。
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  assert.equal(saved.token, first.token);
+  assert.equal(saved.endpoint, endpoint);
+
+  // 再次 ensure 复用，不换 token。
+  const again = service.ensure();
+  assert.equal(again.created, false);
+  assert.equal(again.token, first.token);
+
+  // 端点变化时视为缺失，重新生成新 token。
+  const moved = createNotificationCredentialService({ file, endpoint: "http://127.0.0.1:39999/api/agent-relay/notifications" });
+  assert.equal(moved.status().configured, false);
+  const second = moved.ensure();
+  assert.equal(second.created, true);
+  assert.notEqual(second.token, first.token);
+
+  if (process.platform !== "win32") assert.equal(statSync(file).mode & 0o777, 0o600);
+});
+
+test("通知凭证文件损坏或 token 格式非法时 ensure 重新生成", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-notification-bad-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "notification-client.json");
+  const endpoint = "http://127.0.0.1:37421/api/agent-relay/notifications";
+  const service = createNotificationCredentialService({ file, endpoint, randomBytes: variableBytes() });
+  const first = service.ensure();
+  // 覆盖为非法 token 后，status 判定失效并重新生成。
+  writeFileSync(file, JSON.stringify({ format: 1, endpoint, token: "短" }));
+  assert.equal(service.status().configured, false);
+  assert.equal(service.verify(first.token), false);
+  const second = service.ensure();
+  assert.equal(second.created, true);
+  assert.equal(service.status().configured, true);
 });

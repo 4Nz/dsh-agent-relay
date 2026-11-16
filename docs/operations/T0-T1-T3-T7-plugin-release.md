@@ -65,11 +65,11 @@ Windows Skill 目录使用 junction，不要求管理员或开发者模式；其
 
 从 0.1.1 起，外部通知 Skill 包含 `SKILL.md` 和 `send.mjs`，手动安装时必须同时复制两个文件；项目链接安装自动包含整个目录。发送脚本需要 Node.js >=24，在 macOS 与 Windows 使用相同 Node 实现。
 
-在「任务跟踪 → 通知凭证设置」生成或重新生成凭证时，同时写入 `$DSH_HOME/agent-relay/notification-client.json`，其中包含原始通知凭证和本机 HTTP 地址。服务端的 `notification-credential.json` 仍仅保存摘要。设置页「复制凭证」读取原始凭证；普通状态查询不返回明文。旧安装只有摘要时不能恢复原文，升级后需手动重新生成一次，不会自动使已有凭证失效。
+通知凭证在「任务跟踪 → 前置安装接入」安装时自动生成，写入 `$DSH_HOME/agent-relay/notification-client.json`，其中包含明文通知凭证和本机 HTTP 地址；外部 Agent 的发送脚本直接读取该文件，不再需要单独设置页或「复制凭证」。凭证为纯明文存储，仅保存在本人私有目录。
 
-发送器每次读取客户端配置，因此重置凭证后无需重启外部 Agent。不把 token 写入环境变量。配置路径优先使用 `DSH_AGENT_RELAY_CONFIG` 指定的绝对路径，否则使用 `DSH_HOME`，最后回退当前用户主目录的 `.dsh`。macOS 默认 `~/.dsh/agent-relay/notification-client.json`；Windows 默认 `%USERPROFILE%\.dsh\agent-relay\notification-client.json`。自定义 home 或端口的实例重新生成后会写入当前实际地址；外部 Agent 未继承自定义 home 时使用设置页显示的配置路径。
+发送器每次读取客户端配置，因此凭证变化后无需重启外部 Agent。不把 token 写入环境变量。配置路径优先使用 `DSH_AGENT_RELAY_CONFIG` 指定的绝对路径，否则使用 `DSH_HOME`，最后回退当前用户主目录的 `.dsh`。macOS 默认 `~/.dsh/agent-relay/notification-client.json`；Windows 默认 `%USERPROFILE%\.dsh\agent-relay\notification-client.json`。自定义 home 或端口的实例重新生成后会写入当前实际地址；外部 Agent 未继承自定义 home 时使用前置安装接入页显示的配置路径。
 
-客户端配置含原文，应只保存在本人私有目录，不加入版本库、日志或备份共享目录。POSIX 文件权限为 0600；Windows 继承父目录权限，用户主目录之外的路径应另行确认 ACL。更改客户端文件内容不会自动更新服务端校验摘要，异常时应通过设置页重新生成修复。配置与摘要的普通写入失败会恢复旧客户端文件；进程在两次文件替换之间被强制终止时可能需要重新生成修复不一致。
+客户端配置含原文，应只保存在本人私有目录，不加入版本库、日志或备份共享目录。POSIX 文件权限为 0600；Windows 继承父目录权限，用户主目录之外的路径应另行确认 ACL。配置缺失或损坏时，在前置安装接入页重新执行安装即可修复。
 
 在 profile 根目录执行安装包内脚本，例如：
 

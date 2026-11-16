@@ -24,9 +24,9 @@ description: 外部 Agent 任务完成后向 DSH Agent Relay 发送一次结果�
 2. `DSH_HOME/agent-relay/notification-client.json`（设置了 `DSH_HOME` 时）。
 3. 当前用户主目录下的 `.dsh/agent-relay/notification-client.json`。
 
-默认路径在 macOS 为 `~/.dsh/agent-relay/notification-client.json`；Windows 为 `%USERPROFILE%\.dsh\agent-relay\notification-client.json`。使用系统用户主目录和 Node 路径 API，不硬编码用户名。自定义 DSH_HOME 且外部 Agent 没继承该变量时，将设置页面显示的配置路径作为 `DSH_AGENT_RELAY_CONFIG`；该变量只包含路径，不包含凭证。
+默认路径在 macOS 为 `~/.dsh/agent-relay/notification-client.json`；Windows 为 `%USERPROFILE%\.dsh\agent-relay\notification-client.json`。使用系统用户主目录和 Node 路径 API，不硬编码用户名。自定义 DSH_HOME 且外部 Agent 没继承该变量时，将前置安装接入页面显示的配置路径作为 `DSH_AGENT_RELAY_CONFIG`；该变量只包含路径，不包含凭证。
 
-在 DSH「任务跟踪 → 通知凭证设置」生成或重新生成凭证，会同步更新该文件及实际 HTTP 地址。脚本每次读取最新内容，凭证轮换后无需重启 Codex/Claude。旧版本仅保存摘要时无法恢复原文，需要在升级后重新生成一次。配置缺失时说明原因，不搜索无关文件、不猜测凭证，不把哈希摘要作为 Bearer token。
+通知凭证在 DSH「任务跟踪 → 前置安装接入」安装时自动生成，随通知 Skill 一起落地；文件里就是明文 token 和本机 HTTP 地址，脚本每次读取最新内容，凭证轮换后无需重启 Codex/Claude。配置缺失时说明原因，不搜索无关文件、不猜测凭证，不把哈希摘要作为 Bearer token。
 
 调用同目录发送脚本，并用真实会话 ID 和稳定 request_id 替换占位符；摘要仅包含用户需要的任务结果。默认 Codex 全局 Skill 的示例：
 

@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
-import { createCredentialService } from '../../lib/services/credentials.js';
+import { createNotificationCredentialService } from '../../lib/services/credentials.js';
 
 test('发送器每次读新配置，支持空格中文路径和自定义 DSH_HOME，不泄露凭证', async (t) => {
  const {sendNotification, notificationConfigPath} = await import('../../skills/external-agent-notification/send.mjs');
@@ -29,20 +29,23 @@ test('发送器每次读新配置，支持空格中文路径和自定义 DSH_HOM
   assert.equal(notificationConfigPath({DSH_HOME:'~/.dsh-custom'},home),join(home,'.dsh-custom','agent-relay','notification-client.json'));
   assert.equal(notificationConfigPath({DSH_HOME:'~\\.dsh-custom'},home),join(home,'.dsh-custom','agent-relay','notification-client.json'));
  assert.equal(notificationConfigPath({DSH_AGENT_RELAY_CONFIG:path}),path);
- const service=createCredentialService({dataDir:join(home,'agent-relay'),clientConfig:{path,endpoint}});
- const first=service.generate();
+ const service=createNotificationCredentialService({file:path,endpoint});
+ const first=service.ensure();
  const input={agent:'codex',external_session_id:'01a1d89e-9731-7672-b357-8dead447ef7e',request_id:'stable',result:'completed',summary:'完成'};
  const a=await sendNotification(input,{env:{DSH_HOME:home}});
  assert.equal(a.accepted,true);
- const second=service.reset();
+ // 直接重写文件为新 token，验证发送器每次读取最新配置而非缓存旧 token。
+ const secondToken='N'.repeat(43);
+ const {writeFileSync}=await import('node:fs');
+ writeFileSync(path,JSON.stringify({format:1,endpoint,token:secondToken}));
  const b=await sendNotification(input,{env:{DSH_AGENT_RELAY_CONFIG:path}});
  assert.equal(received[0].authorization,'Bearer '+first.token);
- assert.equal(received[1].authorization,'Bearer '+second.token);
+ assert.equal(received[1].authorization,'Bearer '+secondToken);
  assert.equal(received[0].body.request_id,received[1].body.request_id);
- assert.equal(JSON.stringify([a,b]).includes(second.token),false);
+ assert.equal(JSON.stringify([a,b]).includes(secondToken),false);
  const cli=await promisify(execFile)(process.execPath,[fileURLToPath(new URL('../../skills/external-agent-notification/send.mjs',import.meta.url)),'--agent','codex','--external-session-id',input.external_session_id,'--request-id','stable','--summary','CLI 完成'],{env:{...process.env,DSH_AGENT_RELAY_CONFIG:path}});
  assert.equal(JSON.parse(cli.stdout).accepted,true);
- assert.equal(cli.stdout.includes(second.token),false);
+ assert.equal(cli.stdout.includes(secondToken),false);
  const linked=join(home,'linked-skill');
  symlinkSync(fileURLToPath(new URL('../../skills/external-agent-notification',import.meta.url)),linked,process.platform==='win32'?'junction':'dir');
  const linkedCli=await promisify(execFile)(process.execPath,[join(linked,'send.mjs'),'--agent','codex','--external-session-id',input.external_session_id,'--request-id','stable','--summary','链接调用完成'],{env:{...process.env,DSH_AGENT_RELAY_CONFIG:path}});

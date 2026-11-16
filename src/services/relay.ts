@@ -10,7 +10,6 @@ import type {
 import type { SubscriptionService } from "./subscriptions.js";
 import type { CheckService } from "./checks.js";
 import type { NotificationService } from "./notifications.js";
-import type { CredentialService } from "./credentials.js";
 import type { SkillInstallService } from "./skill-install.js";
 import type { SetupService } from "./setup.js";
 export interface DshSessionOption {
@@ -30,10 +29,6 @@ export const endpoints = [
   "send",
   "messages",
   "update",
-  "credential_get",
-  "credential_reveal",
-  "credential_generate",
-  "credential_reset",
   "install_skill",
   "install_skill_preview",
   "setup_check",
@@ -81,7 +76,6 @@ export function createRelayService({
   subscriptions,
   checks,
   notifications,
-  credentials,
   skillInstall,
   listDshSessions,
   hasDshSession,
@@ -94,7 +88,6 @@ export function createRelayService({
   subscriptions: SubscriptionService;
   checks: CheckService;
   notifications: NotificationService;
-  credentials?: CredentialService;
   skillInstall: SkillInstallService;
   listDshSessions: () => Promise<DshSessionOption[]>;
   // 仅用于存在性验证，不读取标题/正文；失败向上抛 unavailable，不当作不存在。
@@ -116,22 +109,6 @@ export function createRelayService({
         const args = object(payload);
         let value: unknown;
         switch (endpoint) {
-          case "credential_get":
-            if (!credentials) throw new Error("凭证服务未就绪");
-            value = credentials.get();
-            break;
-          case "credential_reveal":
-            if (!credentials) throw new Error("凭证服务未就绪");
-            value = credentials.reveal();
-            break;
-          case "credential_generate":
-            if (!credentials) throw new Error("凭证服务未就绪");
-            value = credentials.generate();
-            break;
-          case "credential_reset":
-            if (!credentials) throw new Error("凭证服务未就绪");
-            value = credentials.reset();
-            break;
           case "agents":
             value = adapters.list();
             break;
