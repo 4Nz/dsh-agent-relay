@@ -255,3 +255,23 @@ test('通知分页使用时间加ID游标，同毫秒50条续页不漏报并持�
  assert.deepEqual(JSON.parse(storage.get('dsh-agent-relay:notify:lastSeen')),{created_at:101,id:'z'});
  await ui.timers[0]();assert.equal(calls[2].after_id,'z');assert.ok(notifications.at(-1).body.includes('待人工核对'));
 });
+
+test('同主题新建返回暂停关注时如实提示，明确继续才恢复原关注', async () => {
+ const calls=[];const sub=bridgeSub({status:'paused',planning_state:'ready',selected_interval_seconds:300});
+ const rpc={async call(_channel,method,args){const endpoint=method.split('/').at(-1);calls.push({endpoint,args});return{ok:true,value:endpoint==='agents'?[]:endpoint==='list'?{items:[]}:endpoint==='sessions'?[{id:'ext',title:'原关注会话'}]:endpoint==='dsh_sessions'?[]:endpoint==='current'?{route:{dsh_session_id:'original-dsh'},subscription:sub}:endpoint==='subscribe'?{subscription:sub,schedule_ready:false}:{}};}};
+ const ui=clientHarness(rpc);const{nodes}=ui;let tree=ui.render();await ui.flush();tree=ui.render();
+ nodes(tree).find(n=>n.type==='button'&&n.children.includes('新建订阅')).props.onClick();tree=ui.render();await ui.flush();tree=ui.render();
+ nodes(nodes(tree).find(n=>n.type==='label'&&n.children.includes('外部会话'))).find(n=>n.type==='select').props.onChange({target:{value:'ext'}});
+ nodes(tree).find(n=>n.props['aria-label']==='关注主题（可选）').props.onChange({target:{value:sub.topic}});
+ tree=ui.render();await nodes(tree).find(n=>n.type==='form').props.onSubmit({preventDefault(){}});tree=ui.render();
+ const text=()=>nodes(tree).flatMap(n=>n.children.filter(c=>typeof c==='string')).join(' ');
+ assert.ok(text().includes('原关注仍已暂停'));
+ assert.equal(text().includes('等待 DSH 判断或宿主提醒对账'),false);
+ assert.equal(calls.filter(c=>c.endpoint==='subscribe').length,1);
+ assert.equal(calls.some(c=>c.endpoint==='resume'),false);
+ assert.equal(calls.some(c=>c.endpoint==='stop'),false);
+ await nodes(tree).find(n=>n.type==='button'&&n.children.includes('继续关注')).props.onClick();await ui.flush();tree=ui.render();
+ assert.equal(calls.filter(c=>c.endpoint==='resume').length,1);
+ assert.equal(calls.find(c=>c.endpoint==='resume').args.subscription_id,'old');
+ assert.ok(text().includes('已继续原关注'));assert.deepEqual(ui.opened,['original-dsh']);
+});

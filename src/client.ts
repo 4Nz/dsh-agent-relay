@@ -439,6 +439,12 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     }
     try {
       const value = await call("subscribe", payload);
+      if (value.subscription?.status === "paused") {
+        setConflict({ current: value.subscription, payload, paused: true });
+        setNotice("原关注仍已暂停，定时检查尚未恢复；请选择继续关注或保持暂停。");
+        setRefreshVersion((v) => v + 1);
+        return;
+      }
       setDrawer(""); setConflict(null);
       setNotice(value.subscription?.planning_state === "pending" ? "关注已保存，等待 DSH 按主题规划频率；最长 24 小时。" : value.schedule_ready ? "关注已保存，宿主提醒已就绪。" : "关注已保存，等待 DSH 判断或宿主提醒对账。");
       if (cursor) setCursor(null); else setRefreshVersion((v) => v + 1);
@@ -456,6 +462,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       const sub = conflict.current;
       if (sub.status === "paused") await call("resume", { subscription_id: sub.id });
       else if (sub.muted) await call("mute", { agent: sub.agent, external_session_id: sub.external_session_id, muted: false });
+      setNotice("已继续原关注；保留原主题、接收会话与截止时间。");
       setRefreshVersion((v) => v + 1); close();
       if (sub.dsh_session_id) openSession(sub.dsh_session_id);
     } catch (e) { setError((e as Error).message); }
@@ -1274,11 +1281,15 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             ),
         ),
     ),
-    conflict && h(Drawer, { title: "已有关注主题", onClose: () => setConflict(null) },
+    conflict && h(Drawer, { title: conflict.paused ? "原关注已暂停" : "已有关注主题", onClose: conflict.paused ? close : () => setConflict(null) },
       h("p", null, `当前关注：${conflict.current.topic}`),
-      h("p", { className: "muted" }, "同一外部会话只能有一个有效关注。继续将保留原主题和接收会话；停止重新来会结束原关注后创建新关注期。"),
-      h("button", { disabled: busy, onClick: () => void continueConflict() }, "继续原关注"),
-      h("button", { disabled: busy, onClick: () => void restartConflict() }, "停止重新来")),
+      h("p", { className: "muted" }, conflict.paused
+        ? "原关注仍已暂停；同主题订阅不会自动恢复定时检查。选择继续关注会恢复原关注并解除 push 屏蔽，截止时间保持不变。"
+        : "同一外部会话只能有一个有效关注。继续将保留原主题和接收会话；停止重新来会结束原关注后创建新关注期。"),
+      h("button", { disabled: busy, onClick: () => void continueConflict() }, conflict.paused ? "继续关注" : "继续原关注"),
+      conflict.paused
+        ? h("button", { disabled: busy, onClick: close }, "保持暂停")
+        : h("button", { disabled: busy, onClick: () => void restartConflict() }, "停止重新来")),
     !conflict && drawer === "create" && createDrawer(),
     drawer === "detail" && current && detailDrawer(current),
     drawer === "stop" && current && stopDrawer(current),
