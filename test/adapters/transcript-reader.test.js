@@ -38,6 +38,20 @@ test("全量扫描与快照语义一致：标题、cwd、最后回复、cursor",
   assert.equal(tr.last_activity_at, Date.parse(at(2)));
 });
 
+test("标题：手动 rename 的 custom-title 优先于 ai-title，仅 custom-title 也能读出", async (t) => {
+  const { file } = fixture(t);
+  writeFileSync(file,
+    line({ type: "ai-title", aiTitle: "AI 自动标题" }) +
+    line({ type: "custom-title", customTitle: "用户手动标题" }) +
+    prompt("任务", 1) + reply("结果", 2));
+  assert.equal((await new TranscriptReader(file).scan()).title, "用户手动标题");
+
+  writeFileSync(file,
+    line({ type: "custom-title", customTitle: "测试消息" }) +
+    prompt("任务", 1) + reply("结果", 2));
+  assert.equal((await new TranscriptReader(file).scan()).title, "测试消息");
+});
+
 test("reader 快照配合轮次判定：基线命中/缺失时间回退、完成/失败、工具结果与 meta", async (t) => {
   const { file } = fixture(t);
   const history = prompt("旧任务", 1) + reply("旧结果", 2);

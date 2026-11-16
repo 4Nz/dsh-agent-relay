@@ -12,7 +12,8 @@ const CHUNK = 64 * 1024;
 export class TranscriptReader {
   private decoder = new TextDecoder("utf-8");
   private pending = "";
-  private title: string | null = null;
+  private aiTitle: string | null = null;
+  private customTitle: string | null = null;
   private cwd: string | null = null;
   private lastReply: string | null = null;
   private entries: Entry[] = [];
@@ -80,7 +81,8 @@ export class TranscriptReader {
   private reset() {
     this.decoder = new TextDecoder("utf-8");
     this.pending = "";
-    this.title = null;
+    this.aiTitle = null;
+    this.customTitle = null;
     this.cwd = null;
     this.lastReply = null;
     this.entries = [];
@@ -118,7 +120,9 @@ export class TranscriptReader {
 
   private apply(record: RawRecord) {
     if (record.type === "ai-title" && typeof record.aiTitle === "string")
-      this.title = record.aiTitle;
+      this.aiTitle = record.aiTitle;
+    if (record.type === "custom-title" && typeof record.customTitle === "string")
+      this.customTitle = record.customTitle;
     if (typeof record.cwd === "string") this.cwd = record.cwd;
     if (
       !["user", "assistant", "system"].includes(record.type ?? "") ||
@@ -147,7 +151,7 @@ export class TranscriptReader {
     }
     const last = this.entries.at(-1);
     return {
-      title: this.title,
+      title: this.customTitle ?? this.aiTitle,
       cwd: this.cwd,
       cursor: last ? { uuid: last.uuid, timestamp: last.time } : null,
       last_activity_at: last?.time ?? null,

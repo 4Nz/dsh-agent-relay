@@ -51,6 +51,18 @@ test("解析记录：标题、最后回复、损坏的最后一行跳过、中�
   assert.throws(() => parseTranscript(prompt("a", 1) + "坏行\n" + reply("b", 2)), /无法解析/);
 });
 
+test("解析记录：custom-title（手动 rename）优先于 ai-title", () => {
+  const both = title("AI 自动标题") +
+    line({ type: "custom-title", customTitle: "用户手动标题" }) +
+    prompt("开始", 1) + reply("完成", 2);
+  assert.equal(parseTranscript(both).title, "用户手动标题");
+
+  const onlyCustom =
+    line({ type: "custom-title", customTitle: "测试消息" }) +
+    prompt("开始", 1) + reply("完成", 2);
+  assert.equal(parseTranscript(onlyCustom).title, "测试消息");
+});
+
 test("轮次判定：基线前已结束不算；新一轮结束为 completed；工具调用中为 null；API 错误为 failed", () => {
   const history = prompt("旧任务", 1) + reply("旧结果", 2);
   const baseline = parseTranscript(history).cursor;

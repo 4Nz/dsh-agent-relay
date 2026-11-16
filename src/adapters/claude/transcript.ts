@@ -11,6 +11,8 @@ export interface RawRecord {
   isSidechain?: boolean;
   isApiErrorMessage?: boolean;
   aiTitle?: string;
+  // 用户手动 rename 会话时写入的标题，优先于 aiTitle。
+  customTitle?: string;
   message?: { content?: unknown; stop_reason?: string | null };
 }
 export interface Entry {
@@ -41,13 +43,16 @@ export function parseTranscript(text: string): Transcript {
         throw new AdapterError("parse_error", `会话记录第 ${i + 1} 行无法解析`);
     }
   });
-  let title: string | null = null,
+  let aiTitle: string | null = null,
+    customTitle: string | null = null,
     cwd: string | null = null,
     last_reply: string | null = null;
   const entries: Entry[] = [];
   for (const record of records) {
     if (record.type === "ai-title" && typeof record.aiTitle === "string")
-      title = record.aiTitle;
+      aiTitle = record.aiTitle;
+    if (record.type === "custom-title" && typeof record.customTitle === "string")
+      customTitle = record.customTitle;
     if (typeof record.cwd === "string") cwd = record.cwd;
     if (
       !["user", "assistant", "system"].includes(record.type ?? "") ||
@@ -65,7 +70,7 @@ export function parseTranscript(text: string): Transcript {
   }
   const last = entries.at(-1);
   return {
-    title,
+    title: customTitle ?? aiTitle,
     cwd,
     cursor: last ? { uuid: last.uuid, timestamp: last.time } : null,
     last_activity_at: last?.time ?? null,
