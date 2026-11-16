@@ -1,3 +1,4 @@
+import { createBridgeStore } from "./bridge.js";
 import { createCodexSessions } from "./codex-sessions.js";
 import { openDatabase } from "./database.js";
 import { createSubscriptions } from "./subscriptions.js";
@@ -9,6 +10,7 @@ export function openRelayStore({ dataDir }: { dataDir: string }) {
   const db = openDatabase({ dataDir });
   return {
     subscriptions: createSubscriptions(db),
+    bridge: createBridgeStore(db),
     codexSessions: createCodexSessions(db),
     messages: createMessages(db),
     notifications: createNotifications(db),

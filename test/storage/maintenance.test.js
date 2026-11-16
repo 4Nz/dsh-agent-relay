@@ -102,7 +102,7 @@ test("删除单条订阅连带其通知与消息，不影响其他订阅", () =>
     store.subscriptions.create(subscription("s", "push"));
     store.subscriptions.create(subscription("keep", "push"));
     store.messages.create({ ...message("m1"), subscription_id: "s" });
-    store.messages.create({ ...message("m2"), subscription_id: "keep" });
+    store.messages.create({ ...message("m2"), subscription_id: "keep", external_session_id: subscription("keep").external_session_id });
     store.notifications.record({
       notification: { id: "n", subscription_id: "s", source: "push", result: "completed", summary: "结果" },
       now: 100,
@@ -128,14 +128,14 @@ test("批量清理删除创建超过 7 天的订阅及关联数据，保留近�
   const store = openRelayStore({ dataDir });
   try {
     store.subscriptions.create({ ...subscription("old", "push"), created_at: 100, updated_at: 100 });
-    store.messages.create({ ...message("mold"), subscription_id: "old", created_at: 100 });
+    store.messages.create({ ...message("mold"), subscription_id: "old", external_session_id: subscription("old").external_session_id, created_at: 100 });
     store.notifications.record({
       notification: { id: "nold", subscription_id: "old", source: "push", result: "completed", summary: "旧" },
       now: 100,
     });
     const recentAt = 100 + 6 * 86400000;
     store.subscriptions.create({ ...subscription("recent", "push"), created_at: recentAt, updated_at: recentAt });
-    store.messages.create({ ...message("mrecent"), subscription_id: "recent", created_at: recentAt });
+    store.messages.create({ ...message("mrecent"), subscription_id: "recent", external_session_id: subscription("recent").external_session_id, created_at: recentAt });
     store.notifications.record({
       notification: { id: "nrecent", subscription_id: "recent", source: "push", result: "completed", summary: "新" },
       now: recentAt,

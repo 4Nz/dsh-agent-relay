@@ -38,7 +38,7 @@ test("启动先恢复再对账；卸载等待在途任务后关闭存储", async
     intervalMs: 100000,
   });
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(events, ["recover", "expire", "reconcile", "drain"]);
+  assert.deepEqual(events, ["recover", "reconcile", "drain"]);
   const stopping = runtime.stop();
   assert.equal(events.includes("close"), false);
   release();
@@ -78,7 +78,7 @@ test("首次对账失败后仍继续工作，后续驱动重试对账", async ()
   assert.equal(errors.length, 1);
 });
 
-test("每轮对账前执行到期扫描", async () => {
+test("每轮交给桥梁统一到期对账，不调用旧一次性到期转换", async () => {
   let expires = 0;
   let reconciles = 0;
   const runtime = startRelayRuntime({
@@ -105,6 +105,6 @@ test("每轮对账前执行到期扫描", async () => {
   for (const end = Date.now() + 1000; reconciles < 2 && Date.now() < end;)
     await new Promise((r) => setTimeout(r, 5));
   await runtime.stop();
-  assert.ok(expires >= 2);
+  assert.equal(expires, 0);
   assert.ok(reconciles >= 2);
 });

@@ -242,3 +242,19 @@ test('Codex 会话级能力：后台 systemError 不允许发送', async t => {
   store.codexSessions.register({session_id:ID,endpoint:ENDPOINT,created_at:1});
   const s=await adapter.snapshot(ID);assert.equal(s.send_allowed,false);
 });
+
+test("Codex 增量跨多轮分页保留每条回复及顺序，不只读取最后一条",async()=>{
+ const {createCodexAdapter}=await import("../../lib/adapters/codex/index.js");
+ const pages=[{data:[turn({id:"third",startedAt:300,completedAt:310,items:[{id:"c",type:"agentMessage",text:"三"}]})],nextCursor:"p2"},{data:[turn({id:"second",startedAt:200,completedAt:210,items:[{id:"a",type:"agentMessage",text:"二甲"},{id:"b",type:"agentMessage",text:"二乙"}]}),turn()],nextCursor:null}];
+ const adapter=createCodexAdapter({connect:async()=>({close(){},request:async(method,params)=>method==="thread/list"?{data:[],nextCursor:null}:method==="thread/read"?{thread}:pages[params.cursor?1:0]})});
+ const page=await adapter.incremental(ID,{uuid:"codex:turn-1:old",timestamp:200000,turn_status:"completed"});
+ assert.deepEqual(page.events.filter(e=>e.kind==="assistant").map(e=>e.text),["测试回复","二甲","二乙","三"]);
+ assert.match(page.cursor.uuid,/third/);
+});
+
+test("Codex 新订阅后已完成基线无变化不重放，同轮新增回复会返回",async()=>{
+ const {adapter}=await setup();const baseline=(await adapter.snapshot(ID)).cursor;
+ assert.deepEqual((await adapter.incremental(ID,baseline)).events,[]);
+ const running=await setup({turns:[turn({status:"inProgress",completedAt:null})]});const initial=(await running.adapter.snapshot(ID)).cursor;
+ const done=await adapter.incremental(ID,initial);assert.ok(done.events.some(e=>e.kind==="assistant"));assert.ok(done.events.some(e=>e.kind==="turn"));
+});

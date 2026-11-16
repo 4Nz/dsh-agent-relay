@@ -23,7 +23,7 @@ export function startRelayRuntime({
     try {
       // 每轮对账前先到期扫描：收敛到达最长存活时间的 push 订阅，
       // 不依赖模型轮询或接收会话存在；暂停不突破最长存活上限。
-      store.notifications.expirePushSubscriptions({ now: Date.now() });
+      // 新关注期由统一桥梁对账；旧通知仅核对投递事实。
       const report = await subscriptions.reconcile();
       for (const error of report.errors) onError(error);
     } catch (error) {

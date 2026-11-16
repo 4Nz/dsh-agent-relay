@@ -82,4 +82,43 @@ CREATE INDEX message_list ON relay_message(created_at DESC,id DESC);
 CREATE INDEX message_route ON relay_message(agent,external_session_id,subscription_id);
 CREATE INDEX message_queue ON relay_message(status,agent,external_session_id,created_at);
 `,
+  `
+ALTER TABLE relay_subscription ADD COLUMN topic TEXT NOT NULL DEFAULT '定期汇报新的进展或回复';
+ALTER TABLE relay_subscription ADD COLUMN planning_state TEXT NOT NULL DEFAULT 'ready';
+ALTER TABLE relay_subscription ADD COLUMN decision_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE relay_subscription ADD COLUMN selected_interval_seconds INTEGER;
+UPDATE relay_subscription SET selected_interval_seconds=check_interval_seconds, planning_state='ready';
+CREATE TABLE relay_bridge (
+ id TEXT PRIMARY KEY, agent TEXT NOT NULL, external_session_id TEXT NOT NULL,
+ dsh_session_id TEXT UNIQUE, muted INTEGER NOT NULL DEFAULT 0,
+ UNIQUE(agent,external_session_id)
+) STRICT;
+CREATE TABLE relay_bridge_event (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, bridge_id TEXT NOT NULL REFERENCES relay_bridge(id),
+ subscription_id TEXT, kind TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL,
+ batch_id TEXT, processed_at INTEGER
+) STRICT;
+CREATE TABLE relay_bridge_batch (
+ id TEXT PRIMARY KEY, bridge_id TEXT NOT NULL REFERENCES relay_bridge(id), subscription_id TEXT, dsh_session_id TEXT,
+ version INTEGER NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+ retry_at INTEGER, created_at INTEGER NOT NULL, error TEXT
+) STRICT;
+CREATE INDEX bridge_event_pending ON relay_bridge_event(bridge_id,processed_at,seq);
+CREATE UNIQUE INDEX bridge_open_batch ON relay_bridge_batch(bridge_id) WHERE state IN ('pending','delivering','unknown','delivered','exhausted');
+-- 确定性采用最早未结束记录；其余活跃重复保留历史并结束。已送通知不转成新事件。
+UPDATE relay_subscription AS s SET status='ended',end_reason='user_stopped',ended_at=updated_at
+ WHERE status!='ended' AND EXISTS(SELECT 1 FROM relay_subscription AS x WHERE x.agent=s.agent AND x.external_session_id=s.external_session_id AND x.status!='ended' AND (x.created_at<s.created_at OR (x.created_at=s.created_at AND x.id<s.id)));
+INSERT INTO relay_bridge(id,agent,external_session_id,dsh_session_id)
+ WITH ranked AS (SELECT s.*,row_number() OVER(PARTITION BY agent,external_session_id ORDER BY CASE WHEN status!='ended' THEN 0 ELSE 1 END,CASE WHEN status!='ended' THEN created_at ELSE -created_at END,CASE WHEN status!='ended' THEN id END ASC,id DESC) n FROM relay_subscription s),
+ chosen AS (SELECT *,row_number() OVER(PARTITION BY dsh_session_id ORDER BY CASE WHEN status!='ended' THEN 0 ELSE 1 END,created_at,id) d FROM ranked WHERE n=1)
+ SELECT id,agent,external_session_id,CASE WHEN d=1 THEN dsh_session_id ELSE NULL END FROM chosen;
+UPDATE relay_subscription AS s SET status='ended',end_reason='user_stopped',ended_at=updated_at
+ WHERE status!='ended' AND NOT EXISTS(SELECT 1 FROM relay_bridge b WHERE b.agent=s.agent AND b.external_session_id=s.external_session_id AND b.dsh_session_id=s.dsh_session_id);
+-- 旧直接push请求保留全局幂等键；投递仍由旧通知事实恢复，不再重放为新批次。
+INSERT OR IGNORE INTO relay_bridge_event(id,bridge_id,subscription_id,kind,body,created_at,processed_at)
+ SELECT s.id,b.id,s.id,'legacy_push',n.summary,n.created_at,s.updated_at FROM relay_subscription s
+ JOIN relay_notification n ON n.subscription_id=s.id JOIN relay_bridge b ON b.agent=s.agent AND b.external_session_id=s.external_session_id
+ WHERE s.type='push' AND s.id LIKE 'push:%';
+CREATE UNIQUE INDEX subscription_one_live_bridge ON relay_subscription(agent,external_session_id) WHERE status!='ended';
+`,
 ];

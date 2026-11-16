@@ -1,4 +1,9 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { BridgeService } from "./bridge.js";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { randomUUID } from "node:crypto";
 import type { Subscription, Result } from "../storage/types.js";
 
@@ -12,15 +17,33 @@ const RESULTS = new Set<Result>([
 ]);
 
 export interface PushHandlerOptions {
+  bridge?: BridgeService;
   credentials: { verify(token: string): boolean };
   store: {
     subscriptions: {
       get(id: string): Subscription | null;
-      update(input: { id: string; expected_status: "active"; patch: { dsh_session_id: string; updated_at: number } }): boolean;
+      update(input: {
+        id: string;
+        expected_status: "active";
+        patch: { dsh_session_id: string; updated_at: number };
+      }): boolean;
     };
     notifications: {
       getBySubscription?(id: string): unknown;
-      record(input: { notification: { id: string; subscription_id: string; source: "push"; result: Result; summary: string; external_ref?: string | null }; now: number }): { outcome: "created" | "duplicate" | "inactive"; notification: unknown };
+      record(input: {
+        notification: {
+          id: string;
+          subscription_id: string;
+          source: "push";
+          result: Result;
+          summary: string;
+          external_ref?: string | null;
+        };
+        now: number;
+      }): {
+        outcome: "created" | "duplicate" | "inactive";
+        notification: unknown;
+      };
     };
   };
   createSubscription: (input: {
@@ -29,7 +52,9 @@ export interface PushHandlerOptions {
     agent: "claude" | "codex";
     external_session_id: string;
     dsh_session_id: null;
-  }) => Promise<{ ok: true; subscription: Subscription } | { ok: false; message: string }>;
+  }) => Promise<
+    { ok: true; subscription: Subscription } | { ok: false; message: string }
+  >;
   createSession: (subscription: Subscription) => Promise<string>;
   drain: () => Promise<unknown>;
   requireReady: (agent: "claude" | "codex") => Promise<void>;
@@ -39,6 +64,7 @@ export interface PushHandlerOptions {
 
 export function createPushHandler({
   credentials,
+  bridge,
   store,
   createSession,
   createSubscription,
@@ -58,11 +84,14 @@ export function createPushHandler({
       const latest = store.subscriptions.get(subscription.id);
       if (latest?.dsh_session_id) return latest.dsh_session_id;
       const sessionId = await createSession(latest ?? subscription);
-      if (store.subscriptions.update({
-        id: subscription.id,
-        expected_status: "active",
-        patch: { dsh_session_id: sessionId, updated_at: now() },
-      })) return sessionId;
+      if (
+        store.subscriptions.update({
+          id: subscription.id,
+          expected_status: "active",
+          patch: { dsh_session_id: sessionId, updated_at: now() },
+        })
+      )
+        return sessionId;
       const updated = store.subscriptions.get(subscription.id);
       if (updated?.dsh_session_id) return updated.dsh_session_id;
       throw new Error("接收会话创建冲突");
@@ -71,17 +100,23 @@ export function createPushHandler({
     try {
       return await pending;
     } finally {
-      if (sessionLocks.get(subscription.id) === pending) sessionLocks.delete(subscription.id);
+      if (sessionLocks.get(subscription.id) === pending)
+        sessionLocks.delete(subscription.id);
     }
   }
 
   return async function handle(request: Request): Promise<Response> {
-    if (request.method !== "POST") return new Response("方法不支持", { status: 405 });
-    if (request.headers.get("content-type")?.split(";")[0].trim() !== "application/json")
+    if (request.method !== "POST")
+      return new Response("方法不支持", { status: 405 });
+    if (
+      request.headers.get("content-type")?.split(";")[0].trim() !==
+      "application/json"
+    )
       return new Response("需要 application/json", { status: 415 });
     const authorization = request.headers.get("authorization") ?? "";
     const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
-    if (!credentials.verify(token)) return new Response("凭证无效", { status: 401 });
+    if (!credentials.verify(token))
+      return new Response("凭证无效", { status: 401 });
     let body: unknown;
     try {
       body = await request.json();
@@ -93,7 +128,9 @@ export function createPushHandler({
     const input = body as Record<string, unknown>;
     const direct = input.subscription_id === undefined;
     if (
-      (!direct && (typeof input.subscription_id !== "string" || !input.subscription_id.trim())) ||
+      (!direct &&
+        (typeof input.subscription_id !== "string" ||
+          !input.subscription_id.trim())) ||
       typeof input.result !== "string" ||
       !RESULTS.has(input.result as Result) ||
       typeof input.summary !== "string" ||
@@ -101,14 +138,77 @@ export function createPushHandler({
       input.summary.length > 4000
     )
       return new Response("通知字段无效", { status: 400 });
-    if (input.external_ref !== undefined && input.external_ref !== null && typeof input.external_ref !== "string")
+    if (
+      input.external_ref !== undefined &&
+      input.external_ref !== null &&
+      typeof input.external_ref !== "string"
+    )
       return new Response("external_ref 无效", { status: 400 });
-    if (direct && (
-      typeof input.request_id !== "string" || !input.request_id.trim() || input.request_id.length > 500 ||
-      (input.agent !== "claude" && input.agent !== "codex") ||
-      typeof input.external_session_id !== "string" || !input.external_session_id.trim()
-    )) return new Response("直接 push 缺少 request_id、agent 或 external_session_id", { status: 400 });
-    const subscriptionId = direct ? `push:${input.request_id as string}` : input.subscription_id as string;
+    if (
+      direct &&
+      (typeof input.request_id !== "string" ||
+        !input.request_id.trim() ||
+        input.request_id.length > 500 ||
+        (input.agent !== "claude" && input.agent !== "codex") ||
+        typeof input.external_session_id !== "string" ||
+        !input.external_session_id.trim())
+    )
+      return new Response(
+        "直接 push 缺少 request_id、agent 或 external_session_id",
+        { status: 400 },
+      );
+    if (bridge) {
+      const source = direct
+        ? null
+        : store.subscriptions.get(input.subscription_id as string);
+      if (!direct && !source)
+        return new Response("订阅不存在", { status: 404 });
+      const selected = direct
+        ? (input.agent as "claude" | "codex")
+        : source!.agent;
+      try {
+        await requireReady(selected);
+      } catch (error) {
+        return new Response(
+          error instanceof Error ? error.message : "前置安装未完成",
+          { status: 403 },
+        );
+      }
+      const requestId =
+        input.request_id ??
+        (input.external_ref
+          ? `${input.subscription_id}:${input.external_ref}`
+          : input.subscription_id);
+      if (
+        typeof requestId !== "string" ||
+        !requestId.trim() ||
+        requestId.length > 1000
+      )
+        return new Response("request_id 无效", { status: 400 });
+      try {
+        return Response.json(
+          await bridge.push({
+            agent: selected,
+            external_session_id: direct
+              ? (input.external_session_id as string)
+              : source!.external_session_id,
+            request_id: requestId,
+            summary: input.summary as string,
+            result: input.result as string,
+            external_ref: input.external_ref as string | null,
+          }),
+          { status: 202 },
+        );
+      } catch (error) {
+        return new Response(
+          error instanceof Error ? error.message : "通知接收失败",
+          { status: error instanceof TypeError ? 409 : 500 },
+        );
+      }
+    }
+    const subscriptionId = direct
+      ? `push:${input.request_id as string}`
+      : (input.subscription_id as string);
     let subscription = store.subscriptions.get(subscriptionId);
     if (!subscription && direct) {
       try {
@@ -124,7 +224,8 @@ export function createPushHandler({
       } catch {
         // 并发请求可能由另一条请求先创建同一个 request_id；重新读取即可复用。
         subscription = store.subscriptions.get(subscriptionId);
-        if (!subscription) return new Response("无法创建 push 订阅", { status: 500 });
+        if (!subscription)
+          return new Response("无法创建 push 订阅", { status: 500 });
       }
     }
     if (!subscription || subscription.type !== "push")
@@ -137,18 +238,23 @@ export function createPushHandler({
         { status: 403 },
       );
     }
-    if (direct && (
-      subscription.agent !== input.agent ||
-      subscription.external_session_id !== input.external_session_id
-    )) return new Response("request_id 已绑定其他外部会话", { status: 409 });
+    if (
+      direct &&
+      (subscription.agent !== input.agent ||
+        subscription.external_session_id !== input.external_session_id)
+    )
+      return new Response("request_id 已绑定其他外部会话", { status: 409 });
     if (subscription.status !== "active") {
       if (store.notifications.getBySubscription?.(subscription.id)) {
-        return Response.json({
-          accepted: true,
-          duplicate: true,
-          subscription_id: subscription.id,
-          dsh_session_id: subscription.dsh_session_id,
-        }, { status: 202 });
+        return Response.json(
+          {
+            accepted: true,
+            duplicate: true,
+            subscription_id: subscription.id,
+            dsh_session_id: subscription.dsh_session_id,
+          },
+          { status: 202 },
+        );
       }
       return new Response("push 订阅未运行", { status: 409 });
     }
@@ -156,7 +262,10 @@ export function createPushHandler({
     try {
       sessionId = await ensureSession(subscription);
     } catch (error) {
-      return new Response(error instanceof Error ? error.message : "接收会话创建失败", { status: 409 });
+      return new Response(
+        error instanceof Error ? error.message : "接收会话创建失败",
+        { status: 409 },
+      );
     }
     const result = store.notifications.record({
       notification: {
@@ -170,12 +279,15 @@ export function createPushHandler({
       now: now(),
     });
     await drain();
-    return Response.json({
-      accepted: true,
-      duplicate: result.outcome === "duplicate",
-      subscription_id: subscription.id,
-      dsh_session_id: sessionId,
-    }, { status: 202 });
+    return Response.json(
+      {
+        accepted: true,
+        duplicate: result.outcome === "duplicate",
+        subscription_id: subscription.id,
+        dsh_session_id: sessionId,
+      },
+      { status: 202 },
+    );
   };
 }
 
@@ -207,15 +319,22 @@ export function createPushServer({
   });
   return {
     server,
-    start: () => new Promise<{ host: string; port: number }>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(port, host, () => {
-        server.removeListener("error", reject);
-        const address = server.address();
-        resolve({ host, port: typeof address === "object" && address ? address.port : port });
-      });
-    }),
-    stop: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+    start: () =>
+      new Promise<{ host: string; port: number }>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(port, host, () => {
+          server.removeListener("error", reject);
+          const address = server.address();
+          resolve({
+            host,
+            port: typeof address === "object" && address ? address.port : port,
+          });
+        });
+      }),
+    stop: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
   };
 }
 
@@ -230,8 +349,11 @@ function writeResponse(
 ) {
   if (response.destroyed || response.writableEnded) return;
   const flat: Record<string, string> = {};
-  if (headers) for (const [key, value] of headers.entries()) flat[key.toLowerCase()] = value;
-  if (!("content-type" in flat)) flat["content-type"] = "text/plain; charset=utf-8";
+  if (headers)
+    for (const [key, value] of headers.entries())
+      flat[key.toLowerCase()] = value;
+  if (!("content-type" in flat))
+    flat["content-type"] = "text/plain; charset=utf-8";
   response.writeHead(status, flat);
   response.end(body);
 }
@@ -273,11 +395,13 @@ async function serve(
     const headers = new Headers();
     for (const [key, value] of Object.entries(request.headers))
       if (typeof value === "string") headers.set(key, value);
-    const result = await handler(new Request(`${REQUEST_ORIGIN}${request.url}`, {
-      method: request.method,
-      headers,
-      body: chunks.length ? Buffer.concat(chunks) : undefined,
-    }));
+    const result = await handler(
+      new Request(`${REQUEST_ORIGIN}${request.url}`, {
+        method: request.method,
+        headers,
+        body: chunks.length ? Buffer.concat(chunks) : undefined,
+      }),
+    );
     writeResponse(
       response,
       result.status,

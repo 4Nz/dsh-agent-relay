@@ -165,7 +165,7 @@ test("按外部会话顺延：只影响同 agent、同会话的未结束订阅",
   s.create({ ...subscription("other"), external_session_id: "x" });
   s.create(subscription("done"));
   s.update({ id: "done", expected_status: "active", patch: { status: "ended", end_reason: "user_stopped", ended_at: 150 } });
-  assert.equal(s.touchSession({ agent: "claude", external_session_id: "session'1", now: 1000 }), 2);
+  assert.equal(s.touchSession({ agent: "claude", external_session_id: subscription("a").external_session_id, now: 1000 }), 1);
   assert.equal(s.touchSession({ agent: "codex", external_session_id: "session'1", now: 1000 }), 0);
   assert.equal(s.get("a").expires_at, 1000 + 3600000);
   assert.equal(s.get("other").expires_at, 100 + 3600000);

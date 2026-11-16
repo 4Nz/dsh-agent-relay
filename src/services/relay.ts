@@ -1,3 +1,4 @@
+import type { BridgeService } from "./bridge.js";
 import { randomUUID } from "node:crypto";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type { Snapshot } from "../adapters/types.js";
@@ -21,6 +22,11 @@ export type RelayResponse =
   | { ok: true; value: unknown }
   | { ok: false; error: { code: string; message: string } };
 export const endpoints = [
+  "events",
+  "current",
+  "plan",
+  "decide",
+  "mute",
   "agents",
   "sessions",
   "create_session",
@@ -85,7 +91,9 @@ export function createRelayService({
   createDshSession,
   onQueued,
   setup,
+  bridge,
 }: {
+  bridge?: BridgeService;
   store: RelayStore;
   adapters: AdapterRegistry;
   subscriptions: SubscriptionService;
@@ -112,6 +120,133 @@ export function createRelayService({
         const args = object(payload);
         let value: unknown;
         switch (endpoint) {
+          case "events": {
+            const selected = args.subscription_id
+              ? store.subscriptions.get(
+                  text(args.subscription_id, "subscription_id"),
+                )
+              : null;
+            const route = selected
+              ? store.bridge.route(selected.agent, selected.external_session_id)
+              : store.bridge.route(
+                  agent(args.agent),
+                  text(args.external_session_id, "external_session_id"),
+                );
+            if (!route)
+              return {
+                ok: false,
+                error: { code: "not_found", message: "会话路由不存在" },
+              };
+            value = store.bridge.eventPage(
+              route.id,
+              args.after_sequence === undefined
+                ? 0
+                : integer(
+                    args.after_sequence,
+                    "after_sequence",
+                    0,
+                    Number.MAX_SAFE_INTEGER,
+                  ),
+              args.limit === undefined
+                ? 20
+                : integer(args.limit, "limit", 1, 100),
+            );
+            break;
+          }
+          case "current": {
+            const route = store.bridge.route(
+              agent(args.agent),
+              text(args.external_session_id, "external_session_id"),
+            );
+            const current = route ? store.bridge.live(route) : null;
+            value = {
+              route,
+              subscription: current
+                ? bridge
+                  ? bridge.view(current)
+                  : current
+                : null,
+            };
+            break;
+          }
+          case "plan": {
+            if (!bridge) throw new Error("会话桥梁未就绪");
+            const result = await bridge.plan(
+              text(args.subscription_id, "subscription_id"),
+              integer(
+                args.check_interval_seconds,
+                "check_interval_seconds",
+                60,
+                86400,
+              ),
+            );
+            if (!result.ok)
+              return {
+                ok: false,
+                error: { code: result.code!, message: result.message! },
+              };
+            value = bridge.view(result.subscription!);
+            break;
+          }
+          case "decide": {
+            if (!bridge) throw new Error("会话桥梁未就绪");
+            if (
+              !["continue", "end", "needs_user"].includes(String(args.decision))
+            )
+              throw new TypeError("decision 无效");
+            const result = await bridge.decide({
+              batch_id: text(args.batch_id, "batch_id"),
+              decision_version: integer(
+                args.decision_version,
+                "decision_version",
+                1,
+                Number.MAX_SAFE_INTEGER,
+              ),
+              decision: args.decision as "continue" | "end" | "needs_user",
+              ...(args.subscription_id
+                ? {
+                    subscription_id: text(
+                      args.subscription_id,
+                      "subscription_id",
+                    ),
+                  }
+                : {}),
+              ...(args.check_interval_seconds !== undefined
+                ? {
+                    check_interval_seconds: integer(
+                      args.check_interval_seconds,
+                      "check_interval_seconds",
+                      60,
+                      86400,
+                    ),
+                  }
+                : {}),
+            });
+            if (!result.ok)
+              return {
+                ok: false,
+                error: { code: result.code!, message: result.message! },
+              };
+            value = result;
+            break;
+          }
+          case "mute": {
+            if (!bridge) throw new Error("会话桥梁未就绪");
+            if (typeof args.muted !== "boolean")
+              throw new TypeError("muted 必须为布尔值");
+            const result = bridge.mute(
+              agent(args.agent),
+              text(args.external_session_id, "external_session_id"),
+              args.muted,
+            );
+            if (!result.ok)
+              return {
+                ok: false,
+                error: { code: result.code!, message: result.message! },
+              };
+            value = result;
+            break;
+          }
           case "agents":
             value = adapters.list();
             break;
@@ -127,10 +262,14 @@ export function createRelayService({
           case "setup_probe_start":
           case "setup_probe_status": {
             if (!setup) throw new Error("前置安装接入未就绪");
-            if (endpoint === "setup_check") value = await setup.check(agent(args.agent));
-            else if (endpoint === "setup_install") value = await setup.install(agent(args.agent));
-            else if (endpoint === "setup_uninstall") value = await setup.uninstall();
-            else if (endpoint === "setup_probe_start") value = setup.probeStart();
+            if (endpoint === "setup_check")
+              value = await setup.check(agent(args.agent));
+            else if (endpoint === "setup_install")
+              value = await setup.install(agent(args.agent));
+            else if (endpoint === "setup_uninstall")
+              value = await setup.uninstall();
+            else if (endpoint === "setup_probe_start")
+              value = setup.probeStart();
             else value = setup.probeStatus();
             break;
           }
@@ -159,7 +298,10 @@ export function createRelayService({
             const selected = agent(args.agent);
             if (!adapters.get(selected).capabilities().snapshot)
               throw new TypeError("该 Agent 不支持查阅会话");
-            value = await subscriptions.inspect(selected, text(args.external_session_id, "external_session_id"));
+            value = await subscriptions.inspect(
+              selected,
+              text(args.external_session_id, "external_session_id"),
+            );
             await notifications.drain();
             break;
           }
@@ -173,24 +315,49 @@ export function createRelayService({
             const selected = agent(args.agent),
               external = text(args.external_session_id, "external_session_id");
             if (setup) await setup.requireReady(selected);
-            let session = type === "poll"
-              ? (args.dsh_session_id === undefined || args.dsh_session_id === null
-                ? currentSession ?? null : text(args.dsh_session_id, "dsh_session_id"))
-              : (args.dsh_session_id === undefined || args.dsh_session_id === null
-                ? null
-                : text(args.dsh_session_id, "dsh_session_id"));
+            let session =
+              type === "poll"
+                ? args.dsh_session_id === undefined ||
+                  args.dsh_session_id === null
+                  ? ((bridge
+                      ? store.bridge.route(selected, external)?.dsh_session_id
+                      : null) ??
+                    currentSession ??
+                    null)
+                  : text(args.dsh_session_id, "dsh_session_id")
+                : args.dsh_session_id === undefined ||
+                    args.dsh_session_id === null
+                  ? null
+                  : text(args.dsh_session_id, "dsh_session_id");
             if (session !== null) session = text(session, "dsh_session_id");
             if (session && hasDshSession && !(await hasDshSession(session)))
               throw new TypeError("接收通知的 DSH 会话不存在");
-            const maxFailures = args.max_consecutive_failures === undefined ? undefined
-              : integer(args.max_consecutive_failures, "max_consecutive_failures", 1, 100);
+            const maxFailures =
+              args.max_consecutive_failures === undefined
+                ? undefined
+                : integer(
+                    args.max_consecutive_failures,
+                    "max_consecutive_failures",
+                    1,
+                    100,
+                  );
             // 新建接收会话在所有配置校验后、取到有效基线后进行。
-            const result = await subscriptions.subscribe({
+            const result = await (bridge ?? subscriptions).subscribe({
+              ...(bridge
+                ? {
+                    topic:
+                      args.topic === undefined
+                        ? undefined
+                        : text(args.topic || "定期汇报新的进展或回复", "topic"),
+                    request_planning: !currentSession,
+                  }
+                : {}),
               type,
               agent: selected,
               external_session_id: external,
               dsh_session_id: session,
-              create_dsh_session: type === "poll" && !session ? createDshSession : undefined,
+              create_dsh_session:
+                type === "poll" && !session ? createDshSession : undefined,
               max_consecutive_failures: maxFailures,
               ...(args.idle_timeout_seconds !== undefined
                 ? {
@@ -208,7 +375,7 @@ export function createRelayService({
                       args.check_interval_seconds,
                       "check_interval_seconds",
                       60,
-                      3600,
+                      86400,
                     ),
                   }
                 : {}),
@@ -229,7 +396,9 @@ export function createRelayService({
                 error: { code: result.code, message: result.message },
               };
             value = {
-              subscription: result.subscription,
+              subscription: bridge
+                ? bridge.view(result.subscription)
+                : result.subscription,
               schedule_ready: result.subscription.schedule_task_id !== null,
             };
             break;
@@ -237,7 +406,10 @@ export function createRelayService({
           case "send": {
             const selected = agent(args.agent);
             if (setup) await setup.requireReady(selected);
-            const external = text(args.external_session_id, "external_session_id");
+            const external = text(
+              args.external_session_id,
+              "external_session_id",
+            );
             const content = text(args.content, "content");
             const subscribeAfterSend =
               args.subscribe_after_send === undefined
@@ -249,15 +421,32 @@ export function createRelayService({
             let receiveSession: string | undefined;
             if (subscribeAfterSend) {
               receiveSession = text(
-                args.dsh_session_id ?? currentSession,
+                args.dsh_session_id ??
+                  (bridge
+                    ? store.bridge.route(selected, external)?.dsh_session_id
+                    : null) ??
+                  currentSession,
                 "dsh_session_id",
               );
               if (hasDshSession && !(await hasDshSession(receiveSession)))
                 throw new TypeError("接收通知的 DSH 会话不存在");
             }
 
-            let subscriptionId: string | null = null;
-            if (args.subscription_id !== undefined && args.subscription_id !== null) {
+            let subscriptionId: string | null = bridge
+              ? (store.bridge.live(
+                  store.bridge.route(selected, external) ?? {
+                    id: "",
+                    agent: selected,
+                    external_session_id: external,
+                    dsh_session_id: null,
+                    muted: 0,
+                  },
+                )?.id ?? null)
+              : null;
+            if (
+              args.subscription_id !== undefined &&
+              args.subscription_id !== null
+            ) {
               subscriptionId = text(args.subscription_id, "subscription_id");
               const subscription = store.subscriptions.get(subscriptionId);
               if (
@@ -289,18 +478,31 @@ export function createRelayService({
                 | { status: "unknown"; error: string };
               // 发送前快照：发送成功后作为订阅基线，避免重新读取已发送后的历史。
               let baselineSnapshot: Snapshot | null = null;
-              if (!ownsLock) sendResult = { status: "rejected", reason: "此会话正在发送消息，请等待当前发送结束" };
+              if (!ownsLock)
+                sendResult = {
+                  status: "rejected",
+                  reason: "此会话正在发送消息，请等待当前发送结束",
+                };
               else if (!adapter.capabilities().sendMessage)
-                sendResult = { status: "rejected", reason: `${selected} 不支持发送消息` };
+                sendResult = {
+                  status: "rejected",
+                  reason: `${selected} 不支持发送消息`,
+                };
               else {
                 try {
                   const snapshot = await adapter.snapshot(external);
                   if (snapshot.closed) {
                     await subscriptions.closeSession(selected, external);
                     await notifications.drain();
-                    sendResult = { status: "rejected", reason: "外部会话不存在或已归档" };
+                    sendResult = {
+                      status: "rejected",
+                      reason: "外部会话不存在或已归档",
+                    };
                   } else if (snapshot.check_error) {
-                    sendResult = { status: "rejected", reason: snapshot.check_error };
+                    sendResult = {
+                      status: "rejected",
+                      reason: snapshot.check_error,
+                    };
                   } else {
                     baselineSnapshot = snapshot;
                     sendResult = await adapter.sendMessage(external, content);
@@ -317,8 +519,16 @@ export function createRelayService({
                       expected_status: "sending",
                       status: sendResult.status,
                       ...(sendResult.status === "sent"
-                        ? { external_ref: sendResult.external_ref, sent_at: Date.now() }
-                        : { error: "reason" in sendResult ? sendResult.reason : sendResult.error }),
+                        ? {
+                            external_ref: sendResult.external_ref,
+                            sent_at: Date.now(),
+                          }
+                        : {
+                            error:
+                              "reason" in sendResult
+                                ? sendResult.reason
+                                : sendResult.error,
+                          }),
                     });
               if (!transitioned) throw new Error("消息状态更新失败");
               // 排队的消息尝试立即推送（会话空闲且 channel 在线时）。
@@ -330,15 +540,24 @@ export function createRelayService({
                 subscriptions.touch(selected, external);
                 if (subscribeAfterSend) {
                   try {
-                    const subscribed = await subscriptions.subscribe({
+                    const subscribed = await (
+                      bridge ?? subscriptions
+                    ).subscribe({
                       type: "poll",
                       agent: selected,
                       external_session_id: external,
                       dsh_session_id: receiveSession,
-                      ...(baselineSnapshot ? { baseline_snapshot: baselineSnapshot } : {}),
-                      ...(selected === "codex" && saved.external_ref ? { target_turn_id: saved.external_ref } : {}),
+                      ...(baselineSnapshot
+                        ? { baseline_snapshot: baselineSnapshot }
+                        : {}),
+                      ...(selected === "codex" && saved.external_ref
+                        ? { target_turn_id: saved.external_ref }
+                        : {}),
                     });
-                    if (subscribed.ok) createdSubscription = subscribed.subscription;
+                    if (subscribed.ok)
+                      createdSubscription = bridge
+                        ? bridge.view(subscribed.subscription)
+                        : subscribed.subscription;
                     else subscriptionError = subscribed.message;
                   } catch (error) {
                     // 消息已发送，订阅失败不能把整次发送伪装成失败，避免调用方误重发。
@@ -349,9 +568,13 @@ export function createRelayService({
               value = {
                 message: saved,
                 subscription: createdSubscription,
-                ...(subscriptionError ? { subscription_error: subscriptionError } : {}),
+                ...(subscriptionError
+                  ? { subscription_error: subscriptionError }
+                  : {}),
               };
-            } finally { if (ownsLock) sending.delete(route); }
+            } finally {
+              if (ownsLock) sending.delete(route);
+            }
             break;
           }
           case "messages": {
@@ -368,7 +591,10 @@ export function createRelayService({
                 "external_session_id",
               );
             if (args.subscription_id !== undefined)
-              options.subscription_id = text(args.subscription_id, "subscription_id");
+              options.subscription_id = text(
+                args.subscription_id,
+                "subscription_id",
+              );
             value = store.messages.list(options);
             break;
           }
@@ -382,30 +608,127 @@ export function createRelayService({
               args.limit === undefined
                 ? 50
                 : integer(args.limit, "limit", 1, 100);
-            value = store.notifications.listRecent({ after, limit });
+            value = bridge
+              ? store.bridge.notices(
+                  after,
+                  args.after_id === undefined
+                    ? undefined
+                    : text(args.after_id, "after_id"),
+                  limit,
+                )
+              : store.notifications.listRecent({ after, limit });
             break;
           }
           case "update": {
             const id = text(args.subscription_id, "subscription_id");
+            if (bridge) {
+              if (
+                args.max_lifetime_seconds !== undefined ||
+                args.idle_timeout_seconds !== undefined ||
+                args.expires_at !== undefined
+              )
+                throw new TypeError("关注期固定24小时，不接受时间修改");
+              const current = store.subscriptions.get(id);
+              if (!current)
+                return {
+                  ok: false,
+                  error: { code: "not_found", message: "订阅不存在" },
+                };
+              if (args.check_interval_seconds !== undefined) {
+                const result = await bridge.plan(
+                  id,
+                  integer(
+                    args.check_interval_seconds,
+                    "check_interval_seconds",
+                    60,
+                    86400,
+                  ),
+                );
+                if (!result.ok)
+                  return {
+                    ok: false,
+                    error: { code: result.code!, message: result.message! },
+                  };
+              }
+              if (args.max_consecutive_failures !== undefined)
+                store.subscriptions.update({
+                  id,
+                  expected_status: current.status,
+                  patch: {
+                    max_consecutive_failures: integer(
+                      args.max_consecutive_failures,
+                      "max_consecutive_failures",
+                      1,
+                      100,
+                    ),
+                    updated_at: Date.now(),
+                  },
+                });
+              if (
+                args.check_interval_seconds === undefined &&
+                args.max_consecutive_failures === undefined
+              )
+                throw new TypeError("至少指定一个可修改配置");
+              value = bridge.view(store.subscriptions.get(id)!);
+              break;
+            }
             const result = await subscriptions.update(id, {
               ...(args.max_consecutive_failures !== undefined
-                ? { max_consecutive_failures: integer(args.max_consecutive_failures, "max_consecutive_failures", 1, 100) }
+                ? {
+                    max_consecutive_failures: integer(
+                      args.max_consecutive_failures,
+                      "max_consecutive_failures",
+                      1,
+                      100,
+                    ),
+                  }
                 : {}),
               ...(args.idle_timeout_seconds !== undefined
-                ? { idle_timeout_seconds: integer(args.idle_timeout_seconds, "idle_timeout_seconds", 60, 86400) }
+                ? {
+                    idle_timeout_seconds: integer(
+                      args.idle_timeout_seconds,
+                      "idle_timeout_seconds",
+                      60,
+                      86400,
+                    ),
+                  }
                 : {}),
               ...(args.check_interval_seconds !== undefined
-                ? { check_interval_seconds: integer(args.check_interval_seconds, "check_interval_seconds", 60, 3600) }
+                ? {
+                    check_interval_seconds: integer(
+                      args.check_interval_seconds,
+                      "check_interval_seconds",
+                      60,
+                      3600,
+                    ),
+                  }
                 : {}),
               ...(args.max_lifetime_seconds !== undefined
-                ? { max_lifetime_seconds: integer(args.max_lifetime_seconds, "max_lifetime_seconds", 60, 86400) }
+                ? {
+                    max_lifetime_seconds: integer(
+                      args.max_lifetime_seconds,
+                      "max_lifetime_seconds",
+                      60,
+                      86400,
+                    ),
+                  }
                 : {}),
               ...(args.expires_at !== undefined
-                ? { expires_at: integer(args.expires_at, "expires_at", 0, Number.MAX_SAFE_INTEGER) }
+                ? {
+                    expires_at: integer(
+                      args.expires_at,
+                      "expires_at",
+                      0,
+                      Number.MAX_SAFE_INTEGER,
+                    ),
+                  }
                 : {}),
             });
             if (!result.ok)
-              return { ok: false, error: { code: result.code, message: result.message } };
+              return {
+                ok: false,
+                error: { code: result.code, message: result.message },
+              };
             value = result.subscription;
             break;
           }
@@ -443,7 +766,7 @@ export function createRelayService({
             value = {
               ...page,
               items: page.items.map((sub) => ({
-                ...sub,
+                ...(bridge ? bridge.view(sub) : sub),
                 notification: store.notifications.getBySubscription(sub.id),
               })),
             };
@@ -463,20 +786,24 @@ export function createRelayService({
               };
             if (endpoint === "get")
               value = {
-                ...sub,
+                ...(bridge ? bridge.view(sub) : sub),
                 notification: store.notifications.getBySubscription(id),
               };
             else if (endpoint === "check") {
-              value = await checks.check(id);
+              value = bridge
+                ? await bridge.check(id, !!currentSession)
+                : await checks.check(id);
               await notifications.drain();
             } else {
-              const result = await subscriptions[endpoint](id);
+              const result = await (bridge ?? subscriptions)[endpoint](id);
               if (!result.ok)
                 return {
                   ok: false,
                   error: { code: result.code, message: result.message },
                 };
-              value = result.subscription;
+              value = bridge
+                ? bridge.view(result.subscription!)
+                : result.subscription;
             }
             break;
           }

@@ -13,7 +13,12 @@ import type {
   Snapshot,
 } from "../types.js";
 import { createRunner, type ClaudeRunner, type RunResult } from "./runner.js";
-import { findPrompt, finishedTurn, type Transcript } from "./transcript.js";
+import {
+  findPrompt,
+  finishedTurn,
+  textOf,
+  type Transcript,
+} from "./transcript.js";
 import { TranscriptReader } from "./transcript-reader.js";
 
 export interface ClaudeAdapterOptions {
@@ -27,21 +32,29 @@ export interface ClaudeAdapterOptions {
   // 开新会话执行一次性提示词的最长等待时间，超时记为 failed。
   runPromptTimeoutMs?: number;
   // 被终端持有的会话改由 channel 排队投递；未配置时按旧规则拒绝。
-  channel?: { accept(sessionId: string): Promise<{ status: "queued" } | { status: "rejected"; reason: string }> };
+  channel?: {
+    accept(
+      sessionId: string,
+    ): Promise<{ status: "queued" } | { status: "rejected"; reason: string }>;
+  };
 }
 interface Runtime {
   runtime: RuntimeStatus;
   held: boolean;
   error: string | null;
 }
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SESSION_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function createClaudeAdapter(
   options: ClaudeAdapterOptions = {},
 ): AgentAdapter {
   const projectsDir =
     options.projectsDir ??
-    join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
+    join(
+      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+      "projects",
+    );
   const run = options.runner ?? createRunner();
   const statusTimeoutMs = options.statusTimeoutMs ?? 15_000;
   const acceptTimeoutMs = options.acceptTimeoutMs ?? 120_000;
@@ -57,7 +70,10 @@ export function createClaudeAdapter(
       dirs = await readdir(projectsDir);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw new AdapterError("unavailable", `无法读取会话目录：${message(error)}`);
+      throw new AdapterError(
+        "unavailable",
+        `无法读取会话目录：${message(error)}`,
+      );
     }
     for (const dir of dirs) {
       const file = join(projectsDir, dir, `${sessionId}.jsonl`);
@@ -70,7 +86,10 @@ export function createClaudeAdapter(
       return await new TranscriptReader(file).scan();
     } catch (error) {
       if (error instanceof AdapterError) throw error;
-      throw new AdapterError("unavailable", `无法读取会话记录：${message(error)}`);
+      throw new AdapterError(
+        "unavailable",
+        `无法读取会话记录：${message(error)}`,
+      );
     }
   }
   // `claude agents --json` 只列出有进程持有的会话；不在列表中表示无进程持有。
@@ -96,14 +115,19 @@ export function createClaudeAdapter(
       if (typeof item?.sessionId !== "string") continue;
       // 后台会话的 state（如 blocked）含义未验证，按未知处理。
       const runtime: RuntimeStatus =
-        item.status === "busy" ? "busy" : item.status === "idle" ? "idle" : "unknown";
+        item.status === "busy"
+          ? "busy"
+          : item.status === "idle"
+            ? "idle"
+            : "unknown";
       map.set(item.sessionId, { runtime, held: true, error: null });
     }
     return map;
   }
   async function runtimeOf(sessionId: string): Promise<Runtime> {
     const all = await runtimes();
-    if (typeof all === "string") return { runtime: "unknown", held: true, error: all };
+    if (typeof all === "string")
+      return { runtime: "unknown", held: true, error: all };
     return all.get(sessionId) ?? { runtime: "idle", held: false, error: null };
   }
 
@@ -116,15 +140,27 @@ export function createClaudeAdapter(
     try {
       before = await reader.scan();
     } catch (error) {
-      throw new AdapterError("unavailable", `无法读取会话记录：${message(error)}`);
+      throw new AdapterError(
+        "unavailable",
+        `无法读取会话记录：${message(error)}`,
+      );
     }
     const state = await runtimeOf(sessionId);
     // 被终端持有（忙碌或空闲）：不用 --resume 注入，交给 channel 等空闲后推送。
-    if (!state.error && state.held && options.channel) return options.channel.accept(sessionId);
+    if (!state.error && state.held && options.channel)
+      return options.channel.accept(sessionId);
     const refusal = refuse(state);
     if (refusal) return { status: "rejected", reason: refusal };
     const child = run(
-      ["-p", "--resume", sessionId, "--permission-prompts", "none", "--output-format", "json"],
+      [
+        "-p",
+        "--resume",
+        sessionId,
+        "--permission-prompts",
+        "none",
+        "--output-format",
+        "json",
+      ],
       { cwd: before.cwd ?? undefined, input: text },
     ).then(
       (result) => ({ result }),
@@ -137,9 +173,13 @@ export function createClaudeAdapter(
     while (true) {
       const ref = await accepted(reader, before.cursor, text);
       if (ref) return { status: "sent", external_ref: ref };
-      if (exited) return afterExit(exited, await accepted(reader, before.cursor, text));
+      if (exited)
+        return afterExit(exited, await accepted(reader, before.cursor, text));
       if (Date.now() >= deadline)
-        return { status: "unknown", error: "等待消息写入会话记录超时，结果未知" };
+        return {
+          status: "unknown",
+          error: "等待消息写入会话记录超时，结果未知",
+        };
       await sleep(pollIntervalMs);
     }
   }
@@ -174,7 +214,8 @@ export function createClaudeAdapter(
       ],
       { timeoutMs: runPromptTimeoutMs },
     );
-    if (result.timedOut) return { status: "failed", error: "claude -p 执行超时" };
+    if (result.timedOut)
+      return { status: "failed", error: "claude -p 执行超时" };
     let output: { is_error?: boolean; result?: unknown } | null = null;
     try {
       output = JSON.parse(result.stdout);
@@ -195,14 +236,22 @@ export function createClaudeAdapter(
 
   return {
     agent: "claude",
-    capabilities: () => ({ listSessions: true, snapshot: true, sendMessage: true, runPrompt: true }),
+    capabilities: () => ({
+      listSessions: true,
+      snapshot: true,
+      sendMessage: true,
+      runPrompt: true,
+    }),
     async listSessions({ limit = 50 } = {}) {
       let dirs: string[];
       try {
         dirs = await readdir(projectsDir);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-        throw new AdapterError("unavailable", `无法读取会话目录：${message(error)}`);
+        throw new AdapterError(
+          "unavailable",
+          `无法读取会话目录：${message(error)}`,
+        );
       }
       const files: { id: string; file: string; mtime: number }[] = [];
       for (const dir of dirs) {
@@ -241,6 +290,38 @@ export function createClaudeAdapter(
       }
       return sessions;
     },
+    async incremental(sessionId, baseline = null) {
+      checkId(sessionId);
+      const file = await findFile(sessionId);
+      if (!file)
+        return { closed: true, events: [], cursor: baseline, has_more: false };
+      const transcript = await readTranscript(file);
+      const index = baseline
+        ? transcript.entries.findIndex((e) => e.uuid === baseline.uuid)
+        : -1;
+      if (baseline && index < 0)
+        throw new AdapterError(
+          "unavailable",
+          "增量基线已丢失，无法保证完整读取；请查阅并重新关注",
+        );
+      const remaining = transcript.entries.slice(index + 1),
+        entries = remaining.slice(0, 200);
+      return {
+        closed: false,
+        events: entries
+          .filter((e) => textOf(e.record.message?.content))
+          .map((e) => ({
+            id: e.uuid,
+            kind: e.record.type ?? "unknown",
+            text: textOf(e.record.message?.content)!,
+            cursor: { uuid: e.uuid, timestamp: e.time },
+          })),
+        cursor: entries.length
+          ? { uuid: entries.at(-1)!.uuid, timestamp: entries.at(-1)!.time }
+          : baseline,
+        has_more: remaining.length > entries.length,
+      };
+    },
     async snapshot(sessionId, baseline = null): Promise<Snapshot> {
       checkId(sessionId);
       const file = await findFile(sessionId);
@@ -263,7 +344,8 @@ export function createClaudeAdapter(
         runtimeOf(sessionId),
       ]);
       // 仍在处理时不判定结束，避免把工具调用间隙的 end_turn 当成完成。
-      const finished = state.runtime === "busy" ? null : finishedTurn(transcript, baseline);
+      const finished =
+        state.runtime === "busy" ? null : finishedTurn(transcript, baseline);
       return {
         closed: false,
         title: transcript.title,
@@ -309,7 +391,8 @@ function afterExit(
   ref: string | null,
 ): SendResult {
   if (ref) return { status: "sent", external_ref: ref };
-  if ("error" in exited) return { status: "failed", error: `无法执行 claude：${exited.error}` };
+  if ("error" in exited)
+    return { status: "failed", error: `无法执行 claude：${exited.error}` };
   const { code, stdout, stderr } = exited.result;
   let output: { is_error?: boolean; result?: unknown } | null = null;
   try {
@@ -319,10 +402,15 @@ function afterExit(
   }
   if (output?.is_error === true || code !== 0) {
     const detail =
-      typeof output?.result === "string" ? output.result : stderr.trim() || `退出码 ${code}`;
+      typeof output?.result === "string"
+        ? output.result
+        : stderr.trim() || `退出码 ${code}`;
     return { status: "failed", error: detail.slice(0, 500) };
   }
-  return { status: "unknown", error: "claude 已退出，但会话记录中未找到该消息" };
+  return {
+    status: "unknown",
+    error: "claude 已退出，但会话记录中未找到该消息",
+  };
 }
 function checkId(sessionId: string) {
   if (typeof sessionId !== "string" || !SESSION_ID.test(sessionId))

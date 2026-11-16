@@ -1,4 +1,10 @@
 import type { RelayStore, Notification } from "../storage/index.js";
+export type DeliveryNotice =
+  | Notification
+  | (Omit<Notification, "result"> & {
+      result: "progress";
+      bridge_context: true;
+    });
 export type DeliveryResult = {
   status: "delivered" | "failed" | "unknown";
   error?: string;
@@ -6,11 +12,11 @@ export type DeliveryResult = {
 export interface DeliveryTransport {
   deliver(
     sessionId: string,
-    notification: Notification,
+    notification: DeliveryNotice,
   ): Promise<DeliveryResult>;
   confirm(
     sessionId: string,
-    notification: Notification,
+    notification: DeliveryNotice,
   ): Promise<"delivered" | "not_delivered" | "unknown">;
 }
 export function createNotificationService({

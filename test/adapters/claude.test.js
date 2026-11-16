@@ -272,3 +272,11 @@ test("sendMessage：被终端持有的会话交给 channel，不调用 -p；无�
   assert.equal((await adapter(dir, free.run, { channel }).sendMessage(ID, "继续")).status, "sent");
   assert.equal(printed, true);
 });
+
+test("Claude 增量跨200条分页保留多轮与无文本页后的回复",async t=>{
+ const {dir,file}=fixture(t);writeFileSync(file,prompt("旧",1)+reply("旧结果",2));const a=adapter(dir,runner().run),base=(await a.snapshot(ID)).cursor;
+ appendFileSync(file,Array.from({length:200},(_,i)=>toolResult(3+i)).join("")+prompt("新",204)+reply("中间",205)+prompt("继续",206)+reply("最终",207));
+ const first=await a.incremental(ID,base);assert.equal(first.events.length,0);assert.equal(first.has_more,true);
+ const second=await a.incremental(ID,first.cursor);assert.deepEqual(second.events.map(e=>e.text),["新","中间","继续","最终"]);assert.equal(second.has_more,false);
+ assert.deepEqual((await a.incremental(ID,second.cursor)).events,[]);
+});

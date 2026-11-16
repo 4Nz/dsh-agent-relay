@@ -27,7 +27,20 @@ export interface SessionInfo {
   send_allowed?: boolean;
   send_reason?: string;
 }
+export interface IncrementalEvent {
+  id: string;
+  kind: string;
+  text: string;
+  cursor: SessionCursor;
+}
+export interface IncrementalPage {
+  events: IncrementalEvent[];
+  cursor: SessionCursor | null;
+  has_more: boolean;
+  closed: boolean;
+}
 export interface Snapshot {
+  events?: IncrementalEvent[];
   // 会话已归档或删除，其余字段无意义。
   closed: boolean;
   title: string | null;
@@ -76,7 +89,12 @@ export interface AgentAdapter {
   snapshot(
     sessionId: string,
     baseline?: SessionCursor | null,
+    options?: { incremental?: boolean },
   ): Promise<Snapshot>;
+  incremental?(
+    sessionId: string,
+    baseline?: SessionCursor | null,
+  ): Promise<IncrementalPage>;
   createSession?(input: { cwd: string }): Promise<SessionInfo>;
   dispose?(): void | Promise<void>;
   sendMessage(sessionId: string, text: string): Promise<SendResult>;

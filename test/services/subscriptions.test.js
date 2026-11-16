@@ -129,7 +129,7 @@ test("创建失败：会话已关闭、poll 缺 DSH 会话；push 不建定时�
   assert.equal(push.subscription.schedule_task_id, null);
   assert.equal(push.subscription.expires_at, 1000 + HOUR);
   sched.state.failCreate = true;
-  const pending = await service.subscribe(poll);
+  const pending = await service.subscribe({...poll,external_session_id:"pending"});
   assert.equal(pending.ok, true);
   assert.equal(pending.subscription.schedule_task_id, null);
   claude.state.snapshot = snapshot({ closed: true });
@@ -170,22 +170,24 @@ test("暂停、恢复、停止：状态冲突返回 conflict，恢复顺延有�
 test("查阅和发送顺延同一会话所有订阅；不超过最长存活", async (t) => {
   const { store, service, clock } = fixture(t);
   const a = (await service.subscribe(poll)).subscription;
-  const b = (await service.subscribe({ ...poll, type: "push", dsh_session_id: null })).subscription;
+  const b = (await service.subscribe({ ...poll, external_session_id:"push-separate", type: "push", dsh_session_id: null })).subscription;
   clock.now = 1000 + 30 * 60_000;
   await service.inspect("claude", SESSION);
+  await service.inspect("claude", "push-separate");
   assert.equal(store.subscriptions.get(a.id).expires_at, a.hard_expires_at);
   assert.equal(store.subscriptions.get(b.id).expires_at, clock.now + HOUR);
   clock.now = 1000 + 23.5 * HOUR;
-  assert.equal(service.touch("claude", SESSION), 2);
+  assert.equal(service.touch("claude", SESSION), 1);
   assert.equal(store.subscriptions.get(a.id).expires_at, a.hard_expires_at);
 });
 
 test("查阅时发现会话关闭：poll 结束为 session_closed 并删定时任务，push 登记通知等待投递", async (t) => {
   const { store, sched, service, claude } = fixture(t);
   const a = (await service.subscribe(poll)).subscription;
-  const b = (await service.subscribe({ ...poll, type: "push", dsh_session_id: null })).subscription;
+  const b = (await service.subscribe({ ...poll, external_session_id:"push-separate", type: "push", dsh_session_id: null })).subscription;
   claude.state.snapshot = snapshot({ closed: true });
   const result = await service.inspect("claude", SESSION);
+  await service.inspect("claude", "push-separate");
   assert.equal(result.closed, true);
   assert.equal(store.subscriptions.get(a.id).end_reason, "session_closed");
   assert.equal(sched.tasks.size, 0);
@@ -201,8 +203,8 @@ test("对账：补建缺失的定时任务，删除孤儿任务，不碰其他�
   sched.state.failCreate = true;
   const missing = (await service.subscribe(poll)).subscription;
   sched.state.failCreate = false;
-  const ok = (await service.subscribe(poll)).subscription;
-  const stopped = (await service.subscribe(poll)).subscription;
+  const ok = (await service.subscribe({...poll,external_session_id:"ok"})).subscription;
+  const stopped = (await service.subscribe({...poll,external_session_id:"stopped"})).subscription;
   sched.state.failDelete = true;
   await service.stop(stopped.id);
   sched.state.failDelete = false;

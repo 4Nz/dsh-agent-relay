@@ -16,7 +16,7 @@ export const subscription = (id = "s", type = "poll") => ({
   owner: "local",
   type,
   agent: "claude",
-  external_session_id: "session'1",
+  external_session_id: id === "s" ? "session'1" : `session:${id}`,
   dsh_session_id: "dsh",
   ...(type === "poll" ? { check_interval_seconds: 60 } : {}),
   created_at: 100,

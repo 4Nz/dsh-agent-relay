@@ -16,6 +16,10 @@ export type DeliveryStatus =
 export type Json =
   null | boolean | number | string | Json[] | { [key: string]: Json };
 export interface Subscription {
+  topic: string;
+  planning_state: string;
+  decision_version: number;
+  selected_interval_seconds: number | null;
   id: string;
   owner: string;
   type: SubscriptionType;
@@ -106,6 +110,8 @@ export type MessageInput = Pick<
     status?: "sending" | "queued";
   };
 export interface Notification {
+  // 仅用于桥梁传输，不写入旧通知表；正文不含任务完成判定。
+  bridge_context?: boolean;
   id: string;
   subscription_id: string;
   source: SubscriptionType;

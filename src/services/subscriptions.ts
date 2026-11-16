@@ -33,7 +33,7 @@ export interface PushSubscriptionInput {
 }
 export type SubscribeResult =
   | { ok: true; subscription: Subscription }
-  | { ok: false; code: "session_closed" | "unsupported" | "invalid_input"; message: string };
+  | { ok: false; code: "session_closed" | "unsupported" | "invalid_input" | "conflict"; message: string };
 export type ChangeResult =
   | { ok: true; subscription: Subscription }
   | { ok: false; code: "not_found" | "conflict"; message: string };

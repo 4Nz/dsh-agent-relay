@@ -1,3 +1,4 @@
+import { createBridgeService } from "./services/bridge.js";
 import type { Context } from "@deepseek-ai/cordis";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
@@ -9,7 +10,7 @@ import { startHistoryCleanup } from "./services/cleanup.js";
 import { createAdapterRegistry } from "./adapters/registry.js";
 import { createClaudeAdapter } from "./adapters/claude/index.js";
 import { createCodexAdapter } from "./adapters/codex/index.js";
-import { createDshScheduler, createPollingScheduler } from "./services/scheduler.js";
+import { createDshScheduler } from "./services/scheduler.js";
 import { createSubscriptionService } from "./services/subscriptions.js";
 import { createCheckService } from "./services/checks.js";
 import { createNotificationService } from "./services/notifications.js";
@@ -22,18 +23,28 @@ import { createDshSessions } from "./services/dsh-sessions.js";
 import { acquireRuntimeLock } from "./services/lock.js";
 import { startRelayRuntime } from "./services/runtime.js";
 import { registerRelayApi, type RelayConnection } from "./api.js";
-import { createChannelCredentialService, createNotificationCredentialService } from "./services/credentials.js";
+import {
+  createChannelCredentialService,
+  createNotificationCredentialService,
+} from "./services/credentials.js";
 import { createSkillInstallService } from "./services/skill-install.js";
 import { createPushHandler, createPushServer } from "./services/push.js";
 import { createClaudeChannelService } from "./services/claude-channel.js";
 import { createChannelRoutes } from "./services/channel-http.js";
 import { createClaudeAgentList } from "./adapters/claude/agents.js";
-import { createRunner, createResolvedRunner } from "./adapters/claude/runner.js";
+import {
+  createRunner,
+  createResolvedRunner,
+} from "./adapters/claude/runner.js";
 import { resolveCodexCommand } from "./adapters/codex/cli.js";
 import { createSetupService } from "./services/setup.js";
 import { randomUUID } from "node:crypto";
 import { PLUGIN_VERSION } from "./version.js";
-import { createRelayReceiveSession, RELAY_GROUP_TITLE, type ReceiveSessionContext } from "./services/receive-session.js";
+import {
+  createRelayReceiveSession,
+  RELAY_GROUP_TITLE,
+  type ReceiveSessionContext,
+} from "./services/receive-session.js";
 
 interface RelayHost extends DshDeliveryContext {
   schedule: unknown;
@@ -42,15 +53,18 @@ interface RelayHost extends DshDeliveryContext {
   // 接收会话须经 sessionController.create mint 并 compose 默认 preset，
   // 才能被 resolveAgent 成功 resume；不能用 sessions 的低级 create 只建记录。
   sessionController: DshDeliveryContext["sessionController"] & {
-    create(request: { workspaceId: string; agentPreset?: string }): Promise<{ sessionId: string }>;
+    create(request: {
+      workspaceId: string;
+      agentPreset?: string;
+    }): Promise<{ sessionId: string }>;
     rename(request: { sessionId: string; title: string }): Promise<unknown>;
   };
-  workspaceRegistry: { create(path: string, title?: string): Promise<{ id: string }> };
+  workspaceRegistry: {
+    create(path: string, title?: string): Promise<{ id: string }>;
+  };
   sessionQuery: DshDeliveryContext["sessionQuery"] & {
     listSessions(): Promise<{ header: { id: string } }[]>;
-    readTitleSnapshots(
-      ids: string[],
-    ): Promise<
+    readTitleSnapshots(ids: string[]): Promise<
       {
         sessionId: string;
         status: "fulfilled";
@@ -90,21 +104,21 @@ export function apply(ctx: Context): void {
   // Claude channel：独立凭证，明文由前置安装接入写入 Claude 侧供 channel server 读取。
   const channelCredentials = createChannelCredentialService({ dataDir });
   const claudeRunner = createRunner();
-  const codexRunner = createResolvedRunner((args) => resolveCodexCommand({ cliArgs: args }));
+  const codexRunner = createResolvedRunner((args) =>
+    resolveCodexCommand({ cliArgs: args }),
+  );
   const listClaudeAgents = createClaudeAgentList(claudeRunner);
   const channel = createClaudeChannelService({
     store,
     listAgents: listClaudeAgents,
-    onError: (error) => ctx.logger.warn("[agent-relay] claude channel: %s", error),
+    onError: (error) =>
+      ctx.logger.warn("[agent-relay] claude channel: %s", error),
   });
   const adapters = createAdapterRegistry([
     createClaudeAdapter({ channel }),
     codex,
   ]);
-  const scheduler = createPollingScheduler(createDshScheduler(host.schedule), async (id) => {
-    await checks.check(id);
-    await notifications.drain();
-  }, (error) => ctx.logger.warn("[agent-relay] poll failed: %s", error));
+  const scheduler = createDshScheduler(host.schedule);
   const subscriptions = createSubscriptionService({
     store,
     adapters,
@@ -127,8 +141,22 @@ export function apply(ctx: Context): void {
   });
   const createReceiveSession = (context?: ReceiveSessionContext) =>
     createRelayReceiveSession(host, relayDir, context);
+  const bridge = createBridgeService({
+    store,
+    adapters,
+    scheduler,
+    transport: createDshDelivery(host),
+    createSession: createReceiveSession,
+  });
+  const combinedNotifications = {
+    drain: async () => {
+      await notifications.drain();
+      await bridge.drain();
+    },
+  };
   const dshSessions = createDshSessions(host.sessionQuery);
   const service = createRelayService({
+    bridge,
     store,
     adapters,
     subscriptions,
@@ -143,15 +171,16 @@ export function apply(ctx: Context): void {
   });
   let stopping = false;
   const operations = new Set<Promise<unknown>>();
+  bridge.recover();
   const runtime = startRelayRuntime({
     store,
-    subscriptions,
-    notifications,
+    subscriptions: bridge,
+    notifications: combinedNotifications,
     onError: (error) =>
       ctx.logger.warn("[agent-relay] reconciliation failed: %s", error),
     beforeClose: async () => {
       await Promise.allSettled([...operations]);
-      await scheduler.stop();
+
       await codex.dispose?.();
     },
   });
@@ -176,6 +205,7 @@ export function apply(ctx: Context): void {
   let stopApi = () => {};
   let stopCleanup = () => {};
   const pushHandler = createPushHandler({
+    bridge,
     credentials: notificationCredentials,
     store,
     createSubscription: async (input) => subscriptions.createPush(input),
@@ -215,12 +245,20 @@ export function apply(ctx: Context): void {
       ctx.logger.warn("[agent-relay] history cleanup failed: %s", error),
   });
   void ensureRelayWorkspace(ctx);
-  void pushServer.start().then(({ host: bindHost, port }) => {
-    ctx.logger.info(`[agent-relay] push endpoint listening on ${bindHost}:${port}`);
-  }).catch((error) => {
-    ctx.logger.warn("[agent-relay] push endpoint unavailable:", error);
-  });
-  ctx.logger.info("[agent-relay] server plugin loaded, version %s", PLUGIN_VERSION);
+  void pushServer
+    .start()
+    .then(({ host: bindHost, port }) => {
+      ctx.logger.info(
+        `[agent-relay] push endpoint listening on ${bindHost}:${port}`,
+      );
+    })
+    .catch((error) => {
+      ctx.logger.warn("[agent-relay] push endpoint unavailable:", error);
+    });
+  ctx.logger.info(
+    "[agent-relay] server plugin loaded, version %s",
+    PLUGIN_VERSION,
+  );
 }
 
 // T6.3 通知会话分组的前置：在插件数据目录下建专用目录并注册为 workspace 项目，

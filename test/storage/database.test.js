@@ -16,7 +16,7 @@ test("建库重开、版本与事务回滚", () => {
   let db;
   try {
     db = openDatabase({ dataDir });
-    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 3);
+    assert.equal(db.prepare("PRAGMA user_version").get().user_version, migrations.length);
     assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
     assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
     assert.equal(
@@ -25,7 +25,7 @@ test("建库重开、版本与事务回滚", () => {
           "SELECT count(*) n FROM sqlite_master WHERE type='table' AND name LIKE 'relay_%'",
         )
         .get().n,
-      4,
+      7,
     );
     assert.throws(() =>
       transaction(db, () => {
@@ -51,7 +51,7 @@ test("建库重开、版本与事务回滚", () => {
     );
     db.close();
     db = openDatabase({ dataDir });
-    db.exec("PRAGMA user_version=4");
+    db.exec(`PRAGMA user_version=${migrations.length+1}`);
     db.close();
     db = null;
     assert.throws(() => openDatabase({ dataDir }), /版本/);
@@ -106,7 +106,7 @@ test("从版本 2 迁移到 3 保留消息并支持 queued", () => {
     migrate(db, migrations.slice(0, 2));
     db.exec("INSERT INTO relay_message(id,agent,external_session_id,content,status,created_at,sent_at,external_ref) VALUES('old','claude','s','继续','sent',1,2,'u1')");
     migrate(db);
-    assert.equal(db.prepare("PRAGMA user_version").get().user_version, 3);
+    assert.equal(db.prepare("PRAGMA user_version").get().user_version, migrations.length);
     const row = db.prepare("SELECT * FROM relay_message WHERE id='old'").get();
     assert.equal(row.status, "sent");
     assert.equal(row.external_ref, "u1");
@@ -116,4 +116,20 @@ test("从版本 2 迁移到 3 保留消息并支持 queued", () => {
   } finally {
     db.close();
   }
+});
+
+test("桥梁追加迁移保留已送事实、收敛重复活跃并复用最近结束的接收会话",()=>{
+ const db=new DatabaseSync(":memory:");try{
+ migrate(db,migrations.slice(0,3));
+ const insert=db.prepare("INSERT INTO relay_subscription(id,owner,type,agent,external_session_id,dsh_session_id,status,end_reason,check_interval_seconds,idle_timeout_seconds,max_lifetime_seconds,max_consecutive_failures,expires_at,hard_expires_at,created_at,updated_at,ended_at) VALUES(?,\u0027local\u0027,\u0027poll\u0027,\u0027claude\u0027,?,?,?, ?,60,86400,86400,3,?,?,?, ?,?)");
+ for(const [id,external,session,time,ended] of [["old","ended","old-dsh",1,true],["recent","ended","recent-dsh",2,true],["a","live","live-dsh",3,false],["b","live","wrong",4,false]])insert.run(id,external,session,ended?"ended":"active",ended?"completed":null,time+86400000,time+86400000,time,time,ended?time:null);
+ db.exec("INSERT INTO relay_notification(id,subscription_id,source,result,summary,delivery_status,delivery_attempts,delivery_key,delivered_at,created_at) VALUES(\u0027n\u0027,\u0027old\u0027,\u0027poll\u0027,\u0027completed\u0027,\u0027原摘要\u0027,\u0027delivered\u0027,1,\u0027n\u0027,2,1)");
+ migrate(db);
+ assert.equal(db.prepare("SELECT dsh_session_id FROM relay_bridge WHERE external_session_id=\u0027ended\u0027").get().dsh_session_id,"recent-dsh");
+ assert.equal(db.prepare("SELECT dsh_session_id FROM relay_bridge WHERE external_session_id=\u0027live\u0027").get().dsh_session_id,"live-dsh");
+ assert.equal(db.prepare("SELECT status FROM relay_subscription WHERE id=\u0027b\u0027").get().status,"ended");
+ assert.equal(db.prepare("SELECT delivery_status FROM relay_notification").get().delivery_status,"delivered");
+ assert.equal(db.prepare("SELECT count(*) n FROM relay_bridge_event").get().n,0);
+ assert.throws(()=>insert.run("duplicate","live","live-dsh","active",null,86400010,86400010,10,10,null));
+ }finally{db.close();}
 });

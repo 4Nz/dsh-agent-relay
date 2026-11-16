@@ -85,3 +85,10 @@ test("查询失败不能发送，resolveAgent 错误是明确未投递", async (
   ctx.sessionQuery.readSession = async () => ({ events: [] });
   assert.equal((await d.deliver("s", { delivery_key: "n" })).status, "failed");
 });
+
+test("桥梁只在明确idle时投递且不把规划渲染成任务完成",async()=>{
+ let status="running",messages=[];const transport=createDshDelivery({sessionController:{resolveAgent:async()=>({agent:{get status(){return status},session:{},followup:m=>messages.push(m)}})},sessions:{flush:async()=>true},sessionQuery:{readSession:async()=>({events:[]})}});
+ const n={id:"b",delivery_key:"b",bridge_context:true,summary:"规划关注",result:"completed",source:"push"};
+ assert.equal(await transport.idle("s"),false);assert.equal((await transport.deliver("s",n)).status,"failed");assert.equal(messages.length,0);
+ status="idle";await transport.deliver("s",n);assert.equal(messages[0].content[0].text,"规划关注");
+});
