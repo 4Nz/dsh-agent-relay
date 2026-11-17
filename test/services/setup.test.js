@@ -15,6 +15,7 @@ function fixture(t, { version = "2.1.311", flag = true, agents = [], registratio
   const skillsDir = join(root, "skills");
   mkdirSync(join(skillsDir, "dsh-notify"), { recursive: true });
   writeFileSync(join(skillsDir, "dsh-notify", "SKILL.md"), SKILL);
+  writeFileSync(join(skillsDir, "dsh-notify", "send.mjs"), "// sender v1\n");
   const channelEntry = join(root, "lib", "channel", "main.js");
   mkdirSync(join(root, "lib", "channel"), { recursive: true });
   writeFileSync(channelEntry, "");
@@ -78,6 +79,39 @@ function fixture(t, { version = "2.1.311", flag = true, agents = [], registratio
   return { service, home, files, calls, codexCalls, logs, channelEntry, skillsDir };
 }
 const byKey = (report) => Object.fromEntries(report.items.map((i) => [i.key, i]));
+
+for (const agent of ["claude", "codex"]) {
+  for (const file of ["SKILL.md", "send.mjs"]) {
+    test(`${agent} 随包 ${file} 缺失时不得把已有安装判为就绪`, async (t) => {
+      const { service, home, skillsDir } = fixture(t);
+      await service.install(agent);
+      const target = join(home, `.${agent}`, "skills", "dsh-notify", file);
+      const original = readFileSync(target, "utf8");
+      rmSync(join(skillsDir, "dsh-notify", file));
+      const check = await service.check(agent);
+      assert.equal(byKey(check).skill.status, "unavailable");
+      assert.match(byKey(check).skill.message, /重新构建.*重启/);
+      const result = await service.install(agent);
+      assert.equal(result.overall, "needs_action");
+      assert.equal(byKey(result).skill.action, "none");
+      assert.equal(readFileSync(target, "utf8"), original);
+    });
+  }
+  test(`${agent} 旧名称安装不能代替新版，修复须写入新版完整文件`, async (t) => {
+    const { service, home } = fixture(t);
+    const old = join(home, `.${agent}`, "skills", "external-agent-notification");
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, "SKILL.md"), "用户保留的旧版");
+    const target = join(home, `.${agent}`, "skills", "dsh-notify");
+    assert.equal(byKey(await service.check(agent)).skill.status, "missing");
+    assert.equal(existsSync(target), false, "检查不得写入文件");
+    assert.equal(byKey(await service.install(agent)).skill.action, "installed");
+    assert.equal(readFileSync(join(target, "SKILL.md"), "utf8"), SKILL);
+    assert.equal(readFileSync(join(target, "send.mjs"), "utf8"), "// sender v1\n");
+    assert.equal(readFileSync(join(old, "SKILL.md"), "utf8"), "用户保留的旧版");
+    assert.equal(byKey(await service.check(agent)).skill.status, "ok");
+  });
+}
 
 test("首次安装一次配好全部项，并提示新开终端与连通测试", async (t) => {
   const { service, files, channelEntry } = fixture(t);

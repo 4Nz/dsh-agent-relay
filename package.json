@@ -5,6 +5,8 @@
   "license": "Apache-2.0",
   "files": [
     "lib",
+    "README.en.md",
+    "docs/images/showcase/*.png",
     "cordis.patch.yml",
     "skills",
     "scripts/install-skills.mjs",

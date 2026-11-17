@@ -122,6 +122,26 @@ test('Codex 前置安装接入不再读取提示词，缺失 Skill 后可直接�
  assert.equal(nodes(tree).some(n=>n.props.role==='alert'),false);
 });
 
+for (const changed of [false, true]) {
+ test(`前置安装仍有未就绪项时不报告成功（部分修改：${changed}）`, async () => {
+  const report = { overall: 'needs_action', items: [
+   {key:'skill',status:'unavailable',action:'none',message:'插件缺少通知 Skill，请重新构建并重启'},
+   ...(changed ? [{key:'notification',status:'ok',action:'installed',message:'凭证已生成'}] : []),
+  ], next_steps: [] };
+  const rpc={async call(_c,method){const endpoint=method.split('/').at(-1);return{ok:true,value:endpoint==='agents'?[]:endpoint==='list'?{items:[]}:report};}};
+  const ui=clientHarness(rpc);let tree=ui.render();await ui.flush();tree=ui.render();
+  ui.nodes(tree).find(n=>n.type==='button'&&n.children.includes('前置安装接入')).props.onClick();
+  tree=ui.render();await ui.flush();tree=ui.render();
+  await ui.nodes(tree).find(n=>n.type==='button'&&n.children.includes('安装 / 修复')).props.onClick();
+  await ui.flush();
+  tree=ui.render();
+  const text=ui.nodes(tree).flatMap(n=>n.children.filter(c=>typeof c==='string')).join(' ');
+  assert.equal(text.includes('所有项已就绪'),false);
+  assert.equal(text.includes('安装完成'),false);
+  assert.match(text,/仍有.*未就绪/);
+ });
+}
+
 test('订阅列表：主动通知不显示立即检查与重新订阅，最近检查标注等待外部推送',async()=>{
  let plugin,cursor=0;const states=[],effects=[];
  const react={createElement:(type,props,...children)=>({type,props:props??{},children:children.flat(Infinity).filter(x=>x!==null&&x!==false&&x!==undefined)}),

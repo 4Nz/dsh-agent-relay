@@ -251,13 +251,15 @@ export function createSetupService({
   }
   function skillItem(agent: Agent): SetupItem {
     const packaged = packagedSkill();
-    const installed = read(skillTarget[agent]);
-    if (installed === null) return { key: "skill", status: "missing", message: "未安装通知 Skill" };
-    if (packaged !== null && installed.trim() !== packaged.trim()) return { key: "skill", status: "outdated", message: "通知 Skill 与当前插件版本不一致" };
     const sender = read(join(skillsDir, NOTIFICATION_SKILL, "send.mjs"));
-    if (sender !== null && read(join(dirname(skillTarget[agent]), "send.mjs")) !== sender)
+    if (packaged === null || sender === null)
+      return { key: "skill", status: "unavailable", message: `插件缺少 ${NOTIFICATION_SKILL} 的 ${packaged === null ? "SKILL.md" : "send.mjs"}，请重新安装插件；本地源码接入请重新构建并重启 DSH 宿主` };
+    const installed = read(skillTarget[agent]);
+    if (installed === null) return { key: "skill", status: "missing", message: `未安装 ${NOTIFICATION_SKILL}，点击「安装 / 修复」安装到 ${dirname(skillTarget[agent])}` };
+    if (installed.trim() !== packaged.trim()) return { key: "skill", status: "outdated", message: `${NOTIFICATION_SKILL} 与当前插件版本不一致，请点击「安装 / 修复」更新` };
+    if (read(join(dirname(skillTarget[agent]), "send.mjs")) !== sender)
       return { key: "skill", status: "outdated", message: "通知发送脚本缺失或需更新，请重新安装通知 Skill" };
-    return { key: "skill", status: "ok", message: "通知 Skill 已安装" };
+    return { key: "skill", status: "ok", message: `${NOTIFICATION_SKILL} 已安装，说明与发送脚本均匹配当前插件` };
   }
   async function sessions() {
     const online = channel.registrations();
@@ -318,11 +320,11 @@ export function createSetupService({
     const senderTarget = join(dir, "send.mjs");
     const content = packagedSkill();
     const sender = read(join(skillsDir, NOTIFICATION_SKILL, "send.mjs"));
-    if (content === null)
-      return { ...item, action: "none", message: "插件安装包缺少通知 Skill 内容，请重新安装插件" };
+    if (content === null || sender === null)
+      return { ...skillItem(agent), action: "none" };
     const backupPath = existsSync(target) ? backup(target) : existsSync(senderTarget) ? backup(senderTarget) : undefined;
     write(target, content);
-    if (sender !== null) write(senderTarget, sender);
+    write(senderTarget, sender);
     return { ...skillItem(agent), action: item.status === "missing" ? "installed" : "updated", backup: backupPath };
   }
 
@@ -333,8 +335,8 @@ export function createSetupService({
     items.push(channelServer());
     const blocking = items.some((i) => i.status === "unavailable");
     // 通知凭证是纯文件检查，与 claude 命令是否可用无关，始终展示。
-    items.push(notificationItem());
-    if (!blocking) items.push(mcpItem(), tokenItem(), ruleItem(), includeItem(), shellItem(), skillItem("claude"));
+    items.push(notificationItem(), skillItem("claude"));
+    if (!blocking) items.push(mcpItem(), tokenItem(), ruleItem(), includeItem(), shellItem());
     return {
       blocking,
       report: { agent: "claude", overall: "ok", version, items, sessions: await sessions(), next_steps: [] },
