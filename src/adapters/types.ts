@@ -15,6 +15,7 @@ export interface SessionCursor {
   uuid: string;
   timestamp: number;
   target_turn_id?: string;
+  // 增量基线所需的原始轮次状态；不是执行实例的实时状态。
   turn_status?: string;
 }
 export interface SessionInfo {
@@ -52,6 +53,17 @@ export interface Snapshot {
   held: boolean;
   // 运行状态查询失败的原因；此时 runtime 为 unknown。
   runtime_error: string | null;
+  // 正常观测的能力边界，不计作查询失败。
+  runtime_note?: string | null;
+  status_context?: {
+    runtime_source: "codex_daemon" | "codex_history_reader";
+    turn_status_source: "persisted_history";
+    turn_status_scope: "historical";
+    note: string;
+  };
+  // inspect 服务的观测时间与活动时间差；不是空闲时长或卡住判据。
+  observed_at?: number;
+  last_activity_age_seconds?: number | null;
   send_allowed?: boolean;
   send_reason?: string;
   // 实际查询失败；与 Codex 正常的实时状态 unknown 说明分开。

@@ -14,7 +14,8 @@ function fixture(t) {
   });
   let time = 1000,
     busy = false,
-    reads = 0;
+    reads = 0,
+    nextTask = 0;
   const wakeups = [],
     tasks = new Map();
   let events = [];
@@ -41,7 +42,7 @@ function fixture(t) {
     adapters: { get: () => adapter },
     scheduler: {
       create: async (x) => {
-        const id = String(tasks.size + 1);
+        const id = String(++nextTask);
         tasks.set(id, x);
         return id;
       },
@@ -946,4 +947,88 @@ test("notify_poll在显式重绑后仍指向旧批次和旧通知的原接收会
  const response=await relay.call("notify_poll",{});assert.equal(response.ok,true);
  assert.equal(response.value.find(n=>n.id===batch.id).dsh_session_id,"old-dsh");
  assert.equal(response.value.find(n=>n.id==="legacy-notice").dsh_session_id,"old-dsh");
+});
+
+
+for (const state of ['active', 'paused', 'ended']) {
+  test(`同一 DSH 接收 A/B：A 为 ${state} 时可关注 B，批次与屏蔽互不影响`, async t => {
+    const f = fixture(t);
+    const a = (await f.bridge.subscribe(input)).subscription;
+    if (state === 'paused') await f.bridge.pause(a.id);
+    if (state === 'ended') await f.bridge.stop(a.id);
+    const result = await f.bridge.subscribe({ ...input, external_session_id: 'external-b', topic: '关注 B' });
+    assert.equal(result.ok, true);
+    const b = result.subscription;
+    assert.equal(b.dsh_session_id, a.dsh_session_id);
+    assert.notEqual(b.id, a.id);
+    assert.equal(f.tasks.size, state === 'active' ? 2 : 1);
+    assert.ok(f.tasks.has(b.schedule_task_id));
+    if (state === 'active') assert.ok(f.tasks.has(a.schedule_task_id));
+    assert.equal(f.store.subscriptions.get(a.id).status, state);
+    f.setBusy(true);
+    const push = (external, request) => f.bridge.push({ agent: 'claude', external_session_id: external,
+      request_id: request, summary: request, result: 'progress' });
+    await push('external', '来自 A');
+    await push('external-b', '来自 B');
+    f.setBusy(false);
+    await f.bridge.drain();
+    const routeA = f.store.bridge.route('claude', 'external');
+    const routeB = f.store.bridge.route('claude', 'external-b');
+    const batchA = f.store.bridge.open(routeA.id);
+    const batchB = f.store.bridge.open(routeB.id);
+    const factsA = f.bridge.batch(batchA.id), factsB = f.bridge.batch(batchB.id);
+    assert.equal(factsA.agent, 'claude');
+    assert.equal(factsA.external_session_id, 'external');
+    assert.equal(factsB.external_session_id, 'external-b');
+    assert.ok(factsA.events.every(e => e.body.includes('来自 A')));
+    assert.ok(factsB.events.every(e => e.body.includes('来自 B')));
+    await f.bridge.decide({ batch_id: batchB.id, decision_version: batchB.version, decision: 'continue' });
+    assert.equal(f.store.subscriptions.get(a.id).status, state);
+    assert.equal(f.store.subscriptions.get(b.id).status, 'active');
+    await f.bridge.mute('claude', 'external', true);
+    assert.equal(f.bridge.batch(batchA.id).status, 'muted');
+    assert.equal(f.store.bridge.route('claude', 'external-b').muted, 0);
+    assert.equal(f.store.bridge.route('claude', 'external').dsh_session_id, 'dsh');
+    if (state === 'paused') {
+      await f.bridge.resume(a.id);
+      assert.equal(f.store.subscriptions.get(a.id).status, 'active');
+      assert.equal(f.store.subscriptions.get(b.id).status, 'active');
+    }
+  });
+}
+
+
+test('Codex interrupted 增量经过桥梁仍带历史语义，重复检查无新事实且恢复保留来源', async t => {
+  const { createCodexAdapter } = await import('../../lib/adapters/codex/index.js');
+  const f = fixture(t);
+  const external = '11111111-2222-3333-4444-555555555555';
+  const thread = { id: external, name: '专用测试', cwd: '/tmp/test', updatedAt: 10, status: { type: 'notLoaded' } };
+  const turn = { id: 'turn-1', status: 'interrupted', startedAt: 1, completedAt: null,
+    items: [{ id: 'a', type: 'agentMessage', text: '等待权限' }] };
+  Object.assign(f.adapter, createCodexAdapter({ connect: async () => ({ close() {}, request: async method => {
+    if (method === 'thread/list') return { data: [], nextCursor: null };
+    if (method === 'thread/read') return { thread };
+    if (method === 'thread/turns/list') return { data: [turn], nextCursor: null };
+    assert.fail(method);
+  } }) }));
+  const sub = (await f.bridge.subscribe({ ...input, agent: 'codex', external_session_id: external })).subscription;
+  thread.updatedAt = 20;
+  turn.items.push({ id: 'b', type: 'agentMessage', text: '权限已经解决，正在执行检查' });
+  const check = await f.bridge.check(sub.id);
+  assert.equal(check.status, 'events');
+  assert.equal(check.agent, 'codex');
+  assert.equal(check.external_session_id, external);
+  const event = JSON.parse(check.events.find(e => e.kind === 'turn').body);
+  assert.equal(event.status, 'interrupted');
+  assert.equal(event.status_context.turn_status_scope, 'historical');
+  assert.ok(check.events.some(e => e.body.includes('权限已经解决')));
+  assert.equal(typeof check.observation_guidance, 'string');
+  const restored = f.bridge.batch(check.batch_id);
+  assert.equal(restored.observation_guidance, check.observation_guidance);
+  assert.deepEqual(restored.events, check.events);
+  await f.bridge.decide({ batch_id: check.batch_id, decision_version: check.decision_version, decision: 'continue' });
+  assert.equal((await f.bridge.check(sub.id)).status, 'unchanged');
+  const current = f.store.subscriptions.get(sub.id);
+  assert.equal(current.status, 'active');
+  assert.equal(current.consecutive_failures, 0);
 });

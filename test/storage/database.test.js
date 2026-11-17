@@ -133,3 +133,41 @@ test("桥梁追加迁移保留已送事实、收敛重复活跃并复用最近�
  assert.throws(()=>insert.run("duplicate","live","live-dsh","active",null,86400010,86400010,10,10,null));
  }finally{db.close();}
 });
+
+
+test('版本 6 升级允许多个外部路由共用接收会话，保留批次事件与外键且失败可回滚', () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'relay-v7-'));
+  let db = new DatabaseSync(join(dataDir, 'agent-relay.sqlite'));
+  try {
+    db.exec('PRAGMA foreign_keys=ON');
+    migrate(db, migrations.slice(0, 6));
+    db.exec(`
+      INSERT INTO relay_bridge VALUES('route-a','codex','external-a','dsh',1);
+      INSERT INTO relay_bridge_batch(id,bridge_id,dsh_session_id,version,state,created_at,recovery_schedule_id,watch_context)
+        VALUES('batch-a','route-a','dsh',2,'delivered',100,'reminder-a','{"topic":"原主题"}');
+      INSERT INTO relay_bridge_event(seq,id,bridge_id,kind,body,created_at,batch_id)
+        VALUES(41,'event-a','route-a','turn','原始事实',100,'batch-a');
+    `);
+    const before = ['relay_bridge', 'relay_bridge_batch', 'relay_bridge_event'].map(table =>
+      db.prepare(`SELECT * FROM ${table}`).all());
+    assert.throws(() => migrate(db, [...migrations, 'INVALID SQL;']));
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
+    assert.throws(() => db.exec("INSERT INTO relay_bridge VALUES('b','codex','external-b','dsh',0)"), /UNIQUE/);
+    migrate(db);
+    for (const [i, table] of ['relay_bridge', 'relay_bridge_batch', 'relay_bridge_event'].entries()) {
+      assert.deepEqual(db.prepare(`SELECT * FROM ${table}`).all(), before[i]);
+    }
+    db.exec("INSERT INTO relay_bridge VALUES('b','codex','external-b','dsh',0)");
+    assert.throws(() => db.exec("INSERT INTO relay_bridge VALUES('c','codex','external-a','other',0)"), /UNIQUE/);
+    assert.throws(() => db.exec("INSERT INTO relay_bridge_event(id,bridge_id,kind,body,created_at) VALUES('bad','missing','turn','x',101)"), /FOREIGN KEY/);
+    db.exec("INSERT INTO relay_bridge_event(id,bridge_id,kind,body,created_at) VALUES('next','b','turn','下一条',101)");
+    assert.equal(db.prepare("SELECT seq FROM relay_bridge_event WHERE id='next'").get().seq, 42);
+    assert.equal(db.prepare('PRAGMA foreign_keys').get().foreign_keys, 1);
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+    db.close();
+    db = openDatabase({ dataDir });
+    assert.equal(db.prepare('SELECT count(*) n FROM relay_bridge').get().n, 2);
+    assert.equal(db.prepare("SELECT watch_context FROM relay_bridge_batch WHERE id='batch-a'").get().watch_context, '{"topic":"原主题"}');
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+  } finally { db.close(); rmSync(dataDir, { recursive: true, force: true }); }
+});

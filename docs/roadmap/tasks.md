@@ -28,9 +28,9 @@
 
 2026-11-16 用户确认的会话桥梁规则替代一次性 poll/push、无活动顺延、可配置总超时和插件默认每分钟读历史。设计见 `docs/superpowers/specs/T1-T2-T3-T4-T6-T7-session-bridge-design.md`。
 
-- `(agent,external_session_id)` 唯一路由，一对一绑定 DSH 接收会话；标题/目录仅展示。一个有效关注期只有一个主题，active/paused 共占名额；同主题复用，不同主题/接收会话冲突必须让用户选择停止重新来或继续原关注。
+- `(agent,external_session_id)` 唯一路由，每个外部来源绑定一个 DSH 接收会话；同一 DSH 可接收多个外部来源，A 活跃/暂停/停止均不阻止关注 B。标题/目录仅展示。一个有效关注期只有一个主题，active/paused 共占名额；同主题复用，不同主题/接收会话冲突必须让用户选择停止重新来或继续原关注。
 - 关注固定从创建起 24 小时截止；查阅、发送、暂停、重启不顺延，到期不取消外部任务。结束后重新关注默认复用原 DSH 会话，仅用户明确选择才重绑新会话。
-- `poll` 关注期间可多次汇报相关进展；无变化静默，单轮完成不自动结束。DSH 模型根据用户语义目标决定 continue/end/needs_user；需要用户则暂停，用户停止、截止、外部关闭、失败阈值也会结束。
+- `poll` 关注期间可多次汇报相关进展；无变化静默，单轮完成不自动结束。DSH 模型根据用户语义目标决定 continue/end/needs_user；只有明确且仍未解决的用户介入事项才 needs_user 并立即暂停；Codex 历史 interrupted、runtime=unknown 或暂时无新输出不能作为暂停依据。用户停止、截止、外部关闭、失败阈值也会结束。
 - 用户频率优先；未指定则 DSH 选择并告知。`pending` 待规划，`ready` 已选频率，`deciding` 待批次判断；实际频率未选为 null，不隐式每 60 秒。间隔至少 60 秒，不能超过剩余关注期。
 - 调度由宿主持久提醒维护，页面新建会发送规划事件，当前 DSH 工具调用创建由当前模型继续规划。插件 30 秒维护只收敛截止、对账宿主提醒、处理队列/未知投递，不默认轮询外部历史。
 - `push` 按稳定 request_id 幂等并进入相同路由；同一会话的不同 request_id 不新建重复会话。已有关注时取消下一次定时等待，忙或未知先落库，明确空闲后合批，原回答不被打断。结束后 push 仍进原接收会话，不自动重订阅。
@@ -86,7 +86,7 @@
 | `notification_recorded_at` | 首次生成通知时原子写入，通知清理后保留用于防重 |
 | `created_at`、`updated_at`、`ended_at` | |
 
-**`relay_bridge` / `relay_bridge_event` / `relay_bridge_batch`**：唯一路由、按序事件、稳定版本批次。SQLite v4/v5 追加迁移，收敛旧重复活跃关注，保留既有投递事实不重放；批次持久保存原投递目标、恢复提醒与屏蔽前状态。
+**`relay_bridge` / `relay_bridge_event` / `relay_bridge_batch`**：唯一路由、按序事件、稳定版本批次。SQLite v4/v5/v6/v7 追加迁移；v7 将接收会话唯一约束改为普通索引，保留外部来源唯一性、历史路由和批次目标。此前迁移已结束的关注不自动恢复。收敛旧重复活跃关注，保留既有投递事实不重放；批次持久保存原投递目标、恢复提醒与屏蔽前状态。
 
 **`relay_notification`**：旧版单次通知兼容表，不作为新桥梁事件详情源。每条旧订阅最多一条。
 
@@ -119,7 +119,7 @@ T1 已提供独立存储模块；接口、迁移与限制见 `docs/superpowers/p
 
 | 编号 | 任务 | 要点 |
 | --- | --- | --- |
-| T2.1 | `AgentAdapter` 接口 | `listSessions()` 列出候选会话；`snapshot(sessionId)` 返回当前位置、最近活动时间、运行状态（`idle` / `busy` / `unknown`）、会话是否已归档或删除、基线之后是否有已结束的轮次及其结果、最后一条回复；`sendMessage(sessionId, text)`；`capabilities()` 声明支持哪些操作，不支持的操作返回“不支持” |
+| T2.1 | `AgentAdapter` 接口 | `listSessions()` 列出候选会话；`snapshot(sessionId)` 返回当前位置、最近活动时间、运行状态（`idle` / `busy` / `unknown`）、会话是否已归档或删除、基线之后是否有已结束的轮次及其结果、最后一条回复；Codex 的 status_context 区分历史状态和运行状态来源，正常能力说明用 runtime_note；inspect 增加 observed_at/last_activity_age_seconds（不代表空闲时长）；`sendMessage(sessionId, text)`；`capabilities()` 声明支持哪些操作，不支持的操作返回“不支持” |
 | T2.2 | Adapter 注册表 | 按 `agent` 字段查找。新增 Agent 只需加一个 Adapter |
 | T2.3 | 订阅服务 | 创建时建立基线与主题关注，唯一约束保护 active/paused；固定24小时，暂停/继续/结束不改截止。默认复用原接收会话，异主题冲突由用户选择。启动对账宿主提醒 |
 | T2.4 | 检查执行器 | 宿主提醒触发 relay_check，读取可分页增量并交 DSH 判断；无变化静默。连续失败计数成功清零，达阈值结束说明；到期/关闭确定性拦截。规划与确认使用 relay_plan/relay_decide |

@@ -449,3 +449,16 @@ test("停止订阅取消未开始的投递通知，不改写任务结果", async
   // 任务结果仍为 completed，不因停止改写。
   assert.equal(notif.result, "completed");
 });
+
+
+test('查阅给出观测时间与距最近活动时间，不推断空闲或推进', async t => {
+  const { service, clock, claude } = fixture(t);
+  clock.now = 10000;
+  for (const [activity, age] of [[5500, 4], [12000, 0], [null, null]]) {
+    claude.state.snapshot = snapshot({ last_activity_at: activity, runtime: 'unknown' });
+    const result = await service.inspect('claude', SESSION);
+    assert.equal(result.observed_at, 10000);
+    assert.equal(result.last_activity_age_seconds, age);
+    assert.equal(result.runtime, 'unknown');
+  }
+});

@@ -59,6 +59,9 @@ export function createBridgeStore(db: DatabaseSync) {
     );
   return {
     route,
+    routeById(id: string) {
+      return decode<Bridge>(db.prepare("SELECT * FROM relay_bridge WHERE id=?").get(id));
+    },
     routePage(after: string, limit: number) {
       const rows = db
         .prepare("SELECT * FROM relay_bridge WHERE id>? ORDER BY id LIMIT ?")

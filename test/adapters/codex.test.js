@@ -258,3 +258,58 @@ test("Codex 新订阅后已完成基线无变化不重放，同轮新增回复�
  const running=await setup({turns:[turn({status:"inProgress",completedAt:null})]});const initial=(await running.adapter.snapshot(ID)).cursor;
  const done=await adapter.incremental(ID,initial);assert.ok(done.events.some(e=>e.kind==="assistant"));assert.ok(done.events.some(e=>e.kind==="turn"));
 });
+
+
+test('Codex 历史 interrupted 仍新增输出：说明观测边界，不作为运行错误', async () => {
+  const before = await setup({ turns: [turn({ status: 'interrupted', completedAt: null })] });
+  const base = await before.adapter.snapshot(ID);
+  const after = await setup({
+    metadata: { ...thread, updatedAt: 250 },
+    turns: [turn({ status: 'interrupted', completedAt: null, items: [
+      { type: 'agentMessage', id: 'reply-1', text: '测试回复' },
+      { type: 'agentMessage', id: 'reply-2', text: '权限问题已解决，正在检查修改' },
+    ] })],
+  });
+  const s = await after.adapter.snapshot(ID, base.cursor);
+  assert.equal(s.runtime, 'unknown');
+  assert.equal(s.runtime_error, null);
+  assert.match(s.runtime_note, /无法确认/);
+  assert.equal(s.status_context.runtime_source, 'codex_daemon');
+  assert.equal(s.status_context.turn_status_source, 'persisted_history');
+  assert.equal(s.status_context.turn_status_scope, 'historical');
+  assert.equal(s.cursor.turn_status, 'interrupted');
+  assert.equal(s.finished_turn, null);
+  assert.equal(s.last_activity_at, 250000);
+  assert.equal(s.last_reply, '权限问题已解决，正在检查修改');
+  const event = JSON.parse(s.events.find(e => e.kind === 'turn').text);
+  assert.equal(event.status, 'interrupted');
+  assert.deepEqual(event.status_context, s.status_context);
+  // 无基线查阅含已有内容，不能把非空 events 当成新增输出。
+  assert.ok((await after.adapter.snapshot(ID)).events.length > 0);
+  assert.deepEqual((await after.adapter.incremental(ID, s.cursor)).events, []);
+});
+
+test('Codex 查询来源与实时状态分开，专用后台保留 busy/idle 能力', async t => {
+  const { createCodexAdapter } = await import('../../lib/adapters/codex/index.js');
+  const reader = createCodexAdapter({ connect: async () => ({
+    transport: 'stdio', close() {},
+    request: async method => method === 'thread/list' ? { data: [], nextCursor: null }
+      : method === 'thread/read' ? { thread: { ...thread, status: { type: 'active' } } }
+      : { data: [turn()], nextCursor: null },
+  }) });
+  const historical = await reader.snapshot(ID);
+  assert.equal(historical.runtime, 'unknown');
+  assert.equal(historical.runtime_error, null);
+  assert.equal(historical.status_context.runtime_source, 'codex_history_reader');
+  for (const [status, runtime, allowed] of [['idle', 'idle', true], ['active', 'busy', false]]) {
+    const { adapter, store } = await writable(t, { request: async method => method === 'thread/read'
+      ? { thread: { ...thread, status: { type: status } } } : undefined });
+    store.codexSessions.register({ session_id: ID, endpoint: ENDPOINT, created_at: 1 });
+    const s = await adapter.snapshot(ID);
+    assert.equal(s.runtime, runtime);
+    assert.equal(s.send_allowed, allowed);
+    assert.equal(s.runtime_note, null);
+    assert.equal(s.runtime_error, null);
+    assert.equal(s.status_context.runtime_source, 'codex_daemon');
+  }
+});

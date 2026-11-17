@@ -327,7 +327,14 @@ async function closeSession(agent: Agent, externalSessionId: string) {
       if (snapshot.check_error) throw new Error(snapshot.check_error);
       if (snapshot.closed) await closeSession(agent, externalSessionId);
       else subs.touchSession({ agent, external_session_id: externalSessionId, now: now() });
-      return snapshot;
+      const observedAt = now();
+      return {
+        ...snapshot,
+        observed_at: observedAt,
+        last_activity_age_seconds: snapshot.closed || snapshot.last_activity_at == null
+          ? null
+          : Math.max(0, Math.floor((observedAt - snapshot.last_activity_at) / 1000)),
+      };
     },
     // 通过 Relay 向会话发送消息后调用（T2.7）。
     touch(agent: Agent, externalSessionId: string) {

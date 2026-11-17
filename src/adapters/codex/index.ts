@@ -67,6 +67,7 @@ function info(
         : writable && status === "idle"
           ? "idle"
           : "unknown",
+    // 兼容旧发送策略的保守占用值，不是实际进程或实时执行状态的证据。
     held: true,
     // 桌面/其他会话经 thread/queue/add 排队投递，可发送；专用会话沿用 turn/start 需 idle/notLoaded。
     send_allowed:
@@ -421,6 +422,12 @@ export function createCodexAdapter(
           return closedSnapshot();
         }
         if (metadata.id !== sessionId) bad();
+        const statusContext: NonNullable<Snapshot["status_context"]> = {
+          runtime_source: client.transport === "stdio" ? "codex_history_reader" : "codex_daemon",
+          turn_status_source: "persisted_history",
+          turn_status_scope: "historical",
+          note: "轮次状态来自持久化历史，不代表当前执行状态；interrupted、runtime=unknown 和 held 不能单独证明卡住或需要用户。新增内容需结合正文判断；活动时间变化只说明会话有更新。事件游标时间不是消息产生时间。",
+        };
         const target = baseline?.target_turn_id;
         const increment: NonNullable<Snapshot["events"]> = [];
         let latest: RecordValue | null = null;
@@ -510,7 +517,7 @@ export function createCodexAdapter(
               turnEvents.push({
                 id: `turn:${id}:${status}`,
                 kind: "turn",
-                text: JSON.stringify({ turn_id: id, status }),
+                text: JSON.stringify({ turn_id: id, status, status_context: statusContext }),
                 cursor: eventCursor,
               });
               increment.unshift(...turnEvents);
@@ -588,7 +595,9 @@ export function createCodexAdapter(
           closed: false,
           cursor,
           last_activity_at: activity,
-          runtime_error:
+          status_context: statusContext,
+          runtime_error: null,
+          runtime_note:
             metadata.runtime === "unknown"
               ? client.transport === "stdio"
                 ? "当前读取持久化历史，无法确认桌面会话的实时运行状态"

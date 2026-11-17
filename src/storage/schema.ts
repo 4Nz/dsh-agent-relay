@@ -125,4 +125,19 @@ CREATE UNIQUE INDEX subscription_one_live_bridge ON relay_subscription(agent,ext
 ALTER TABLE relay_bridge_batch ADD COLUMN suspended_state TEXT;`,
   `ALTER TABLE relay_bridge_batch ADD COLUMN watch_context TEXT;
 UPDATE relay_bridge_batch SET watch_context=(SELECT json_object('topic',s.topic,'subscription_status',s.status,'planning_state',s.planning_state,'selected_interval_seconds',s.selected_interval_seconds,'hard_expires_at',s.hard_expires_at) FROM relay_subscription s WHERE s.id=relay_bridge_batch.subscription_id);`,
+  `
+-- 同一接收会话允许多个外部路由。引用均为 NO ACTION，在同一事务内延迟检查，
+-- 备份后按原表名重建并重新插入原 ID；不重命名父表，避免改写子表外键目标。
+PRAGMA defer_foreign_keys=ON;
+CREATE TEMP TABLE relay_bridge_v7_backup AS SELECT * FROM relay_bridge;
+DROP TABLE relay_bridge;
+CREATE TABLE relay_bridge (
+ id TEXT PRIMARY KEY, agent TEXT NOT NULL, external_session_id TEXT NOT NULL,
+ dsh_session_id TEXT, muted INTEGER NOT NULL DEFAULT 0,
+ UNIQUE(agent,external_session_id)
+) STRICT;
+INSERT INTO relay_bridge SELECT * FROM relay_bridge_v7_backup;
+DROP TABLE relay_bridge_v7_backup;
+CREATE INDEX bridge_receiver ON relay_bridge(dsh_session_id);
+`,
 ];

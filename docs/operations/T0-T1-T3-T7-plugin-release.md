@@ -11,6 +11,14 @@
 
 `release:prepare`仍只完成类型、单测、包清单与隔离tarball安装；不启动真实DSH，不覆盖新桥梁T7。真实验收必须独立DSH_HOME和专用会话，不能据历史Codex专项通过宣称本轮已验收，也不在本任务自动部署/发布。
 
+## T1-T2-T3-T5-T6 状态与路由修复升级注意（2026-11-17）
+
+追加 SQLite v7 迁移，将 relay_bridge.dsh_session_id 从 UNIQUE 改为普通索引，同一 DSH 可关注多个外部会话。迁移在事务内保留原路由 ID、屏蔽状态、事件顺序、批次、原投递目标及恢复提醒；外键延迟至提交时检查，失败整批回滚。不清空 A 的接收绑定，也不恢复此前已结束的关注。升级后 schema 为 7，旧版插件不能直接读取；回滚仍须恢复升级前配套备份。
+
+Codex 正常 unknown 的说明移至 runtime_note，runtime_error 为 null；新增 status_context 标注历史轮次状态来源和用途。原始 cursor、turn status、事件 ID 和完成检测保留兼容，既有调用方应改读 runtime_note。inspect 附带 observed_at/last_activity_age_seconds，不代表实时空闲；check/batch/通知附带来源身份和观测说明。同步更新 DSH Skill；needs_user 会暂停关注，不能仅因 unknown 或历史 interrupted 触发。
+
+当前工作树中的 release:prepare 产物仅用于本地验证，包版本未提升；不得覆盖已分发的同版本包，正式分发前需按下文更新版本。
+
 ## 交付方式与兼容性
 
 第一阶段分发编译好的 npm `.tgz`，不发布到 npm registry，保留 `private:true`。npm 安装不运行编译，也不会自动安装 Skill。运行要求 Node.js >=24；服务端 ESM、浏览器入口为 DSH loader factory，不能用普通 ESM 文件替代。

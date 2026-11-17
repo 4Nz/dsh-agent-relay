@@ -989,6 +989,9 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         snapshot.external_session_id === sub.external_session_id &&
         h("div", { className: "notice" },
           h("p", null, snapshot.value.closed ? "外部会话已关闭" : `运行状态：${snapshot.value.runtime ?? "unknown"}`),
+          snapshot.value.runtime_note && h("p", null, snapshot.value.runtime_note),
+          snapshot.value.status_context?.note && h("p", null, snapshot.value.status_context.note),
+          snapshot.value.last_activity_age_seconds != null && h("p", null, `距最近可见活动：${snapshot.value.last_activity_age_seconds} 秒（不代表空闲时长）`),
           snapshot.value.runtime_error && h("p", null, snapshot.value.runtime_error),
           h("p", { style: { whiteSpace: "pre-wrap" } }, snapshot.value.last_reply ?? "暂无回复节选")),
       error && h("p", { role: "alert", className: "error" }, error),
