@@ -5,6 +5,14 @@ import { validatePackage } from "../../scripts/release.mjs";
 const pkg = { name: "dsh-agent-relay", version: "0.1.0", exports: { ".": { import: "./lib/index.js", types: "./lib/index.d.ts" }, "./client": { default: "./lib/client.js" } }, dsh: { bundle: { patch: "./cordis.patch.yml" } } };
 const files = ["package.json", "lib/index.js", "lib/index.d.ts", "lib/client.js", "cordis.patch.yml", "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/SKILL.md", "README.md", "CHANGELOG.md", "docs/operations/T0-T1-T3-T7-plugin-release.md"];
 files.push("skills/dsh-notify/send.mjs");
+const showcaseFiles = ["task-dashboard", "dsh-subscribe", "dsh-pause", "codex-notify-request", "dsh-send-to-codex", "codex-notify-and-reply", "claude-cli-notify"].map((name) => `docs/images/showcase/${name}.png`);
+files.push("README.en.md", ...showcaseFiles);
+test("发布检查包含双语说明和全部展示图片，拒绝额外图片", () => {
+  assert.doesNotThrow(() => validatePackage(pkg, files));
+  for (const missing of ["README.en.md", ...showcaseFiles])
+    assert.throws(() => validatePackage(pkg, files.filter((f) => f !== missing)), /缺少/);
+  assert.throws(() => validatePackage(pkg, [...files, "docs/images/showcase/private.png"]), /不允许/);
+});
 test("发布检查拒绝缺失导出和缺失 Skill", () => {
   assert.doesNotThrow(() => validatePackage(pkg, files, "v0.1.0"));
   for (const missing of ["lib/index.d.ts", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/send.mjs"])
