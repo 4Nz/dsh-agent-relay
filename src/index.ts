@@ -1,3 +1,4 @@
+import { createSessionTitleSync } from "./services/session-title-sync.js";
 import { createBridgeService } from "./services/bridge.js";
 import type { Context } from "@deepseek-ai/cordis";
 import { join } from "node:path";
@@ -141,7 +142,13 @@ export function apply(ctx: Context): void {
   });
   const createReceiveSession = (context?: ReceiveSessionContext) =>
     createRelayReceiveSession(host, relayDir, context);
+  const titleSync = createSessionTitleSync({
+    store,
+    rename: (request) => host.sessionController.rename(request),
+    onError: (error) => ctx.logger.warn("[agent-relay] session title sync failed: %s", error),
+  });
   const bridge = createBridgeService({
+    observeTitle: titleSync.observe,
     store,
     adapters,
     scheduler,
@@ -156,6 +163,7 @@ export function apply(ctx: Context): void {
   };
   const dshSessions = createDshSessions(host.sessionQuery);
   const service = createRelayService({
+    observeTitle: titleSync.observe,
     bridge,
     store,
     adapters,
@@ -180,6 +188,7 @@ export function apply(ctx: Context): void {
       ctx.logger.warn("[agent-relay] reconciliation failed: %s", error),
     beforeClose: async () => {
       await Promise.allSettled([...operations]);
+      await titleSync.drain();
 
       await codex.dispose?.();
     },

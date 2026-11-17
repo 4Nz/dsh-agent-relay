@@ -80,7 +80,6 @@ export type SubscriptionPatch = Partial<
     | "type"
     | "agent"
     | "external_session_id"
-    | "external_session_title"
     | "external_cwd"
     | "created_at"
     | "notification_recorded_at"

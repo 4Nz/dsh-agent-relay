@@ -94,6 +94,7 @@ function setup(t, options = {}) {
     hasDshSession: async (id) => id === "dsh",
     createDshSession: async () => "new-dsh",
     onQueued: options.onQueued,
+    observeTitle: options.observeTitle,
   });
   return {
     relay,
@@ -553,4 +554,17 @@ test("Claude 终端持有的会话：消息记为 queued 并触发推送检查�
   assert.equal(rejected.value.message.status, "rejected");
   assert.match(rejected.value.message.error, /channel/);
   assert.equal(triggered, 1);
+});
+
+
+test("手动查阅成功观察标题，关闭或查询异常不触发同步", async t => {
+  const observed = [];
+  const f = setup(t, { observeTitle: (...args) => observed.push(args) });
+  assert.equal((await f.relay.call("inspect", {agent:"claude", external_session_id:"ext"})).ok, true);
+  assert.deepEqual(observed, [["claude", "ext", "测试"]]);
+  f.adapters.get("claude").snapshot = async () => ({closed:false, title:"错误标题", check_error:"失败"});
+  await f.relay.call("inspect", {agent:"claude", external_session_id:"ext"});
+  f.adapters.get("claude").snapshot = async () => ({closed:true, title:"已关闭"});
+  await f.relay.call("inspect", {agent:"claude", external_session_id:"ext"});
+  assert.equal(observed.length, 1);
 });

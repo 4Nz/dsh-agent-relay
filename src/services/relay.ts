@@ -94,8 +94,10 @@ export function createRelayService({
   onQueued,
   setup,
   bridge,
+  observeTitle,
 }: {
   bridge?: BridgeService;
+  observeTitle?: (agent: Agent, external: string, title: string | null) => void;
   store: RelayStore;
   adapters: AdapterRegistry;
   subscriptions: SubscriptionService;
@@ -317,10 +319,13 @@ export function createRelayService({
             const selected = agent(args.agent);
             if (!adapters.get(selected).capabilities().snapshot)
               throw new TypeError("该 Agent 不支持查阅会话");
-            value = await subscriptions.inspect(
+            const snapshot = await subscriptions.inspect(
               selected,
               text(args.external_session_id, "external_session_id"),
             );
+            value = snapshot;
+            if (!snapshot.closed && !snapshot.check_error)
+              observeTitle?.(selected, text(args.external_session_id, "external_session_id"), snapshot.title);
             await notifications.drain();
             break;
           }
