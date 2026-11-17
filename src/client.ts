@@ -81,8 +81,22 @@ const checkText = (sub: any) => {
     return `检查失败 ${sub.consecutive_failures}/${sub.max_consecutive_failures} · ${ago}`;
   return `检查成功 · ${ago}`;
 };
-const planningText = (sub: any) => ({ pending: "待 DSH 规划", ready: "频率已规划", deciding: "待 DSH 判断" }[sub.planning_state as string] ?? "—");
-const frequencyText = (sub: any) => sub.selected_interval_seconds ? `每 ${sub.selected_interval_seconds / 60} 分钟` : "尚未选择频率";
+const hasFrequency = (sub: any) =>
+  Number.isSafeInteger(sub.selected_interval_seconds) &&
+  sub.selected_interval_seconds >= 60;
+const planningText = (sub: any) => {
+  if (sub.type === "push") return "无需轮询规划";
+  if (hasFrequency(sub)) return "频率已规划";
+  return ({ pending: "待 DSH 规划", deciding: "待 DSH 判断" }[
+    sub.planning_state as string
+  ] ?? "待 DSH 规划");
+};
+const frequencyText = (sub: any) => {
+  if (sub.type === "push") return "不适用（主动通知）";
+  if (hasFrequency(sub))
+    return `每 ${sub.selected_interval_seconds / 60} 分钟`;
+  return "尚未选择频率";
+};
 const deliveryText = (sub: any) => {
   const batch = sub.decision_batch;
   if (batch) return `${label(batch.state)} · ${sub.pending_events ?? 0} 条待处理事件`;
@@ -113,13 +127,13 @@ const css = `
 .ar .primary{background:var(--dsw-alias-button-ghost-active-fill,#4b4b51);border-color:var(--dsw-alias-button-ghost-active-border,#74747d)}
 .ar .muted{color:var(--dsw-alias-label-secondary,#aaa)}.ar .small{font-size:12px}.ar header{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:26px 28px 18px;border-bottom:1px solid var(--dsw-alias-border-l2,#393939)}
 .ar h1{font-size:20px;margin:0 0 4px;font-weight:600}.ar h2{font-size:18px;margin:0}.ar p{margin:6px 0}.ar .body{padding:20px 28px}.ar .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.ar .between{justify-content:space-between}.ar .notice{padding:10px 14px;border:1px solid var(--dsw-alias-border-l2,#393939);border-radius:8px;margin-bottom:20px;background:var(--dsw-alias-bg-layer-1,#202020)}
-.ar .filters{margin:18px 0}.ar .filters select{min-width:124px}.ar .table-wrap{overflow:auto;border:1px solid var(--dsw-alias-border-l2,#393939);border-radius:10px}.ar table{border-collapse:collapse;width:100%;min-width:1180px;text-align:left}.ar th{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary,#aaa);background:var(--dsw-alias-bg-layer-1,#202020);white-space:nowrap}.ar th,.ar td{padding:14px 16px;border-bottom:1px solid var(--dsw-alias-border-l2,#393939);vertical-align:middle}.ar tbody tr:last-child td{border-bottom:0}.ar tbody tr:hover{background:var(--dsw-alias-interactive-bg-hover,#292929)}
+.ar .filters{margin:18px 0}.ar .filters select{min-width:124px}.ar .table-wrap{overflow:auto;border:1px solid var(--dsw-alias-border-l2,#393939);border-radius:10px}.ar table{border-collapse:collapse;width:100%;min-width:1290px;text-align:left}.ar th{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary,#aaa);background:var(--dsw-alias-bg-layer-1,#202020);white-space:nowrap}.ar th,.ar td{padding:14px 16px;border-bottom:1px solid var(--dsw-alias-border-l2,#393939);vertical-align:middle}.ar tbody tr:last-child td{border-bottom:0}.ar tbody tr:hover{background:var(--dsw-alias-interactive-bg-hover,#292929)}
 .ar .link{background:transparent;border:0;padding:0;text-align:left;color:inherit}.ar .title{font-weight:500;max-width:270px;line-height:1.5}.ar .path{max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px}.ar .badge{display:inline-flex;padding:3px 8px;border-radius:5px;font-size:12px;font-weight:500;white-space:nowrap;border-color:transparent}.ar .good{color:var(--dsw-alias-state-business-primary,#a4b7ff)}.ar .bad{color:var(--dsw-alias-state-error-primary,#f28b82)}.ar .warn{color:var(--dsw-alias-state-warn-label,#e8bd75)}.ar .actions{display:flex;gap:8px;flex-wrap:nowrap;white-space:nowrap}.ar .actions button{font-size:12px;padding:4px 8px}.ar .empty{text-align:center;padding:60px 20px}.ar .empty strong{display:block;margin-bottom:8px}
 .ar .overlay{position:fixed;inset:0;z-index:1000;background:#0007;display:flex;justify-content:flex-end}.ar .drawer{width:min(520px,100%);height:100%;overflow:auto;background:var(--dsw-alias-bg-base,#181818);box-shadow:var(--dsw-elevation-prominent,-8px 0 32px #0004);padding:24px;display:flex;flex-direction:column;gap:20px}.ar .drawer footer{display:flex;justify-content:flex-end;gap:10px;margin-top:auto;padding-top:20px;border-top:1px solid var(--dsw-alias-border-l2,#393939)}.ar label{display:flex;flex-direction:column;gap:7px}.ar .drawer .fields{display:grid;gap:14px}.ar .detail{display:grid;grid-template-columns:110px minmax(0,1fr);gap:14px}.ar .detail dt{color:var(--dsw-alias-label-secondary,#aaa)}.ar .detail dd{margin:0;overflow-wrap:anywhere;white-space:pre-wrap}.ar .error{color:var(--dsw-alias-state-error-primary,#f28b82)}
 .ar select{appearance:none;padding:8px 36px 8px 13px;background-image:linear-gradient(45deg,transparent 50%,var(--dsw-alias-label-secondary,#aaa) 50%),linear-gradient(135deg,var(--dsw-alias-label-secondary,#aaa) 50%,transparent 50%);background-position:calc(100% - 17px) 50%,calc(100% - 13px) 50%;background-size:4px 4px;background-repeat:no-repeat}
 .ar .agent-stack{display:flex;align-items:center;gap:8px;white-space:nowrap}.ar .agent-label{font-weight:600;font-size:13px;letter-spacing:.1px}.ar .type-label{font-size:11px;color:var(--dsw-alias-label-secondary,#aaa);padding:1px 6px;border:1px solid var(--dsw-alias-border-l2,#393939);border-radius:4px;white-space:nowrap}
 .ar .state-active{color:var(--dsw-alias-state-business-primary,#a4b7ff);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#a4b7ff) 12%,transparent)}.ar .state-paused{color:var(--dsw-alias-state-warn-label,#e8bd75);background:color-mix(in srgb,var(--dsw-alias-state-warn-label,#e8bd75) 10%,transparent)}.ar .state-ended{color:var(--dsw-alias-label-secondary,#aaa);background:var(--dsw-alias-bg-layer-1,#252525)}
-.ar .subscription-state{white-space:nowrap}.ar .start-time{font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--dsw-alias-label-secondary,#aaa)}.ar .expiry{white-space:nowrap}.ar .message-cell{min-width:100px}
+.ar .subscription-state{white-space:nowrap}.ar .frequency-cell{white-space:nowrap}.ar .start-time{font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--dsw-alias-label-secondary,#aaa)}.ar .expiry{white-space:nowrap}.ar .message-cell{min-width:100px}
 .ar .drawer select{width:100%;min-height:40px}.ar .drawer option{background:var(--dsw-alias-bg-layer-1,#202020);color:var(--dsw-alias-label-primary,#eee)}
 @media(max-width:700px){.ar header{padding:18px 16px;align-items:flex-start}.ar .body{padding:16px}.ar .drawer{padding:20px}.ar .detail{grid-template-columns:90px minmax(0,1fr)}}
 `;
@@ -682,7 +696,13 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           },
           "结束关注",
         ),
-      h("button", { disabled: busy, onClick: () => void muteRoute(sub) }, sub.muted ? "解除 push 屏蔽" : "屏蔽 push"),
+      h("button", {
+        disabled: busy,
+        title: sub.muted
+          ? "恢复接收该外部会话的主动通知"
+          : "暂停接收该外部会话的主动通知；保留已记录事件，不停止历史订阅检查",
+        onClick: () => void muteRoute(sub),
+      }, sub.muted ? "解除 push 屏蔽" : "屏蔽 push"),
       // push 不进行历史检查；如需关注历史，通过新建关注显式开启。
       sub.status === "ended" &&
         sub.type === "poll" &&
@@ -753,8 +773,12 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         { className: "subscription-state" },
         h("span", { className: `badge state-${sub.status}` }, label(sub.status)),
         h("div", { className: "small muted" }, planningText(sub)),
-        h("div", { className: "small muted" }, frequencyText(sub)),
         sub.muted ? h("div", { className: "small warn" }, "push 已屏蔽") : null,
+      ),
+      h(
+        "td",
+        { className: "frequency-cell" },
+        h("div", { className: "small muted" }, frequencyText(sub)),
       ),
       h(
         "td",
@@ -1259,6 +1283,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
                     "外部会话",
                     "Agent / 类型",
                     "订阅状态",
+                    "频率",
                     "开始时间",
                     "有效期",
                     "最近检查",
@@ -1274,6 +1299,11 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         "p",
         { className: "muted small" },
         "订阅状态、任务执行结果和通知投递结果分别记录；检查失败不代表任务失败。",
+      ),
+      h(
+        "p",
+        { className: "muted small" },
+        "屏蔽 push 只暂停这个外部会话的主动通知投递：已记录事件会保留，历史订阅检查继续进行；解除屏蔽后恢复接收。",
       ),
       (cursor || next) &&
         h(
@@ -1294,7 +1324,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         ),
     ),
     h("section",{className:"card","aria-label":"会话路由管理"},
-      h("h2",null,"会话路由"),h("p",{className:"muted small"},"独立管理外部会话与接收会话的关系。仅接收 push 的会话也会保留在这里。"),
+      h("h2",null,"会话路由"),h("p",{className:"muted small"},"独立管理外部会话与接收会话的关系。仅接收 push 的会话也会保留在这里。屏蔽 push 只暂停主动通知，不删除事件，也不停止历史关注。"),
       routeError&&h("p",{role:"alert",className:"error"},routeError),
       h("button",{disabled:busy,onClick:()=>setRefreshVersion(v=>v+1)},"刷新路由"),
       ...routes.map(route=>h("article",{className:"notice",key:route.id},

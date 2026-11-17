@@ -135,6 +135,7 @@ test('订阅列表：主动通知不显示立即检查与重新订阅，最近�
   {...base,id:'push-active',type:'push',external_session_id:'ext-1',external_session_title:'通知中的会话',status:'active',dsh_session_id:'dsh-1'},
   {...base,id:'push-ended',type:'push',external_session_id:'ext-2',external_session_title:'已结束的通知',status:'ended',end_reason:'delivered',dsh_session_id:null},
   {...base,id:'poll-active',type:'poll',external_session_id:'ext-3',external_session_title:'检查中的会话',status:'active',dsh_session_id:'dsh-3',schedule_task_id:'relay-poll-1',last_checked_at:now-30_000,last_check_status:'success'},
+  {...base,id:'poll-ready-missing',type:'poll',external_session_id:'ext-5',external_session_title:'规划状态缺频率',status:'active',dsh_session_id:'dsh-5',planning_state:'ready',selected_interval_seconds:null},
   {...base,id:'poll-ended',type:'poll',external_session_id:'ext-4',external_session_title:'已结束的检查',status:'ended',end_reason:'completed',dsh_session_id:'dsh-4'},
  ];
  const rpc={async call(_channel,method){return{ok:true,value:method.endsWith('/agents')?[]:method.endsWith('/list')?{items,next_cursor:null}:{}};}};
@@ -142,16 +143,23 @@ test('订阅列表：主动通知不显示立即检查与重新订阅，最近�
  const render=()=>{cursor=0;return plugin.AgentRelayPanel({rpc,openSession(){}});};
  const flush=async()=>{for(const run of effects.splice(0))run();await new Promise(r=>setImmediate(r));};
  let tree=render();await flush();tree=render();
+ const headers=nodes(tree).filter(n=>n.type==='th').map(n=>n.children.filter(x=>typeof x==='string').join(''));
+ assert.deepEqual(headers,['外部会话','Agent / 类型','订阅状态','频率','开始时间','有效期','最近检查','会话消息','操作']);
  const rows=nodes(tree).filter(n=>n.type==='tr');
  const rowOf=title=>rows.find(r=>nodes(r).some(n=>Array.isArray(n.children)&&n.children.includes(title)));
  const rowButtons=row=>nodes(row).filter(n=>n.type==='button').map(b=>b.children.filter(x=>typeof x==='string').join(''));
  const pushActive=rowButtons(rowOf('通知中的会话'));
  assert.ok(!pushActive.includes('立即检查'));
  assert.ok(nodes(rowOf('通知中的会话')).some(n=>Array.isArray(n.children)&&n.children.includes('等待外部推送')));
+ assert.ok(nodes(rowOf('通知中的会话')).some(n=>Array.isArray(n.children)&&n.children.includes('不适用（主动通知）')));
  const pushEnded=rowButtons(rowOf('已结束的通知'));
  assert.ok(!pushEnded.includes('重新订阅'));
  assert.ok(pushEnded.includes('打开会话')===false);
  assert.ok(rowButtons(rowOf('检查中的会话')).includes('立即检查'));
+ assert.ok(nodes(rowOf('检查中的会话')).some(n=>Array.isArray(n.children)&&n.children.includes('尚未选择频率')));
+ const inconsistent=rowOf('规划状态缺频率');
+ assert.ok(nodes(inconsistent).some(n=>Array.isArray(n.children)&&n.children.includes('待 DSH 规划')));
+ assert.ok(!nodes(inconsistent).some(n=>Array.isArray(n.children)&&n.children.includes('频率已规划')));
  assert.ok(rowButtons(rowOf('已结束的检查')).includes('重新订阅'));
 });
 
