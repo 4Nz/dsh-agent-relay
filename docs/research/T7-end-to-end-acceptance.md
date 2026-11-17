@@ -1,5 +1,6 @@
 # T7 端到端验收记录
 
+> 名称说明：通知 Skill 现名为 `dsh-notify`，下文路径已同步更新；历史验证时使用的名称为 `external-agent-notification`，不代表已重新执行真实验收。
 状态：**进行中**。schema 迁移 bug 已于 2026-11-12 18:25 解除（删空库 + 重启 dsh web，新库 schema 正确），开始逐场景实测。
 
 验证日期：2026-11-12（Asia/Shanghai）。环境：Node.js v24.14.0、DSH 0.2.1-rc.2、Claude Code 2.1.311、Codex CLI 0.163.0、运行中的 daemon 0.167.2。
@@ -116,7 +117,7 @@ dsh web
 
 **⚠️ 真实 bug：push 自动新建接收会话投递失败（已修复 + 复测通过）**：修复前 push 通知 `delivery_status=failed`、`delivery_error="无法加载接收通知的 DSH 会话"`，重试 3 次耗尽。根因：`src/index.ts` 的 `createReceiveSession` 用 `host.sessions.create(id, { meta: { cwd } })`（低级 API，仅建存储记录、不 compose agent preset/model），导致 `sessionController.resolveAgent` 无法 resume 该会话；对比 poll 投递到当前会话（`session-a23ef3ce`）成功 `delivered`。**修复**：改用 `host.sessionController.create({ cwd: relayDir })`（mint 会话 + compose 默认 preset），并扩展 `RelayHost` 的 `sessionController` 类型加 `create`。**复测通过**：重启 web 后新 push `push:t7-codex-push2` → `status=ended`、`end_reason=delivered`，通知 `delivery_status=delivered`（`attempts=1`），接收会话 ID 为规范 `session-38a1988f` 格式。push 送达 + 防重 + 投递全链路闭环。
 
-**T6.6 一键安装 skill 真实宿主缺陷**：`relay_install_skill`（claude）触发的一次性会话返回 `completed` 但明确「Skill 没有装上」。根因：`claude -p --permission-prompts none` 的非交互会话写 `~/.claude/skills/**` 需要权限审批，但无审批界面被自动拒绝，目录与文件均未创建。需在交互式 Claude 终端批准、或在 `~/.claude/settings.json` 的 `permissions.allow` 加 `Write(~/.claude/skills/**)`、或手动创建目录拷贝随包源文件（Codex 侧已手动安装到 `~/.codex/skills/external-agent-notification/`）。
+**T6.6 一键安装 skill 真实宿主缺陷**：`relay_install_skill`（claude）触发的一次性会话返回 `completed` 但明确「Skill 没有装上」。根因：`claude -p --permission-prompts none` 的非交互会话写 `~/.claude/skills/**` 需要权限审批，但无审批界面被自动拒绝，目录与文件均未创建。需在交互式 Claude 终端批准、或在 `~/.claude/settings.json` 的 `permissions.allow` 加 `Write(~/.claude/skills/**)`、或手动创建目录拷贝随包源文件（Codex 侧已手动安装到 `~/.codex/skills/dsh-notify/`）。
 
 ### T7.3a 浏览器弹窗提醒
 

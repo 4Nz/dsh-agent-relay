@@ -39,7 +39,7 @@ assert.equal(wakeupsAfterIdle, 1); // 同会话批量唤醒
 
 ### Task 2: 页面、Skill 与文档对齐
 
-**文件：** src/client.ts、skills/dsh-agent-relay/SKILL.md、skills/external-agent-notification/*、README.md、AGENTS.md、docs/roadmap/*、docs/research/dsh-plugin-development.md、相关测试。
+**文件：** src/client.ts、skills/dsh-agent-relay/SKILL.md、skills/dsh-notify/*、README.md、AGENTS.md、docs/roadmap/*、docs/research/dsh-plugin-development.md、相关测试。
 **输入：** Task 1 报告中的确切接口。
 **输出：** 新建关注主题/失败阈值表单，DSH 调度状态可见，主题冲突用户选择，手动恢复与屏蔽操作。
 

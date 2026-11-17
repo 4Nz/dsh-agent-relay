@@ -10,7 +10,7 @@ import { createServer } from 'node:http';
 import { createNotificationCredentialService } from '../../lib/services/credentials.js';
 
 test('发送器每次读新配置，支持空格中文路径和自定义 DSH_HOME，不泄露凭证', async (t) => {
- const {sendNotification, notificationConfigPath} = await import('../../skills/external-agent-notification/send.mjs');
+ const {sendNotification, notificationConfigPath} = await import('../../skills/dsh-notify/send.mjs');
  const home=mkdtempSync(join(tmpdir(),'relay 客户端-'));
  t.after(()=>rmSync(home,{recursive:true,force:true}));
  const received=[];
@@ -43,17 +43,17 @@ test('发送器每次读新配置，支持空格中文路径和自定义 DSH_HOM
  assert.equal(received[1].authorization,'Bearer '+secondToken);
  assert.equal(received[0].body.request_id,received[1].body.request_id);
  assert.equal(JSON.stringify([a,b]).includes(secondToken),false);
- const cli=await promisify(execFile)(process.execPath,[fileURLToPath(new URL('../../skills/external-agent-notification/send.mjs',import.meta.url)),'--agent','codex','--external-session-id',input.external_session_id,'--request-id','stable','--summary','CLI 完成'],{env:{...process.env,DSH_AGENT_RELAY_CONFIG:path}});
+ const cli=await promisify(execFile)(process.execPath,[fileURLToPath(new URL('../../skills/dsh-notify/send.mjs',import.meta.url)),'--agent','codex','--external-session-id',input.external_session_id,'--request-id','stable','--summary','CLI 完成'],{env:{...process.env,DSH_AGENT_RELAY_CONFIG:path}});
  assert.equal(JSON.parse(cli.stdout).accepted,true);
  assert.equal(cli.stdout.includes(secondToken),false);
  const linked=join(home,'linked-skill');
- symlinkSync(fileURLToPath(new URL('../../skills/external-agent-notification',import.meta.url)),linked,process.platform==='win32'?'junction':'dir');
+ symlinkSync(fileURLToPath(new URL('../../skills/dsh-notify',import.meta.url)),linked,process.platform==='win32'?'junction':'dir');
  const linkedCli=await promisify(execFile)(process.execPath,[join(linked,'send.mjs'),'--agent','codex','--external-session-id',input.external_session_id,'--request-id','stable','--summary','链接调用完成'],{env:{...process.env,DSH_AGENT_RELAY_CONFIG:path}});
  assert.equal(JSON.parse(linkedCli.stdout).accepted,true);
 });
 
 test('配置缺失或指向远程地址时拒绝发送，错误不包含 token', async(t)=>{
- const {sendNotification}=await import('../../skills/external-agent-notification/send.mjs');
+ const {sendNotification}=await import('../../skills/dsh-notify/send.mjs');
  const {writeFileSync}=await import('node:fs');
  const dir=mkdtempSync(join(tmpdir(),'relay-sender-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
  const path=join(dir,'client.json');

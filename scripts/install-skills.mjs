@@ -6,8 +6,8 @@ import { randomUUID } from "node:crypto";
 
 const scopes = {
   dsh: ["dsh-agent-relay"],
-  external: ["external-agent-notification"],
-  all: ["dsh-agent-relay", "external-agent-notification"],
+  external: ["dsh-notify"],
+  all: ["dsh-agent-relay", "dsh-notify"],
 };
 
 async function install() {
@@ -35,6 +35,30 @@ async function install() {
   }
   if (!check) await mkdir(destination, { recursive: true });
   let changed = false;
+  // 仅迁移有安装记录且目标未被用户改动的旧名称链接，断链也可恢复。
+  const legacy = "external-agent-notification";
+  if (scope !== "dsh" && record.links[legacy]) {
+    const oldLink = join(destination, legacy);
+    const newLink = join(destination, "dsh-notify");
+    const oldStat = await lstat(oldLink).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (oldStat) {
+      if (check || !update) throw new Error("通知 Skill 已更名为 dsh-notify，请使用 --update 迁移");
+      if (!oldStat.isSymbolicLink() || resolve(dirname(oldLink), await readlink(oldLink)) !== record.links[legacy].target)
+        throw new Error("旧通知 Skill 已被修改，请保留现有内容并人工核对");
+      const newStat = await lstat(newLink).catch(error => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (newStat) throw new Error("新旧通知 Skill 同时存在，请人工核对后再迁移");
+      await rename(oldLink, newLink);
+      record.links["dsh-notify"] = record.links[legacy];
+      delete record.links[legacy];
+      changed = true;
+    }
+  }
   for (const name of scopes[scope]) {
     const source = await realpath(fileURLToPath(new URL(`../skills/${name}`, import.meta.url)));
     const link = join(destination, name);

@@ -1,5 +1,6 @@
 # T0、T3、T7 Windows 安装与 Codex 桌面链路验收
 
+> 名称说明：通知 Skill 现名为 `dsh-notify`，下文路径已同步更新；历史验证时使用的名称为 `external-agent-notification`，不代表已重新执行真实验收。
 后续状态：0.1.3 已补齐默认 daemon 不可达时的官方只读 stdio 查询和 DSH 0.2.2 调度适配，已有桌面会话订阅已在隔离宿主通过。详见 [T2、T5、T6、T7 Codex 桌面已有会话订阅验收](T2-T5-T6-T7-codex-desktop-subscription-validation.md)。下文保留初次验收时的失败事实；不表示 daemon 写连接已恢复。
 
 验收日期：2026-11-14（Asia/Shanghai）。任务分支：`codex/windows-install-validation`，基于 Windows 适配提交 `35d1e4c`。本轮未修改插件运行代码。
@@ -29,7 +30,7 @@
 1. 将 `DSH_HOME` 指向新建临时目录，执行 `dsh plugin --profile relay-validation add --save-exact <本次 tgz 绝对路径>`。命令退出码 0，安装 `dsh-agent-relay 0.1.0`，并自动将 Relay 加入 profile bundle 列表。宿主提示包中 Agent Skill 等待 pnpm 审批；这不代表 Codex 全局通知 Skill 已安装。
 2. 在专用 profile 的 bundle 列表加入 `@deepseek-ai/dsh-web-app`，保留 base 和 Relay。执行 `dsh --profile relay-validation --dump-config`，配置合成成功。
 3. 使用本机 DSH 的 `runProfile` 启动真实 web 宿主，web 端口动态分配、禁止自动打开浏览器；测试 push 监听 `127.0.0.1:37429`。通过宿主工具注册表调用 `relay_ping`，返回 `ok: true, storage: ready`。
-4. 调用 `relay_setup_install({agent:"codex"})`，实际返回 `needs_action`，提示复制安装内容到 Codex 手动执行；没有自动安装。将最小测试任务发送到用户指定聊天，由该桌面 Agent 读取安装包中的 `external-agent-notification` Skill，原样安装到 `~/.codex/skills/external-agent-notification/SKILL.md`，源文件与目标文件哈希一致。
+4. 调用 `relay_setup_install({agent:"codex"})`，实际返回 `needs_action`，提示复制安装内容到 Codex 手动执行；没有自动安装。将最小测试任务发送到用户指定聊天，由该桌面 Agent 读取安装包中的 `dsh-notify` Skill，原样安装到 `~/.codex/skills/dsh-notify/SKILL.md`，源文件与目标文件哈希一致。
 5. 桌面 Agent 执行测试发送器，从临时私有文件读取测试凭证，以该聊天真实 ID 和稳定 request_id 发送 `completed` 摘要。首次返回 `202, accepted: true, duplicate: false`，自动创建一次性 push 订阅与 DSH 接收会话。
 6. 使用同一 request_id 重试：返回 `202, duplicate: true`，订阅 ID 和接收会话 ID 均未变化。桌面测试轮次完成。
 7. 关闭测试宿主，再以相同 DSH_HOME 启动。`relay_setup_check({agent:"codex"})` 返回 `overall: ok`。查询测试通知：`result: completed`、`delivery_status: delivered`、`delivery_attempts: 1`，接收会话为 `session-0d2a7535-1495-4555-8c3d-3371c77c60d3`。

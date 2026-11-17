@@ -1,5 +1,5 @@
 ---
-name: external-agent-notification
+name: dsh-notify
 description: 外部 Agent 任务完成后向 DSH Agent Relay 发送一次结果通知。用户说“完成后通知 DSH”、需要把 Claude 或 Codex 的任务结果推送回 DSH，或需要调用 Agent Relay 通知入口时使用；只负责通知，不负责创建订阅、转发消息或查询外部会话。
 ---
 
@@ -33,13 +33,13 @@ description: 外部 Agent 任务完成后向 DSH Agent Relay 发送一次结果�
 macOS：
 
 ```bash
-node "$HOME/.codex/skills/external-agent-notification/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary "<任务结果摘要>"
+node "$HOME/.codex/skills/dsh-notify/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary "<任务结果摘要>"
 ```
 
 Windows PowerShell：
 
 ```powershell
-node "$env:USERPROFILE/.codex/skills/external-agent-notification/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary "<任务结果摘要>"
+node "$env:USERPROFILE/.codex/skills/dsh-notify/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary "<任务结果摘要>"
 ```
 
 Claude 使用实际安装目录的脚本，并将 `--agent` 改为 `claude`。如果 Skill 安装在自定义 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 或项目目录，使用当前 Skill 的实际绝对路径。可选参数为 `--result`、`--subscription-id`、`--external-ref`。默认结果为 `completed`。脚本仅向本机回环 HTTP 地址发送，不跟随重定向；输出只包含接收状态和接收会话 ID，不输出凭证。

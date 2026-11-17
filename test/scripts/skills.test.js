@@ -28,7 +28,7 @@ test("Skill 按用途安装，检查缺失时不创建项目文件", async (t) =
   await assert.rejects(lstat(destination), { code: "ENOENT" });
   assert.equal(run("v1", "--scope", "external").status, 0);
   await assert.rejects(lstat(join(destination, "dsh-agent-relay")), { code: "ENOENT" });
-  assert.ok((await lstat(join(destination, "external-agent-notification"))).isSymbolicLink());
+  assert.ok((await lstat(join(destination, "dsh-notify"))).isSymbolicLink());
   assert.equal(run("v1", "--scope", "external", "--check").status, 0);
   assert.equal(run("v1", "--scope", "wrong").status, 1);
 });
@@ -44,7 +44,7 @@ test("Skill 升级修复旧安装包移除后的断链，检查不修改安装�
   assert.equal(run("v2").status, 1);
   const update = run("v2", "--update");
   assert.equal(update.status, 0, update.stderr);
-  assert.equal(await realpath(join(destination, "external-agent-notification")), await realpath(join(dir, "v2/skills/external-agent-notification")));
+  assert.equal(await realpath(join(destination, "dsh-notify")), await realpath(join(dir, "v2/skills/dsh-notify")));
   assert.equal(run("v2", "--check").status, 0);
 });
 
@@ -64,4 +64,49 @@ test("Skill 更新拒绝覆盖用户修改的链接和同名目录", async (t) =
   await writeFile(join(link, "SKILL.md"), "用户目录");
   assert.equal(run("v2", "--update").status, 1);
   assert.equal(await readFile(join(link, "SKILL.md"), "utf8"), "用户目录");
+});
+
+
+test("旧名称断链升级为 dsh-notify，检查模式不修改文件", async (t) => {
+  const { dir, destination, run } = await fixture(t);
+  await mkdir(destination, { recursive: true });
+  const oldTarget = join(dir, "removed-package/skills/external-agent-notification");
+  const legacy = join(destination, "external-agent-notification");
+  await symlink(oldTarget, legacy, process.platform === "win32" ? "junction" : "dir");
+  const manifest = join(destination, ".dsh-agent-relay.json");
+  await writeFile(manifest, JSON.stringify({ format: 1, links: {
+    "external-agent-notification": { target: oldTarget, version: "0.1.0" },
+  }}));
+  const before = await readFile(manifest, "utf8");
+  assert.equal(run("v2", "--scope", "external", "--check").status, 1);
+  assert.equal(await readFile(manifest, "utf8"), before);
+  const update = run("v2", "--scope", "external", "--update");
+  assert.equal(update.status, 0, update.stderr);
+  await assert.rejects(lstat(legacy), { code: "ENOENT" });
+  assert.equal(await realpath(join(destination, "dsh-notify")), await realpath(join(dir, "v2/skills/dsh-notify")));
+  assert.equal(run("v2", "--scope", "external", "--check").status, 0);
+  assert.equal(JSON.parse(await readFile(manifest, "utf8")).links["external-agent-notification"], undefined);
+});
+
+
+test("旧名称迁移保留用户目录及已存在的新名称", async (t) => {
+  const { dir, destination, run } = await fixture(t);
+  await mkdir(destination, { recursive: true });
+  const legacy = join(destination, "external-agent-notification");
+  const target = join(dir, "v1/skills/dsh-notify");
+  await writeFile(join(destination, ".dsh-agent-relay.json"), JSON.stringify({ format: 1, links: {
+    "external-agent-notification": { target, version: "0.1.0" },
+  }}));
+  await mkdir(legacy);
+  await writeFile(join(legacy, "SKILL.md"), "用户内容");
+  assert.equal(run("v2", "--scope", "external", "--update").status, 1);
+  assert.equal(await readFile(join(legacy, "SKILL.md"), "utf8"), "用户内容");
+  await rm(legacy, { recursive: true });
+  await symlink(target, legacy, process.platform === "win32" ? "junction" : "dir");
+  const current = join(destination, "dsh-notify");
+  await mkdir(current);
+  await writeFile(join(current, "SKILL.md"), "保留新版");
+  assert.equal(run("v2", "--scope", "external", "--update").status, 1);
+  assert.ok((await lstat(legacy)).isSymbolicLink());
+  assert.equal(await readFile(join(current, "SKILL.md"), "utf8"), "保留新版");
 });

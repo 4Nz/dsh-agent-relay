@@ -233,7 +233,7 @@ T7 最后做端到端验收
 
 ## M4 实施状态（2026-11-11）
 
-已实现 T2.6、T3.2、T3.3、T4 配置修改、T6.3 的新建通知会话归组和 T6.5 凭证管理：push HTTP 使用插件级共享 token。外部 Agent 可省略 `subscription_id` 直接 push，Relay 按稳定 `request_id` 创建一次性 push 订阅和 Agent Relay workspace 下的 DSH 接收会话；重复请求复用订阅并由通知记录防重。已有 push 订阅仍可指定接收会话。`skills/external-agent-notification/SKILL.md` 只负责外部 Agent 消息通知，Claude/Codex 共用协议并通过会话 ID 和能力提示区分差异；订阅可独立修改有效期和检查周期；页面抽屉已接入凭证生成与重置。T6.3 对已有会话不做迁移，T6.5 原生 DSH 设置页注册在 2026-11-12 已补齐，真实宿主验收归 T7。
+已实现 T2.6、T3.2、T3.3、T4 配置修改、T6.3 的新建通知会话归组和 T6.5 凭证管理：push HTTP 使用插件级共享 token。外部 Agent 可省略 `subscription_id` 直接 push，Relay 按稳定 `request_id` 创建一次性 push 订阅和 Agent Relay workspace 下的 DSH 接收会话；重复请求复用订阅并由通知记录防重。已有 push 订阅仍可指定接收会话。`skills/dsh-notify/SKILL.md` 只负责外部 Agent 消息通知，Claude/Codex 共用协议并通过会话 ID 和能力提示区分差异；订阅可独立修改有效期和检查周期；页面抽屉已接入凭证生成与重置。T6.3 对已有会话不做迁移，T6.5 原生 DSH 设置页注册在 2026-11-12 已补齐，真实宿主验收归 T7。
 
 T7 真实端到端验收仍单独保留，不能以本轮单元测试代替。
 

@@ -75,7 +75,7 @@ function setup(t, options = {}) {
     checks: { check: async () => ({ status: "not_due" }) },
     notifications: { drain: async () => {} },
     skillInstall: {
-      preview: async (agent) => ({ agent, skill: "external-agent-notification", target_dir: `/tmp/${agent}/skills`, prompt: "请安装", supported: true, reason: null }),
+      preview: async (agent) => ({ agent, skill: "dsh-notify", target_dir: `/tmp/${agent}/skills`, prompt: "请安装", supported: true, reason: null }),
       install: async (agent) => ({ supported: true, prompt: "请安装", result: { status: "completed", output: "已安装" } }),
     },
     setup: {

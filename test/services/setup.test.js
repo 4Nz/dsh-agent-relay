@@ -6,15 +6,15 @@ import { join } from "node:path";
 import { createSetupService, ruleText, shellBlock } from "../../lib/services/setup.js";
 import { createChannelCredentialService, createNotificationCredentialService } from "../../lib/services/credentials.js";
 
-const SKILL = "---\nname: external-agent-notification\n---\n# 通知技能\n";
+const SKILL = "---\nname: dsh-notify\n---\n# 通知技能\n";
 
 function fixture(t, { version = "2.1.311", flag = true, agents = [], registrations = [], shell = "/bin/zsh", codexVersion = "0.163.0" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "relay-setup-"));
   const home = join(root, "home");
   mkdirSync(home);
   const skillsDir = join(root, "skills");
-  mkdirSync(join(skillsDir, "external-agent-notification"), { recursive: true });
-  writeFileSync(join(skillsDir, "external-agent-notification", "SKILL.md"), SKILL);
+  mkdirSync(join(skillsDir, "dsh-notify"), { recursive: true });
+  writeFileSync(join(skillsDir, "dsh-notify", "SKILL.md"), SKILL);
   const channelEntry = join(root, "lib", "channel", "main.js");
   mkdirSync(join(root, "lib", "channel"), { recursive: true });
   writeFileSync(channelEntry, "");
@@ -225,7 +225,7 @@ test("Codex 检查命令与通知 Skill，安装时直接写入 SKILL.md", async
   assert.equal(byKey(installed).notification.action, "installed");
   assert.equal(byKey(installed).skill.status, "ok");
   assert.equal(byKey(installed).skill.action, "installed");
-  assert.equal(readFileSync(join(home, ".codex", "skills", "external-agent-notification", "SKILL.md"), "utf8"), SKILL);
+  assert.equal(readFileSync(join(home, ".codex", "skills", "dsh-notify", "SKILL.md"), "utf8"), SKILL);
   assert.equal(existsSync(files.notification), true);
   assert.equal(calls.length, 0);
 });
@@ -240,13 +240,13 @@ test("Codex 未安装时标记 unavailable，通知 Skill 不覆盖安装", asyn
   assert.equal(installed.overall, "unavailable");
   assert.equal(byKey(installed).codex.action, "none");
   assert.equal(byKey(installed).skill.action, "none");
-  assert.equal(existsSync(join(home, ".codex", "skills", "external-agent-notification", "SKILL.md")), false);
+  assert.equal(existsSync(join(home, ".codex", "skills", "dsh-notify", "SKILL.md")), false);
 });
 
 test("Codex 只有说明文件时识别缺失发送器，脚本更新后自检通过", async(t) => {
   const {service,home,skillsDir}=fixture(t);
-  writeFileSync(join(skillsDir,'external-agent-notification','send.mjs'),'// sender v1\n');
-  const target=join(home,'.codex','skills','external-agent-notification');
+  writeFileSync(join(skillsDir,'dsh-notify','send.mjs'),'// sender v1\n');
+  const target=join(home,'.codex','skills','dsh-notify');
   mkdirSync(target,{recursive:true});
   writeFileSync(join(target,'SKILL.md'),SKILL);
   assert.equal(byKey(await service.check('codex')).skill.status,'outdated');

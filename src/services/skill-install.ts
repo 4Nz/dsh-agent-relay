@@ -7,7 +7,7 @@ import type { AdapterRegistry } from "../adapters/registry.js";
 import type { RunPromptResult } from "../adapters/types.js";
 
 // 随包分发的外部 Agent 通知 Skill，供 Claude/Codex 安装后向 DSH 推送结果。
-export const NOTIFICATION_SKILL = "external-agent-notification";
+export const NOTIFICATION_SKILL = "dsh-notify";
 
 const AGENT_LABEL: Record<Agent, string> = {
   claude: "Claude Code",

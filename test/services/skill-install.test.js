@@ -32,9 +32,9 @@ function adapters(runCalls) {
 
 function fixture(t) {
   const skillsDir = mkdtempSync(join(tmpdir(), "relay-skill-src-"));
-  mkdirSync(join(skillsDir, "external-agent-notification"));
-  writeFileSync(join(skillsDir, "external-agent-notification", "SKILL.md"), "---\nname: external-agent-notification\n---\n# 通知技能\n");
-  writeFileSync(join(skillsDir, "external-agent-notification", "send.mjs"), "// 通知发送器\n");
+  mkdirSync(join(skillsDir, "dsh-notify"));
+  writeFileSync(join(skillsDir, "dsh-notify", "SKILL.md"), "---\nname: dsh-notify\n---\n# 通知技能\n");
+  writeFileSync(join(skillsDir, "dsh-notify", "send.mjs"), "// 通知发送器\n");
   const homeDir = mkdtempSync(join(tmpdir(), "relay-skill-home-"));
   t.after(() => {
     rmSync(skillsDir, { recursive: true, force: true });
@@ -49,9 +49,9 @@ test("预览读取技能内容并拼装安装提示词，目标目录按 Agent �
   const service = createSkillInstallService({ adapters: adapters(runCalls), skillsDir, homeDir });
   const claude = await service.preview("claude");
   assert.equal(claude.supported, true);
-  assert.equal(claude.skill, "external-agent-notification");
-  assert.equal(claude.target_dir, join(homeDir, ".claude", "skills", "external-agent-notification"));
-  assert.match(claude.prompt, /external-agent-notification/);
+  assert.equal(claude.skill, "dsh-notify");
+  assert.equal(claude.target_dir, join(homeDir, ".claude", "skills", "dsh-notify"));
+  assert.match(claude.prompt, /dsh-notify/);
   assert.match(claude.prompt, /# 通知技能/);
   assert.match(claude.prompt, /SKILL\.md/);
   assert.match(claude.prompt, /send\.mjs/);
@@ -59,7 +59,7 @@ test("预览读取技能内容并拼装安装提示词，目标目录按 Agent �
   const codex = await service.preview("codex");
   assert.equal(codex.supported, false);
   assert.match(codex.reason, /预留/);
-  assert.equal(codex.target_dir, join(homeDir, ".codex", "skills", "external-agent-notification"));
+  assert.equal(codex.target_dir, join(homeDir, ".codex", "skills", "dsh-notify"));
 });
 
 test("安装调用 runPrompt，把技能目录作为 addDirs 传入", async (t) => {
@@ -70,7 +70,7 @@ test("安装调用 runPrompt，把技能目录作为 addDirs 传入", async (t) 
   assert.equal(result.supported, true);
   assert.equal(result.result.status, "completed");
   assert.equal(runCalls.length, 1);
-  assert.match(runCalls[0][0], /external-agent-notification/);
+  assert.match(runCalls[0][0], /dsh-notify/);
   assert.deepEqual(runCalls[0][1], { addDirs: [join(homeDir, ".claude", "skills")] });
 });
 

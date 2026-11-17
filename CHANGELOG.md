@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 通知 Skill 更名为 `dsh-notify`，同步安装、打包、使用说明与历史文档引用；支持有记录的旧项目链接通过 `--update` 迁移。
+
 - T2/T3/T5/T6 修复 Codex 历史状态误读：正常 unknown 改用 runtime_note，快照和轮次事件标注状态来源与历史用途；查阅提供观测时间和距可见活动的时间，不据此判断卡住。Skill、工具、检查/恢复批次及提醒明确 needs_user 的暂停后果与证据要求。
 - T1/T2/T3 SQLite v7 移除 DSH 接收会话的唯一占用，同一 DSH 可关注多个外部来源；保留外部来源唯一约束、暂停名额及旧路由/push/批次目标。批次事实增加 agent/external_session_id，防止混用 A/B 的判断。
 

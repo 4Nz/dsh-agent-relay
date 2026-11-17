@@ -96,6 +96,11 @@ Windows Skill 目录使用 junction，不要求管理员或开发者模式；其
 
 ## Skill 安装与升级
 
+通知 Skill 已由 `external-agent-notification` 更名为 `dsh-notify`，使用时可说“完成后用 dsh-notify 通知我”。新安装使用短名称；旧项目链接通过 `--scope external --update` 迁移，安装器仅处理记录匹配的自有链接，用户修改过的内容不会被覆盖。迁移后旧路径不再可用，请同步更新自己保存的命令。
+
+Claude/Codex 用户目录内已复制安装的旧 Skill 不会被自动删除，其发送脚本仍可使用。请在前置安装接入页安装新版 `dsh-notify`，验证后自行移除旧 Skill 目录，避免两个名称同时出现。无安装记录的旧项目链接须人工核对后迁移。
+
+
 从 0.1.1 起，外部通知 Skill 包含 `SKILL.md` 和 `send.mjs`，手动安装时必须同时复制两个文件；项目链接安装自动包含整个目录。发送脚本需要 Node.js >=24，在 macOS 与 Windows 使用相同 Node 实现。
 
 通知凭证在「任务跟踪 → 前置安装接入」安装时自动生成，写入 `$DSH_HOME/agent-relay/notification-client.json`，其中包含明文通知凭证和本机 HTTP 地址；外部 Agent 的发送脚本直接读取该文件，不再需要单独设置页或「复制凭证」。凭证为纯明文存储，仅保存在本人私有目录。
