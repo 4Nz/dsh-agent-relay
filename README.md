@@ -1,5 +1,7 @@
 # DSH Agent Relay
 
+简体中文 | [English](README.en.md)
+
 在 DSH 对话里连接 Claude、Codex，让 Agent 继续工作，你也能在其他 DSH 客户端查看进度、接收结果。
 
 1. **订阅外部会话**：用自然语言告诉 DSH 要关注哪个会话、什么进展、多久检查一次，有相关变化时再汇报。
@@ -14,6 +16,44 @@
 - **长任务中途补充要求**：代码审查、重构进行到一半，直接从 DSH 把新要求发给原会话。
 
 其他客户端需连接到同一个 DSH 服务，并能访问对应会话。离开电脑后，运行 DSH 和外部 Agent 的机器仍需保持开机、唤醒及相关服务运行。
+
+## 功能展示
+
+在「任务跟踪」面板集中查看外部会话、订阅状态、检查频率和最近检查结果，也可以打开会话、继续或结束关注。
+
+![DSH 任务跟踪面板：查看 Claude 与 Codex 的订阅和通知状态](docs/images/showcase/task-dashboard.png)
+
+### 在 DSH 中订阅进展、暂停关注
+
+用自然语言订阅外部会话，DSH 按规划频率检查，并汇报相关进展。
+
+![DSH 订阅 Claude 会话并汇报开发进展](docs/images/showcase/dsh-subscribe.png)
+
+暂时不需要跟进时，可以暂停关注。截图展示的是暂停，后续仍可在原有效期内恢复；永久结束关注可使用「结束关注」。
+
+![DSH 按用户要求暂停关注并停止定时检查](docs/images/showcase/dsh-pause.png)
+
+### Codex 主动通知与 DSH 消息回传
+
+在 Codex 中使用 `dsh-notify`，要求验证结束后将结果通知 DSH。
+
+![在 Codex 中指定使用 dsh-notify 通知 DSH](docs/images/showcase/codex-notify-request.png)
+
+收到通知后，还可以从 DSH 向原 Codex 会话补充要求。
+
+![DSH 将后续要求转发到 Codex 原会话](docs/images/showcase/dsh-send-to-codex.png)
+
+Codex 展示通知接收回执，并继续处理从 DSH 回传的要求。回执表示 Relay 已接收通知，不代表 DSH 已完成处理。
+
+![Codex 展示通知回执并接收 DSH 回传要求](docs/images/showcase/codex-notify-and-reply.png)
+
+截图中的 WorkBuddy 是会话讨论主题，不表示当前插件已支持 WorkBuddy 接入。
+
+### Claude CLI 主动通知
+
+在 Claude CLI 中调用 `/dsh-notify`，将审查请求等事项发送给 DSH，并查看通知接收回执。
+
+![Claude CLI 使用 dsh-notify 向 DSH 发送代码审查请求](docs/images/showcase/claude-cli-notify.png)
 
 ## 开始使用
 
