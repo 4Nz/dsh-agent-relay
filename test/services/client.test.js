@@ -284,18 +284,15 @@ test('同主题新建返回暂停关注时如实提示，明确继续才恢复�
  assert.ok(text().includes('已继续原关注'));assert.deepEqual(ui.opened,['original-dsh']);
 });
 
-test('纯push路由列表可打开原DSH、屏蔽、读取事件批次与开始默认关注',async()=>{
- const calls=[];let muted=false;const route={id:'route-only',kind:'route',agent:'claude',external_session_id:'push-external',dsh_session_id:'push-dsh',subscription:null,pending_events:1};
- const rpc={async call(_c,method,args){const endpoint=method.split('/').at(-1);calls.push({endpoint,args});if(endpoint==='mute')muted=args.muted;return{ok:true,value:endpoint==='routes'?{items:[{...route,muted}],next_cursor:null}:endpoint==='list'?{items:[]}:endpoint==='agents'?[]:endpoint==='events'?{items:[{seq:1,id:'e',kind:'push',body:'纯push事实',batch_id:'push-batch',delivery_state:'delivered'}],next_sequence:null}:endpoint==='batch'?{status:'delivered',batch_id:'push-batch',decision_version:1,events:[{id:'e',body:'恢复事实'}]}:endpoint==='current'?{route,subscription:null}:endpoint==='subscribe'?{subscription:{...bridgeSub(),dsh_session_id:'push-dsh'},schedule_ready:false}:{}};}};
- const ui=clientHarness(rpc),{nodes}=ui;let tree=ui.render();await ui.flush();tree=ui.render();const button=label=>nodes(tree).find(n=>n.type==='button'&&n.children.includes(label));
- assert.ok(button('push-external'));await button('打开原会话').props.onClick();assert.deepEqual(ui.opened,['push-dsh']);
- await button('暂停接收 Agent 消息').props.onClick();await ui.flush();tree=ui.render();assert.ok(button('恢复接收 Agent 消息'));
- button('push-external').props.onClick();tree=ui.render();await ui.flush();tree=ui.render();assert.ok(nodes(tree).some(n=>n.children.includes('纯push事实')));assert.equal(calls.find(c=>c.endpoint==='events').args.external_session_id,'push-external');
- await button('读取原批次').props.onClick();await ui.flush();tree=ui.render();assert.ok(nodes(tree).some(n=>n.children.includes('恢复事实')));
- await button('开始关注').props.onClick();await ui.flush();const args=calls.find(c=>c.endpoint==='subscribe').args;assert.equal(args.topic,'定期汇报新的进展或回复');assert.equal(args.check_interval_seconds,undefined);assert.equal(args.dsh_session_id,undefined);assert.equal(calls.some(c=>c.endpoint==='decide'),false);
+test('任务跟踪页面暂不展示会话路由管理',async()=>{
+ const route={id:'route-only',kind:'route',agent:'claude',external_session_id:'push-external',dsh_session_id:'push-dsh',subscription:null,pending_events:1};
+ const rpc={async call(_c,method){const endpoint=method.split('/').at(-1);return{ok:true,value:endpoint==='routes'?{items:[route],next_cursor:null}:endpoint==='list'?{items:[]}:endpoint==='agents'?[]:{}};}};
+ const ui=clientHarness(rpc),{nodes}=ui;let tree=ui.render();await ui.flush();tree=ui.render();
+ assert.equal(nodes(tree).some(n=>n.type==='h2'&&n.children.includes('会话路由')),false);
+ assert.equal(nodes(tree).some(n=>n.props?.['aria-label']==='会话路由管理'),false);
 });
 
-test('真实push经已注册RPC进入路由面板，浏览器通知按原路由打开DSH',async t=>{
+test('真实push不展示路由管理，浏览器通知仍按原路由打开DSH',async t=>{
  const {mkdtempSync,rmSync}=await import('node:fs'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
  const {openRelayStore}=await import('../../lib/storage/index.js'),{createBridgeService}=await import('../../lib/services/bridge.js'),{createRelayService}=await import('../../lib/services/relay.js'),{registerRelayApi}=await import('../../lib/api.js');
  const dir=mkdtempSync(join(tmpdir(),'route-ui-')),store=openRelayStore({dataDir:dir});t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true});});
@@ -305,7 +302,7 @@ test('真实push经已注册RPC进入路由面板，浏览器通知按原路由�
  const relay=createRelayService({store,bridge,adapters,subscriptions:{},checks:{},notifications:{drain:async()=>{}},skillInstall:{},listDshSessions:async()=>[]});
  const registered=[];registerRelayApi({fetch:{register(route){registered.push(route);return()=>{};}}},relay);
  const rpc={async call(_channel,method,args){const route=registered.find(r=>r.path===`/api/${method}`);assert.ok(route);const res=await route.fetch(new Request(`http://localhost/api/${method}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:'ui',method,payload:args??{}})}));return(await res.json()).result;}};
- const ui=clientHarness(rpc);let tree=ui.render();await ui.flush();tree=ui.render();assert.ok(ui.nodes(tree).some(n=>n.type==='button'&&n.children.includes('pure-external')));
+ const ui=clientHarness(rpc);let tree=ui.render();await ui.flush();tree=ui.render();assert.equal(ui.nodes(tree).some(n=>n.type==='h2'&&n.children.includes('会话路由')),false);
  assert.equal(store.subscriptions.list().items.length,0);
  const notices=[];class Notify{static permission='granted';constructor(title,options){this.title=title;this.options=options;notices.push(this);}}
  const storage=new Map([['dsh-agent-relay:notify:lastSeen','1']]);const icon=clientHarness(rpc,{Notification:Notify,localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)}});icon.mountIcon();await icon.flush();assert.equal(notices.length,1);assert.equal(typeof notices[0].onclick,'function');notices[0].onclick();assert.deepEqual(icon.opened,['original-push-dsh']);

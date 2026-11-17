@@ -1323,16 +1323,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             ),
         ),
     ),
-    h("section",{className:"card","aria-label":"会话路由管理"},
-      h("h2",null,"会话路由"),h("p",{className:"muted small"},"独立管理外部会话与接收会话的关系。仅接收主动通知的会话也会保留在这里。暂停接收 Agent 消息只暂停主动通知，不删除事件，也不停止历史关注。"),
-      routeError&&h("p",{role:"alert",className:"error"},routeError),
-      h("button",{disabled:busy,onClick:()=>setRefreshVersion(v=>v+1)},"刷新路由"),
-      ...routes.map(route=>h("article",{className:"notice",key:route.id},
-        h("button",{className:"link",onClick:()=>{setSelected(route.id);setDrawer("route");}},route.external_session_id),
-        h("p",{className:"muted small"},`${agentName(route.agent)} · ${route.subscription?label(route.subscription.status):"仅接收主动通知，未开启关注"} · ${route.muted?"已暂停接收 Agent 消息":"接收 Agent 消息"} · ${route.pending_events??0} 条待处理事件`),routeControls(route))),
-      !routes.length&&!routeError&&h("p",{className:"muted"},"暂无会话路由"),
-      routeCursor&&h("button",{onClick:()=>setRouteCursor(null)},"路由首页"),routeNext&&h("button",{onClick:()=>setRouteCursor(routeNext)},"下一页路由")),
-    drawer==="route"&&current&&routeDrawer(current),
+    // 会话路由暂不在任务跟踪页展示；底层路由仍用于 push 投递和浏览器通知跳转。
     conflict && h(Drawer, { title: conflict.paused ? "原关注已暂停" : "已有关注主题", onClose: conflict.paused ? close : () => setConflict(null) },
       h("p", null, `当前关注：${conflict.current.topic}`),
       h("p", { className: "muted" }, conflict.paused
