@@ -552,6 +552,8 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       const changed = report.items.filter((i: any) => i.action && i.action !== "skipped" && i.action !== "none").length;
       if (endpoint === "setup_check") setSetupMessage("检查完成。");
       else if (endpoint === "setup_uninstall") setSetupMessage("已卸载 channel 配置，通知 Skill 保留。");
+      else if (report.overall === "needs_action" || report.overall === "unavailable" || report.items.some((i: any) => i.status !== "ok"))
+        setInstallError(`${changed > 0 ? `本次已处理 ${changed} 项，但` : ""}仍有安装项未就绪，请按下方检查结果处理后重试。`);
       else setSetupMessage(changed > 0 ? `安装完成，本次处理 ${changed} 项。` : "无需改动，所有项已就绪。");
     } catch (e) {
       setInstallError((e as Error).message);
