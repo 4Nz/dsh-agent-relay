@@ -7,7 +7,7 @@ const labels: Record<string, string> = {
   processed: "已处理",
   not_found: "记录不存在",
   progress: "新增进展",
-  muted: "已屏蔽 push",
+  muted: "已暂停接收 Agent 消息",
   needs_attention: "待人工处理",
   unknown_attention: "投递未知，待人工核对",
   events: "增量事实已交给 DSH 判断",
@@ -504,7 +504,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     try {
       await call("mute", { agent: sub.agent, external_session_id: sub.external_session_id, muted: !sub.muted });
       setRoutes(previous=>previous.map(route=>route.agent===sub.agent&&route.external_session_id===sub.external_session_id?{...route,muted:!sub.muted}:route));
-      setNotice(sub.muted ? "已解除 push 屏蔽，原批次按原状态恢复。" : "已屏蔽 push，保留事件；历史关注仍继续。");
+      setNotice(sub.muted ? "已恢复接收 Agent 消息，原批次按原状态恢复。" : "已暂停接收 Agent 消息，事件仍保留；历史关注继续。");
       setRefreshVersion((v) => v + 1);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
@@ -702,7 +702,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           ? "恢复接收该外部会话的主动通知"
           : "暂停接收该外部会话的主动通知；保留已记录事件，不停止历史订阅检查",
         onClick: () => void muteRoute(sub),
-      }, sub.muted ? "解除 push 屏蔽" : "屏蔽 push"),
+      }, sub.muted ? "恢复接收 Agent 消息" : "暂停接收 Agent 消息"),
       // push 不进行历史检查；如需关注历史，通过新建关注显式开启。
       sub.status === "ended" &&
         sub.type === "poll" &&
@@ -923,7 +923,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           h("p", { className: "muted small" }, "打开原接收会话，由 DSH 使用 relay_batch 读取，再以原 batch_id 与 decision_version 调用 relay_decide。屏蔽中的批次请先解除屏蔽；待核对状态不能视为已处理。")));
   const routeControls=(route:any)=>h("div",{className:"row"},
     route.dsh_session_id&&h("button",{onClick:()=>openSession(route.dsh_session_id)},"打开原会话"),
-    h("button",{disabled:busy,onClick:()=>void muteRoute(route)},route.muted?"解除屏蔽":"屏蔽 push"),
+    h("button",{disabled:busy,onClick:()=>void muteRoute(route)},route.muted?"恢复接收 Agent 消息":"暂停接收 Agent 消息"),
     !route.subscription&&h("button",{disabled:busy,onClick:()=>void resubscribe({...route,topic:"定期汇报新的进展或回复",max_consecutive_failures:3})},"开始关注"));
   const routeDrawer=(route:any)=>h(Drawer,{title:"会话路由",onClose:close},
     h("h2",null,route.external_session_id),h("p",{className:"muted"},`${agentName(route.agent)} · ${route.subscription?"已有关注":"仅接收 push，未开启关注"}`),
@@ -958,7 +958,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           ["关注主题", sub.topic ?? "定期汇报新的进展或回复"],
           ["DSH 调度状态", planningText(sub)],
           ["实际检查频率", frequencyText(sub)],
-          ["push 接收", sub.muted ? "已屏蔽，事件保留" : "接收中"],
+          ["Agent 消息接收", sub.muted ? "已暂停，事件保留" : "接收中"],
           ["开始时间", formatStart(sub.created_at)],
           [
             "有效期",
@@ -1303,7 +1303,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       h(
         "p",
         { className: "muted small" },
-        "屏蔽 push 只暂停这个外部会话的主动通知投递：已记录事件会保留，历史订阅检查继续进行；解除屏蔽后恢复接收。",
+        "暂停接收 Agent 消息只暂停这个外部会话的主动通知投递：已记录事件会保留，历史订阅检查继续进行；恢复后继续接收。",
       ),
       (cursor || next) &&
         h(
@@ -1324,19 +1324,19 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         ),
     ),
     h("section",{className:"card","aria-label":"会话路由管理"},
-      h("h2",null,"会话路由"),h("p",{className:"muted small"},"独立管理外部会话与接收会话的关系。仅接收 push 的会话也会保留在这里。屏蔽 push 只暂停主动通知，不删除事件，也不停止历史关注。"),
+      h("h2",null,"会话路由"),h("p",{className:"muted small"},"独立管理外部会话与接收会话的关系。仅接收主动通知的会话也会保留在这里。暂停接收 Agent 消息只暂停主动通知，不删除事件，也不停止历史关注。"),
       routeError&&h("p",{role:"alert",className:"error"},routeError),
       h("button",{disabled:busy,onClick:()=>setRefreshVersion(v=>v+1)},"刷新路由"),
       ...routes.map(route=>h("article",{className:"notice",key:route.id},
         h("button",{className:"link",onClick:()=>{setSelected(route.id);setDrawer("route");}},route.external_session_id),
-        h("p",{className:"muted small"},`${agentName(route.agent)} · ${route.subscription?label(route.subscription.status):"仅接收 push，未开启关注"} · ${route.muted?"已屏蔽 push":"接收 push"} · ${route.pending_events??0} 条待处理事件`),routeControls(route))),
+        h("p",{className:"muted small"},`${agentName(route.agent)} · ${route.subscription?label(route.subscription.status):"仅接收主动通知，未开启关注"} · ${route.muted?"已暂停接收 Agent 消息":"接收 Agent 消息"} · ${route.pending_events??0} 条待处理事件`),routeControls(route))),
       !routes.length&&!routeError&&h("p",{className:"muted"},"暂无会话路由"),
       routeCursor&&h("button",{onClick:()=>setRouteCursor(null)},"路由首页"),routeNext&&h("button",{onClick:()=>setRouteCursor(routeNext)},"下一页路由")),
     drawer==="route"&&current&&routeDrawer(current),
     conflict && h(Drawer, { title: conflict.paused ? "原关注已暂停" : "已有关注主题", onClose: conflict.paused ? close : () => setConflict(null) },
       h("p", null, `当前关注：${conflict.current.topic}`),
       h("p", { className: "muted" }, conflict.paused
-        ? "原关注仍已暂停；同主题订阅不会自动恢复定时检查。选择继续关注会恢复原关注并解除 push 屏蔽，截止时间保持不变。"
+        ? "原关注仍已暂停；同主题订阅不会自动恢复定时检查。选择继续关注会恢复原关注并恢复接收 Agent 消息，截止时间保持不变。"
         : "同一外部会话只能有一个有效关注。继续将保留原主题和接收会话；停止重新来会结束原关注后创建新关注期。"),
       h("button", { disabled: busy, onClick: () => void continueConflict() }, conflict.paused ? "继续关注" : "继续原关注"),
       conflict.paused

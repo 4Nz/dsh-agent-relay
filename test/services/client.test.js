@@ -225,7 +225,7 @@ test('详情真实显示规划与批次状态，事件续页保留旧页，原�
  const text=()=>nodes(tree).flatMap(n=>n.children.filter(c=>typeof c==='string')).join(' ');
  assert.ok(text().includes('关注中'));assert.ok(text().includes('待 DSH 规划'));assert.ok(text().includes('尚未选择频率'));assert.ok(text().includes('投递未知，待人工核对'));
  nodes(tree).find(n=>n.type==='button'&&n.children.includes('原关注会话')).props.onClick();tree=ui.render();await ui.flush();tree=ui.render();
- assert.ok(text().includes('第一条进展'));assert.ok(text().includes('已屏蔽 push'));
+ assert.ok(text().includes('第一条进展'));assert.ok(text().includes('已暂停接收 Agent 消息'));
  await nodes(tree).find(n=>n.type==='button'&&n.children.includes('更多事件')).props.onClick();await ui.flush();tree=ui.render();
  assert.ok(text().includes('第一条进展'));assert.ok(text().includes('第二条进展'));assert.ok(text().includes('待人工处理'));
  assert.equal(calls.filter(c=>c.endpoint==='events').at(-1).args.after_sequence,1);
@@ -242,7 +242,7 @@ test('重新关注不带旧时间或强制接收会话，编辑仅改失败阈�
  await nodes(tree).find(n=>n.type==='button'&&n.children.includes('重新订阅')).props.onClick();await ui.flush();tree=ui.render();
  const renew=calls.find(c=>c.endpoint==='subscribe').args;
  assert.equal(renew.topic,'等待审查完成');assert.equal('dsh_session_id' in renew,false);assert.equal('max_lifetime_seconds' in renew,false);assert.equal('check_interval_seconds' in renew,false);
- await nodes(tree).find(n=>n.type==='button'&&n.children.includes('屏蔽 push')).props.onClick();await ui.flush();tree=ui.render();
+ await nodes(tree).find(n=>n.type==='button'&&n.children.includes('暂停接收 Agent 消息')).props.onClick();await ui.flush();tree=ui.render();
  assert.equal(calls.find(c=>c.endpoint==='mute').args.muted,true);assert.equal(calls.some(c=>c.endpoint==='stop'),false);
  sub={...sub,status:'active'};nodes(tree).find(n=>n.type==='button'&&n.children.includes('刷新')).props.onClick();await ui.flush();tree=ui.render();
  nodes(tree).find(n=>n.type==='button'&&n.children.includes('原关注会话')).props.onClick();tree=ui.render();await ui.flush();tree=ui.render();
@@ -289,7 +289,7 @@ test('纯push路由列表可打开原DSH、屏蔽、读取事件批次与开始�
  const rpc={async call(_c,method,args){const endpoint=method.split('/').at(-1);calls.push({endpoint,args});if(endpoint==='mute')muted=args.muted;return{ok:true,value:endpoint==='routes'?{items:[{...route,muted}],next_cursor:null}:endpoint==='list'?{items:[]}:endpoint==='agents'?[]:endpoint==='events'?{items:[{seq:1,id:'e',kind:'push',body:'纯push事实',batch_id:'push-batch',delivery_state:'delivered'}],next_sequence:null}:endpoint==='batch'?{status:'delivered',batch_id:'push-batch',decision_version:1,events:[{id:'e',body:'恢复事实'}]}:endpoint==='current'?{route,subscription:null}:endpoint==='subscribe'?{subscription:{...bridgeSub(),dsh_session_id:'push-dsh'},schedule_ready:false}:{}};}};
  const ui=clientHarness(rpc),{nodes}=ui;let tree=ui.render();await ui.flush();tree=ui.render();const button=label=>nodes(tree).find(n=>n.type==='button'&&n.children.includes(label));
  assert.ok(button('push-external'));await button('打开原会话').props.onClick();assert.deepEqual(ui.opened,['push-dsh']);
- await button('屏蔽 push').props.onClick();await ui.flush();tree=ui.render();assert.ok(button('解除屏蔽'));
+ await button('暂停接收 Agent 消息').props.onClick();await ui.flush();tree=ui.render();assert.ok(button('恢复接收 Agent 消息'));
  button('push-external').props.onClick();tree=ui.render();await ui.flush();tree=ui.render();assert.ok(nodes(tree).some(n=>n.children.includes('纯push事实')));assert.equal(calls.find(c=>c.endpoint==='events').args.external_session_id,'push-external');
  await button('读取原批次').props.onClick();await ui.flush();tree=ui.render();assert.ok(nodes(tree).some(n=>n.children.includes('恢复事实')));
  await button('开始关注').props.onClick();await ui.flush();const args=calls.find(c=>c.endpoint==='subscribe').args;assert.equal(args.topic,'定期汇报新的进展或回复');assert.equal(args.check_interval_seconds,undefined);assert.equal(args.dsh_session_id,undefined);assert.equal(calls.some(c=>c.endpoint==='decide'),false);
