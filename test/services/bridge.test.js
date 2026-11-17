@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openRelayStore } from "../../lib/storage/index.js";
 import { createBridgeService } from "../../lib/services/bridge.js";
-function fixture(t) {
+function fixture(t, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "bridge-"));
   const store = openRelayStore({ dataDir: dir });
   t.after(() => {
@@ -39,6 +39,7 @@ function fixture(t) {
   };
   const bridge = createBridgeService({
     store,
+    observeTitle: options.observeTitle,
     adapters: { get: () => adapter },
     scheduler: {
       create: async (x) => {
@@ -1031,4 +1032,19 @@ test('Codex interrupted 增量经过桥梁仍带历史语义，重复检查无�
   const current = f.store.subscriptions.get(sub.id);
   assert.equal(current.status, 'active');
   assert.equal(current.consecutive_failures, 0);
+});
+
+
+test("增量无事件仍观察标题；失败和关闭不触发标题同步", async t => {
+  const observed = [];
+  const f = fixture(t, { observeTitle: (...args) => observed.push(args) });
+  const s = (await f.bridge.subscribe(input)).subscription;
+  f.adapter.incremental = async () => ({ title: "新名称", events: [], cursor: null, has_more: false, closed: false });
+  assert.equal((await f.bridge.check(s.id)).status, "unchanged");
+  assert.deepEqual(observed, [["claude", "external", "新名称"]]);
+  f.adapter.incremental = async () => { throw Error("读取失败"); };
+  assert.equal((await f.bridge.check(s.id)).status, "check_failed");
+  f.adapter.incremental = async () => ({ title: "关闭", events: [], cursor: null, has_more: false, closed: true });
+  assert.equal((await f.bridge.check(s.id)).status, "closed");
+  assert.equal(observed.length, 1);
 });

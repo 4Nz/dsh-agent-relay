@@ -88,6 +88,7 @@ export function createSubscriptions(db: DatabaseSync) {
       text(expected_status, "expected_status");
       const mutable = [
         "topic", "planning_state", "decision_version", "selected_interval_seconds",
+        "external_session_title",
         "cursor",
         "last_activity_at",
         "last_checked_at",

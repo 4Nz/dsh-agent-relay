@@ -25,6 +25,7 @@ export function createBridgeService({
   scheduler,
   transport,
   createSession,
+  observeTitle,
   now = Date.now,
 }: {
   store: RelayStore;
@@ -37,6 +38,7 @@ export function createBridgeService({
     externalSessionTitle: string | null;
     type: "poll" | "push";
   }) => Promise<string>;
+  observeTitle?: (agent: Agent, external: string, title: string | null | undefined) => void;
   now?: () => number;
 }) {
   const db = store.bridge,
@@ -462,6 +464,7 @@ export function createBridgeService({
             await end(s, "session_closed", "外部会话已关闭");
             return { status: "closed" };
           }
+          observeTitle?.(s.agent, s.external_session_id, page.title);
           db.commitRead(
             id,
             page.cursor ? { ...page.cursor } : null,
