@@ -1,5 +1,19 @@
 # T0、T1、T3、T7 插件发布与升级说明
 
+## 给使用者的最短路径
+
+如果你只是安装和使用插件，按下面顺序即可：
+
+1. 确认 Node.js 24 或更高版本、DSH `>=0.2.0 <0.3.0`，并确认要接入的 Claude 或 Codex 已在本机安装并登录。
+2. 下载同一版本的 `.tgz` 和 `SHA256SUMS`，校验安装包后，通过 DSH 插件管理入口安装、启用并重启宿主。
+3. 在「任务跟踪 → 前置安装接入」选择 Claude 或 Codex，点击「安装 / 修复」。Claude 需要重新打开启用 channel 的会话；Codex 需要保持本机 daemon 可用。
+4. 如果要接收外部 Agent 主动通知，把随包 Skill 安装到 Agent 能扫描的项目目录。凭证由前置安装接入生成，只保存在本机私有目录。
+5. 在「任务跟踪 → 新建订阅」选择外部会话，填写可选主题和失败阈值，等待页面显示实际规划频率。
+
+创建订阅后，关注期从创建起最多 24 小时；没有变化时不会发送提醒，单轮完成也不会自动结束。结束关注、暂停关注和屏蔽 push 是不同操作，遇到 `unknown_attention` 应先核对原会话和事件详情，不要直接重发。
+
+下面内容主要面向维护者、发布者和需要排查安装问题的使用者。安装包冒烟不会启动真实 DSH 或调用外部 Agent，不能替代真实宿主验收。
+
 
 ## T1-T2-T3-T4-T6-T7 会话桥梁升级注意（2026-11-16）
 
@@ -44,7 +58,7 @@ rtk npm run release:prepare
 
 ```bash
 rtk proxy shasum -a 256 -c SHA256SUMS
-rtk proxy dsh plugin --profile web add --save-exact /绝对路径/dsh-agent-relay-0.1.0.tgz
+rtk proxy dsh plugin --profile web add --save-exact /绝对路径/dsh-agent-relay-<版本>.tgz
 ```
 
 通过宿主插件管理启用 bundle，并确认 profile 的 `dsh.profile.bundles` 包含 `dsh-agent-relay`。如果手动配置，只添加一次 bundle 名称，不将插件的 insert 段复制到用户 patch。必要覆盖写为 `- id: agent-relay`，避免重复 entry。退出并重启目标 DSH，刷新浏览器，核对日志版本、看板、设置入口和 push 监听日志。
@@ -56,8 +70,8 @@ rtk proxy dsh plugin --profile web add --save-exact /绝对路径/dsh-agent-rela
 使用 Node.js 24 或更新的受支持版本。Windows PowerShell 中校验下载包并安装到专用测试 profile（路径含空格时保留引号）：
 
 ```powershell
-Get-FileHash -Algorithm SHA256 ".\dsh-agent-relay-0.1.0.tgz"
-dsh plugin --profile web add --save-exact "C:\Downloads\dsh-agent-relay-0.1.0.tgz"
+Get-FileHash -Algorithm SHA256 ".\dsh-agent-relay-<版本>.tgz"
+dsh plugin --profile web add --save-exact "C:\Downloads\dsh-agent-relay-<版本>.tgz"
 ```
 
 将哈希与 SHA256SUMS 对照；启用、重启及 Desktop 限制与上文相同。安装预编译 tgz 不需要 Git Bash、Python、编译工具链或 RTK。源码开发与发布仍需安装 devDependencies；没有 RTK 时直接运行 `npm ci --cache ./.npm-cache` 和 `npm run release:prepare`。构建直接以 Node 启动本地工具入口，发布检查沿用 npm 提供的 CLI，避免 Windows `.cmd` 启动差异。
@@ -72,13 +86,13 @@ Windows Skill 目录使用 junction，不要求管理员或开发者模式；其
 
 本轮仅适配基础构建、打包和安装，不代表 Windows 上 Claude/Codex 发送、Unix socket 或 shell/channel 自动配置已兼容；完整 DSH 启用流程仍需专用 profile 的 T7 实测。
 
-### Codex 已有会话订阅（0.1.3）
+### Codex 已有会话订阅
 
-「新建订阅」可直接选择已有 Codex 桌面/CLI 会话，不要求先创建 Relay 后台会话。插件优先连接既有 daemon；默认 daemon 不可用时，使用本机官方 `codex app-server --listen stdio://` 子进程读取历史。连接只允许列会话和读历史，不执行 resume、新轮次或排队发送，查询后回收自有进程。历史查询可用不代表原桌面会话的实时状态可知，`notLoaded` 仍不能视为空闲或完成。
+「新建订阅」可直接选择已有 Codex 桌面/CLI 会话，不要求先创建 Relay 后台会话。插件优先连接既有 daemon；已有会话的消息通过官方队列发送，daemon 暂时未加载时先入队，打开原聊天后由原实例消费。默认 daemon 不可用时，插件可以使用本机官方 `codex app-server --listen stdio://` 子进程读取历史；这个回退连接只允许列会话和读历史，不执行 resume、新轮次或排队发送，查询后回收自有进程。历史查询可用不代表原桌面会话的实时状态可知，`notLoaded` 仍不能视为空闲或完成。
 
 需要 DSH 启动环境能找到 Codex CLI。Windows 支持桌面自带 `codex.exe`；npm 安装的 `codex.cmd`/`codex.ps1` 解析到同目录官方包的 `node_modules/@openai/codex/bin/codex.js`，由 Node 启动，不执行 shell。macOS 沿用 PATH 中的可执行入口。可选 `DSH_CODEX_BIN` 指定官方可执行文件或 JS 入口的绝对路径；不接受带参数的命令字符串。
 
-显式指定自定义 socket 时连接失败不自动切换，防止掩盖错误端点。消息发送和后台会话创建仍要求可用的原 daemon 写连接；本次新增的历史查询连接不会接管桌面会话。平台与真实链路验收结果另见任务验收文档，CLI 帮助存在不等于真实订阅通过。
+显式指定自定义 socket 时连接失败不自动切换，防止掩盖错误端点。消息发送和后台会话创建仍要求可用的原 daemon 写连接；历史查询连接不会接管桌面会话。平台与真实链路验收结果另见任务验收文档，CLI 帮助存在不等于真实订阅通过。
 
 ## Skill 安装与升级
 
