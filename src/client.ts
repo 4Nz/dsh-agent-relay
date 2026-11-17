@@ -643,7 +643,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       },
       ...options.map(([v, t]) => h("option", { key: v, value: v }, t)),
     );
-  const controls = (sub: any) =>
+  const controls = (sub: any, compact = false) =>
     h(
       "div",
       { className: "actions" },
@@ -663,7 +663,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           },
           "打开会话",
         ),
-      sub.status === "active" &&
+      !compact && sub.status === "active" &&
         sub.type === "poll" &&
         h(
           "button",
@@ -696,7 +696,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           },
           "结束关注",
         ),
-      h("button", {
+      !compact && h("button", {
         disabled: busy,
         title: sub.muted
           ? "恢复接收该外部会话的主动通知"
@@ -714,7 +714,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           },
           "重新订阅",
         ),
-      h(
+      !compact && h(
         "button",
         {
           disabled: busy,
@@ -814,7 +814,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           deliveryText(sub),
         ),
       ),
-      h("td", null, controls(sub)),
+      h("td", null, controls(sub, true)),
     );
   const createDrawer = () =>
     h(

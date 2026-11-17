@@ -155,7 +155,7 @@ test('订阅列表：主动通知不显示立即检查与重新订阅，最近�
  const pushEnded=rowButtons(rowOf('已结束的通知'));
  assert.ok(!pushEnded.includes('重新订阅'));
  assert.ok(pushEnded.includes('打开会话')===false);
- assert.ok(rowButtons(rowOf('检查中的会话')).includes('立即检查'));
+ assert.ok(!rowButtons(rowOf('检查中的会话')).includes('立即检查'));
  assert.ok(nodes(rowOf('检查中的会话')).some(n=>Array.isArray(n.children)&&n.children.includes('尚未选择频率')));
  const inconsistent=rowOf('规划状态缺频率');
  assert.ok(nodes(inconsistent).some(n=>Array.isArray(n.children)&&n.children.includes('待 DSH 规划')));
@@ -242,6 +242,7 @@ test('重新关注不带旧时间或强制接收会话，编辑仅改失败阈�
  await nodes(tree).find(n=>n.type==='button'&&n.children.includes('重新订阅')).props.onClick();await ui.flush();tree=ui.render();
  const renew=calls.find(c=>c.endpoint==='subscribe').args;
  assert.equal(renew.topic,'等待审查完成');assert.equal('dsh_session_id' in renew,false);assert.equal('max_lifetime_seconds' in renew,false);assert.equal('check_interval_seconds' in renew,false);
+ nodes(tree).find(n=>n.type==='button'&&n.children.includes('原关注会话')).props.onClick();tree=ui.render();await ui.flush();tree=ui.render();
  await nodes(tree).find(n=>n.type==='button'&&n.children.includes('暂停接收 Agent 消息')).props.onClick();await ui.flush();tree=ui.render();
  assert.equal(calls.find(c=>c.endpoint==='mute').args.muted,true);assert.equal(calls.some(c=>c.endpoint==='stop'),false);
  sub={...sub,status:'active'};nodes(tree).find(n=>n.type==='button'&&n.children.includes('刷新')).props.onClick();await ui.flush();tree=ui.render();
