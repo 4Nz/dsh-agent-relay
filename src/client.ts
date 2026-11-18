@@ -1069,7 +1069,8 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const sendDrawer = (sub: any) => h(Drawer, { title: "发送消息", onClose: close },
     h("p", null, `目标：${agentName(sub.agent)} · ${sub.external_session_title ?? "未命名"}`),
     h("p", null, `会话 ID：${sub.external_session_id}`), h("p", null, `工作目录：${sub.external_cwd ?? "未知"}`),
-    h("label", null, "消息", h("textarea", { value: message, rows: 5, maxLength: 500, onChange: (e: any) => setMessage(e.target.value) })),
+    h("label", null, "消息（最多 2000 字符）", h("textarea", { value: message, rows: 5, maxLength: 2000, onChange: (e: any) => setMessage(e.target.value) })),
+    h("p", { className: "muted small" }, "较长内容请先汇总；调研报告可保存为接收方可访问的文档，发送摘要与路径，不建议分段发送。"),
     error && h("p", { role: "alert", className: "error" }, error),
     h("button", { disabled: busy || !message.trim() || !sendAllowed(sub), onClick: () => void send(sub) }, "确认目标并发送"));
   const SETUP_LABEL: Record<string, string> = {

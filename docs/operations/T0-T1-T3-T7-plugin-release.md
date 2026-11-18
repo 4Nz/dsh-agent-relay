@@ -139,7 +139,11 @@ rtk proxy node node_modules/dsh-agent-relay/scripts/install-skills.mjs /绝对�
 
 在订阅看板「前置安装接入」选择 Claude，点击「安装 / 修复」。插件直接写入：用户级 MCP server `agent-relay`（`claude mcp add-json -s user`）、`~/.claude/agent-relay.md` 规则与 `~/.claude/CLAUDE.md` 中的 `@agent-relay.md`、`~/.zshrc` 或 `~/.bashrc` 中带标记的 `claude` 函数、`~/.claude/agent-relay/channel-token`（0600）。修改前在原文件旁生成 `.agent-relay-<时间>.bak` 备份；重复安装只修复不正常的项。插件升级后 channel server 路径变化，自检显示 MCP「需更新」，再次安装即可。
 
-安装后新开终端运行 `claude`，启动时在开发 channel 警告框按回车；已运行的会话需退出后 `claude --resume <会话 ID>` 重新进入。建议运行页面中的连通测试。Claude Code 升级后若自检提示“当前版本 Claude 不支持 channel”，channel 投递不可用，详情见插件日志。
+安装后先新开终端，再运行 `claude` 或 `claude --resume <会话 ID>`，启动时在开发 channel 警告框按回车。包装函数会为这两种启动方式自动追加 `--dangerously-load-development-channels server:agent-relay`，管理命令和 `-p` 等非交互入口保持透传。
+
+如果继续使用安装前已打开的终端，需先退出 Claude，再执行安装报告给出的 `source` 命令（默认 zsh 为 `source ~/.zshrc`，bash 为 `source ~/.bashrc`，自定义 `ZDOTDIR` 以报告路径为准），之后再恢复会话。**仅退出 Claude 后在旧窗口执行 `claude --resume`，不会重新加载 shell 配置。** `type claude` 应显示函数，并可检查其中的 channel 参数；启动时应能看到 `server:agent-relay` 的 channel 提示。文件自检通过或 MCP 已连接均不能证明当前 Claude 进程实际接收过 channel 消息，应运行页面中的连通测试并等待 ack。
+
+Claude Code 升级后若自检提示“当前版本 Claude 不支持 channel”，channel 投递不可用，详情见插件日志。
 
 「卸载 channel」删除上述配置并保留通知 Skill。停用插件前建议先卸载，否则 `claude` 函数仍会带 channel 参数启动，channel server 会因连不上 Relay 而静默重试。
 
