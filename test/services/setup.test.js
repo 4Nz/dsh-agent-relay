@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { createSetupService, ruleText, shellBlock } from "../../lib/services/setup.js";
 import { createChannelCredentialService, createNotificationCredentialService } from "../../lib/services/credentials.js";
 
@@ -142,8 +143,53 @@ test("重复安装返回 ok，文件不变也不重复调用安装", async (t) =
   assert.ok(again.items.every((i) => i.action === "skipped"));
   for (const [k, f] of Object.entries(files)) assert.equal(readFileSync(f, "utf8"), snapshot[k], k);
   assert.equal(calls.filter((c) => c[1] === "add-json").length, addCalls);
-  assert.deepEqual(again.next_steps, []);
+  assert.ok(again.next_steps.some((s) => /新开终端.*source/.test(s)));
 });
+
+test("自检说明配置文件不等于旧终端已加载，恢复会话前仍需加载函数", async (t) => {
+  const { service, files } = fixture(t);
+  await service.install("claude");
+  const report = await service.check("claude");
+  assert.match(byKey(report).shell.message, /不代表.*终端.*加载/);
+  assert.ok(report.next_steps.some((s) => s.includes(files.zshrc) && /source/.test(s) && /仅退出 Claude/.test(s)));
+});
+
+for (const shell of ["/bin/bash", "/bin/zsh"]) {
+  test(`${shell} 加载包装函数后为交互与 resume 追加 channel，保留原参数和管理命令`, {
+    skip: process.platform === "win32" || !existsSync(shell),
+  }, (t) => {
+    const root = mkdtempSync(join(tmpdir(), "relay-shell-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
+    const capture = join(root, "capture.mjs");
+    const rc = join(root, "shell config's rc");
+    writeFileSync(capture, "console.log(JSON.stringify(process.argv.slice(2)));\n");
+    writeFileSync(join(root, "claude"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(capture)} "$@"\n`, { mode: 0o755 });
+    writeFileSync(rc, shellBlock());
+    const result = spawnSync(shell, [...(shell.endsWith("bash") ? ["--noprofile", "--norc"] : ["-f"]), "-c", `
+claude --resume old-session
+source "$1"
+claude
+claude --resume old-session
+claude --continue
+claude '带 空格的提示词' --model sonnet
+claude agents --json
+claude mcp list
+claude --version
+claude -p '带 空格的提示词'
+`, "relay-test", rc], { env: { ...process.env, PATH: root }, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const channel = ["--dangerously-load-development-channels", "server:agent-relay"];
+    assert.deepEqual(result.stdout.trim().split("\n").map((line) => JSON.parse(line)), [
+      ["--resume", "old-session"],
+      channel,
+      [...channel, "--resume", "old-session"],
+      [...channel, "--continue"],
+      [...channel, "带 空格的提示词", "--model", "sonnet"],
+      ["agents", "--json"], ["mcp", "list"], ["--version"], ["-p", "带 空格的提示词"],
+    ]);
+  });
+}
 
 test("保留用户已有内容并在修改前备份", async (t) => {
   const { service, files, home } = fixture(t);
@@ -217,7 +263,7 @@ test("不支持的 shell 只提示手动配置，其余项照常安装", async (
   assert.equal(report.overall, "needs_action");
 });
 
-test("列出未启用 channel 的运行中会话，提示退出后重新进入", async (t) => {
+test("列出未发现在线登记的运行中会话，提示加载配置后重新进入", async (t) => {
   const { service } = fixture(t, {
     agents: [{ pid: 1, sessionId: "on", status: "idle" }, { pid: 2, sessionId: "off", status: "busy" }],
     registrations: [{ pid: 1, initial_session_id: "on", version: null, registered_at: 1, last_seen: 1 }],
@@ -225,6 +271,7 @@ test("列出未启用 channel 的运行中会话，提示退出后重新进入",
   const report = await service.install("claude");
   assert.deepEqual(report.sessions, { online: 1, need_restart: ["off"] });
   assert.ok(report.next_steps.some((s) => s.includes("off") && /--resume/.test(s)));
+  assert.ok(report.next_steps.some((s) => /未发现在线.*登记.*新开终端/.test(s)));
 });
 
 test("卸载只删除 Relay 写入的内容，保留用户内容", async (t) => {

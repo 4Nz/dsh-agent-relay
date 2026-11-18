@@ -107,6 +107,28 @@ function setup(t, options = {}) {
     adapters,
   };
 }
+test("消息正文支持完整 2K，超长时给出汇总或文档建议且不入库", async (t) => {
+  const { relay, store, sendResults } = setup(t);
+  const content = "中".repeat(2000);
+  const sent = await relay.call("send", { agent: "claude", external_session_id: "s", content });
+  assert.equal(sent.ok, true);
+  assert.equal(sent.value.message.status, "sent");
+  assert.equal(store.messages.get(sent.value.message.id).content, content);
+  assert.equal(sendResults[0][1], content);
+  for (const content of ["中".repeat(2001), "😀".repeat(1001)]) {
+    const rejected = await relay.call("send", { agent: "claude", external_session_id: "s", content });
+    assert.equal(rejected.error.code, "invalid_input");
+    assert.match(rejected.error.message, /2000/);
+    assert.match(rejected.error.message, /汇总.*文档/);
+  }
+  assert.equal(store.messages.list().items.length, 1);
+  assert.equal(sendResults.length, 1);
+  for (const content of ["", "   ", null, 42]) {
+    const rejected = await relay.call("send", { agent: "claude", external_session_id: "s", content });
+    assert.match(rejected.error.message, /非空字符串/);
+  }
+});
+
 test("订阅使用调用上下文，定时任务未创建时明确返回未就绪", async (t) => {
   const { relay } = setup(t);
   const result = await relay.call(

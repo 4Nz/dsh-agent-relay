@@ -66,6 +66,13 @@ function text(value: unknown, name: string) {
     throw new TypeError(`${name} 必须为非空字符串`);
   return value;
 }
+function messageContent(value: unknown): string {
+  if (typeof value !== "string" || !value.trim())
+    throw new TypeError("content 必须为非空字符串");
+  if (value.length > 2000)
+    throw new TypeError("content 最多 2000 个 UTF-16 码元（普通汉字计 1，部分 emoji 计 2）；请先整理汇总，或将完整内容保存为接收方可访问的文档后发送摘要与路径，不建议分段发送");
+  return value;
+}
 function integer(value: unknown, name: string, min: number, max: number) {
   if (
     typeof value !== "number" ||
@@ -434,7 +441,7 @@ export function createRelayService({
               args.external_session_id,
               "external_session_id",
             );
-            const content = text(args.content, "content");
+            const content = messageContent(args.content);
             const subscribeAfterSend =
               args.subscribe_after_send === undefined
                 ? false
