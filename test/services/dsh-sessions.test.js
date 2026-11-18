@@ -65,3 +65,17 @@ test("has 在 listSessions 失败时抛错，不当作不存在", async () => {
   };
   await assert.rejects(createDshSessions(host).has("a"), /宿主不可用/);
 });
+
+test("归档接收会话不出现在候选中，校验明确拒绝；解除归档后可重新使用", async () => {
+  const registry = { archivedSessionIds: ["archived"] };
+  const sessions = createDshSessions({
+    listSessions: async () => [{ header: { id: "active" } }, { header: { id: "archived" } }],
+    readTitleSnapshots: async () => [],
+  }, registry);
+  assert.deepEqual(await sessions.list(), [{ id: "active", title: "active" }]);
+  await assert.rejects(sessions.has("archived"), /接收.*已归档.*恢复.*选择/);
+  assert.equal(await sessions.has("active"), true);
+  registry.archivedSessionIds = [];
+  assert.equal(await sessions.has("archived"), true);
+  assert.equal((await sessions.list()).length, 2);
+});

@@ -7,6 +7,8 @@ import { openRelayStore } from "../../lib/storage/index.js";
 import { createRelayService, endpoints } from "../../lib/services/relay.js";
 import { createAdapterRegistry } from "../../lib/adapters/registry.js";
 import { createSubscriptionService } from "../../lib/services/subscriptions.js";
+import { createBridgeService } from "../../lib/services/bridge.js";
+import { createDshSessions } from "../../lib/services/dsh-sessions.js";
 function setup(t, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-api-"));
   const store = openRelayStore({ dataDir: dir });
@@ -69,6 +71,12 @@ function setup(t, options = {}) {
     },
   });
   const relay = createRelayService({
+    bridge: options.bridge ? createBridgeService({
+      store, adapters,
+      scheduler: { create: async () => "task", delete: async () => {}, catalog: async () => [] },
+      transport: { idle: async () => true, deliver: async () => ({ status: "delivered" }), confirm: async () => "delivered" },
+      createSession: async () => "new-dsh",
+    }) : undefined,
     store,
     adapters,
     subscriptions,
@@ -91,7 +99,7 @@ function setup(t, options = {}) {
       instructions: [],
     },
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
-    hasDshSession: async (id) => id === "dsh",
+    hasDshSession: options.dshSessions?.has ?? (async (id) => id === "dsh"),
     createDshSession: async () => "new-dsh",
     onQueued: options.onQueued,
     observeTitle: options.observeTitle,
@@ -107,6 +115,28 @@ function setup(t, options = {}) {
     adapters,
   };
 }
+test("页面新建默认复用已归档路由时拒绝落库，明确选其他会话后可规划", async (t) => {
+  const dshSessions = createDshSessions({
+    listSessions: async () => [{ header: { id: "old" } }, { header: { id: "dsh" } }],
+    readTitleSnapshots: async () => [],
+  }, { archivedSessionIds: ["old"] });
+  const { relay, store } = setup(t, { bridge: true, dshSessions });
+  const route = store.bridge.ensure("claude", "ext", "old");
+  for (const extra of [{}, { dsh_session_id: "old" }]) {
+    const result = await relay.call("subscribe", { agent: "claude", external_session_id: "ext", ...extra });
+    assert.equal(result.ok, false);
+    assert.match(result.error.message, /接收.*已归档/);
+    assert.equal(store.bridge.live(route), null);
+    assert.equal(store.bridge.pending(route.id).length, 0);
+    assert.equal(store.bridge.route("claude", "ext").dsh_session_id, "old");
+  }
+  const result = await relay.call("subscribe", { agent: "claude", external_session_id: "ext", dsh_session_id: "dsh" });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.subscription.planning_state, "pending");
+  assert.equal(store.bridge.route("claude", "ext").dsh_session_id, "dsh");
+  assert.equal(store.bridge.pending(route.id)[0].kind, "planning");
+});
+
 test("消息正文支持完整 2K，超长时给出汇总或文档建议且不入库", async (t) => {
   const { relay, store, sendResults } = setup(t);
   const content = "中".repeat(2000);
