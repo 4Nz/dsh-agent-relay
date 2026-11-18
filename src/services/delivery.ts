@@ -1,4 +1,5 @@
 import type { Notification } from "../storage/index.js";
+import { ARCHIVED_RECEIVER, type DshSessionArchiveRegistry } from "./dsh-sessions.js";
 import type {
   DeliveryTransport,
   DeliveryResult,
@@ -12,6 +13,7 @@ interface RelayMessage {
   content: { type: "text"; text: string }[];
 }
 export interface DshDeliveryContext {
+  workspaceRegistry?: DshSessionArchiveRegistry;
   sessionController: {
     resolveAgent(id: string): Promise<
       | {
@@ -34,6 +36,7 @@ export interface DshDeliveryContext {
 export function createDshDelivery(
   ctx: DshDeliveryContext,
 ): DeliveryTransport & { idle(session: string): Promise<boolean> } {
+  const archived = (id: string) => ctx.workspaceRegistry?.archivedSessionIds.includes(id) ?? false;
   async function contains(sessionId: string, key: string) {
     const log = await ctx.sessionQuery.readSession(sessionId);
     return log.events.some((event) => {
@@ -60,8 +63,9 @@ export function createDshDelivery(
   }
   return {
     async idle(sessionId) {
+      if (archived(sessionId)) return false;
       const resolved = await ctx.sessionController.resolveAgent(sessionId);
-      return !("error" in resolved) && resolved.agent.status === "idle";
+      return !archived(sessionId) && !("error" in resolved) && resolved.agent.status === "idle";
     },
     confirm,
     async deliver(sessionId, notification): Promise<DeliveryResult> {
@@ -75,6 +79,8 @@ export function createDshDelivery(
         const resolved = await ctx.sessionController.resolveAgent(sessionId);
         if ("error" in resolved)
           return { status: "failed", error: "无法加载接收通知的 DSH 会话" };
+        // 检查放在异步查询之后、followup 之前，避免加载实例期间被归档仍入队。
+        if (archived(sessionId)) return { status: "failed", error: ARCHIVED_RECEIVER };
         const message: RelayMessage = {
           id: notification.delivery_key,
           role: "user",

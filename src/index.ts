@@ -62,6 +62,7 @@ interface RelayHost extends DshDeliveryContext {
   };
   workspaceRegistry: {
     create(path: string, title?: string): Promise<{ id: string }>;
+    readonly archivedSessionIds: readonly string[];
   };
   sessionQuery: DshDeliveryContext["sessionQuery"] & {
     listSessions(): Promise<{ header: { id: string } }[]>;
@@ -161,7 +162,7 @@ export function apply(ctx: Context): void {
       await bridge.drain();
     },
   };
-  const dshSessions = createDshSessions(host.sessionQuery);
+  const dshSessions = createDshSessions(host.sessionQuery, host.workspaceRegistry);
   const service = createRelayService({
     observeTitle: titleSync.observe,
     bridge,

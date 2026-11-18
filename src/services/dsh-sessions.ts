@@ -1,4 +1,4 @@
-// 集中宿主会话查询适配：listSessions 存在性核对 + 批量标题读取。
+// 集中宿主会话查询适配：接收资格核对（存在且未归档）+ 批量标题读取。
 // 批量标题按本机 DSH 0.2.1-rc.2 的 SessionTitleObservationResult 合同适配，
 // 不使用 any 假定结果为简单 Map。
 
@@ -22,12 +22,19 @@ export interface DshSessionOption {
   title: string;
 }
 
-export function createDshSessions(host: DshSessionHost) {
+export interface DshSessionArchiveRegistry {
+  readonly archivedSessionIds: readonly string[];
+}
+
+export const ARCHIVED_RECEIVER = "接收通知的 DSH 会话已归档，无法执行频率规划或处理通知；请先在 DSH 恢复该会话，或选择其他未归档的接收会话";
+
+export function createDshSessions(host: DshSessionHost, registry?: DshSessionArchiveRegistry) {
+  const archived = (id: string) => registry?.archivedSessionIds.includes(id) ?? false;
   return {
     // 一次批量读取标题；单个标题缺失/失败回退到该 ID，其余结果仍可展示；
     // 批量整体失败向上抛出明确错误。
     async list(): Promise<DshSessionOption[]> {
-      const sessions = await host.listSessions();
+      const sessions = (await host.listSessions()).filter((s) => !archived(s.header.id));
       const ids = sessions.map((s) => s.header.id);
       const titles = new Map<string, string>();
       if (ids.length) {
@@ -42,10 +49,12 @@ export function createDshSessions(host: DshSessionHost) {
         title: titles.get(s.header.id) ?? s.header.id,
       }));
     },
-    // 仅存在性验证：一次轻量 listSessions 后核对 header.id，不读取标题/正文。
+    // 接收资格验证：一次轻量 listSessions 后核对存在性及当前归档状态，不读取标题/正文。
+    // 归档仍有历史记录，但宿主会阻止其执行；必须明确说明，不能作为可用接收会话。
     // listSessions 失败时向上抛出，不当作"不存在"。
     async has(id: string): Promise<boolean> {
       const sessions = await host.listSessions();
+      if (archived(id)) throw new TypeError(ARCHIVED_RECEIVER);
       return sessions.some((s) => s.header.id === id);
     },
   };

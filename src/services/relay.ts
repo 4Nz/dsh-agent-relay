@@ -112,7 +112,7 @@ export function createRelayService({
   notifications: NotificationService;
   skillInstall: SkillInstallService;
   listDshSessions: () => Promise<DshSessionOption[]>;
-  // 仅用于存在性验证，不读取标题/正文；失败向上抛 unavailable，不当作不存在。
+  // 验证接收会话存在且未归档，不读取标题/正文；归档抛明确错误，查询失败不当作不存在。
   hasDshSession?: (id: string) => Promise<boolean>;
   createDshSession?: (context: ReceiveSessionContext) => Promise<string>;
   // 消息进入 channel 队列后触发一次推送检查。
