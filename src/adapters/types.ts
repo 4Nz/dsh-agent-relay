@@ -56,7 +56,11 @@ export interface Snapshot {
   // 正常观测的能力边界，不计作查询失败。
   runtime_note?: string | null;
   status_context?: {
-    runtime_source: "codex_daemon" | "codex_history_reader";
+    runtime_source:
+      | "codex_daemon"
+      | "codex_history_reader"
+      | "workbuddy_gateway"
+      | "workbuddy_history_reader";
     turn_status_source: "persisted_history";
     turn_status_scope: "historical";
     note: string;

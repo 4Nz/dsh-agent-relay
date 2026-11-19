@@ -68,3 +68,5 @@ assert.equal(wakeupsAfterIdle, 1); // 同会话批量唤醒
 - 宿主验证使用确定性模型和合成外部历史，不验证真实LLM语义质量、真实Claude/Codex端到端、浏览器布局与通知权限；详见 `docs/research/T1-T2-T3-T4-T6-T7-session-bridge-host-validation.md`。
 
 实施细节：纯push会话关系在独立路由列表管理，不伪造关注期；原批次保存关注上下文与接收者，旧确认只消费自身事件。未确认批次有独立有界恢复（五分钟后宿主提醒，批次创建后24小时转人工处理），不自动开启关注。沿用基线官方Codex queue/add排队能力，不扩大外部发送权限。Node SQLite experimental 与 tsdown CJS 建议为已知环境提示。
+
+2026-11-19 草稿修复说明：当前 WorkBuddy 分支尝试解除结束关注后旧批次对新 push 的阻塞，但尚不能合并。实现会把无订阅或已结束订阅的 delivered 批次自动标为 processed，混淆送达与处理确认；还会把 idle=false 或查询异常当作更换接收会话的依据，违反忙时原路由排队语义，不能证明接收会话归档。已有测试通过不足以覆盖这些问题，相关测试需恢复原确认与恢复提醒契约，并补充忙碌、查询失败、重复 request_id 不重绑的用例。真实事件没有被手工改写，本轮未部署。详见 [草稿审查边界](../../research/T1-T2-T3-T5.3-T7-draft-review.md)。

@@ -9,7 +9,7 @@ import type { ClaudeChannelService, ListClaudeAgents } from "./claude-channel.js
 import { NOTIFICATION_SKILL } from "./skill-install.js";
 import { CHANNEL_NAME, INSTRUCTIONS } from "../channel/server.js";
 
-// 前置安装接入：按 Agent 安装和自检。Claude 包含通知 Skill 与 channel 配置，Codex 只有通知 Skill。
+// 前置安装接入：按 Agent 安装和自检。Claude 包含通知 Skill 与 channel 配置，Codex 直接写入 Skill，WorkBuddy 只提供会话内手动安装指引。
 // 配置文件由插件直接写入；修改前备份，已正常的项不改动，内容被改过或重复的项不自动覆盖。
 
 // 规则、shell 函数的格式版本；内容变化时加一，已安装的旧版本会被识别为 outdated。
@@ -111,6 +111,7 @@ export function createSetupService({
   const skillTarget: Record<Agent, string> = {
     claude: join(claudeDir, "skills", NOTIFICATION_SKILL, "SKILL.md"),
     codex: join(env.CODEX_HOME ?? join(homeDir, ".codex"), "skills", NOTIFICATION_SKILL, "SKILL.md"),
+    workbuddy: join(homeDir, ".workbuddy", "skills", NOTIFICATION_SKILL, "SKILL.md"),
   };
   let probeState: ProbeState = { status: "idle" };
 
@@ -350,6 +351,22 @@ export function createSetupService({
     items.push(notificationItem(), skillItem("codex"));
     return { blocking, report: { agent: "codex", overall: "ok", version, items, next_steps: [] } };
   }
+  async function checkWorkBuddy(): Promise<{ report: SetupReport; blocking: boolean }> {
+    const items = [notificationItem(), skillItem("workbuddy")];
+    const blocking = items.some((item) => item.status === "unavailable");
+    return {
+      blocking,
+      report: {
+        agent: "workbuddy",
+        overall: "ok",
+        version: null,
+        items,
+        next_steps: [
+          "请在 WorkBuddy 会话内按安装指引写入 dsh-notify Skill；WorkBuddy Adapter 只读，不会反向执行安装提示词",
+        ],
+      },
+    };
+  }
   function finish(report: SetupReport, blocking: boolean): SetupReport {
     const changed = report.items.some((i) => i.action && i.action !== "skipped" && i.action !== "none");
     const pending = report.items.some((i) => i.status !== "ok");
@@ -369,6 +386,10 @@ export function createSetupService({
       const { report, blocking } = await checkCodex();
       return finish(report, blocking);
     }
+    if (agent === "workbuddy") {
+      const { report, blocking } = await checkWorkBuddy();
+      return finish(report, blocking);
+    }
     const { report, blocking } = await checkClaude();
     return finish(report, blocking);
   }
@@ -380,7 +401,7 @@ export function createSetupService({
         .map((i) => i.message)
         .join("；");
       throw new TypeError(
-        `${agent === "claude" ? "Claude" : "Codex"} 前置安装未完成，请先在「前置安装接入」页完成安装：${missing}`,
+        `${agent === "claude" ? "Claude" : agent === "codex" ? "Codex" : "WorkBuddy"} 前置安装未完成，请先在「前置安装接入」页完成安装：${missing}`,
       );
     }
   }
@@ -388,6 +409,13 @@ export function createSetupService({
   return {
     check,
     async install(agent: Agent): Promise<SetupReport> {
+      if (agent === "workbuddy") {
+        const { report, blocking } = await checkWorkBuddy();
+        report.next_steps = [
+          "请在 WorkBuddy 会话内按安装指引写入 dsh-notify Skill；Relay 不会通过只读 Adapter 反向执行安装",
+        ];
+        return finish(report, blocking);
+      }
       if (agent === "codex") {
         const { item: codex, version } = await codexVersion();
         const skill = skillItem("codex");

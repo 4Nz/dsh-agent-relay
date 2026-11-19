@@ -77,8 +77,8 @@ function integer(value: unknown, name: string, min: number, max: number) {
   return value;
 }
 function agent(value: unknown): Agent {
-  if (value !== "claude" && value !== "codex")
-    throw new TypeError("Agent 必须为 claude 或 codex");
+  if (value !== "claude" && value !== "codex" && value !== "workbuddy")
+    throw new TypeError("Agent 必须为 claude、codex 或 workbuddy");
   return value;
 }
 export function createRelayService({
@@ -333,7 +333,9 @@ export function createRelayService({
               throw new TypeError("订阅类型无效");
             const selected = agent(args.agent),
               external = text(args.external_session_id, "external_session_id");
-            if (setup) await setup.requireReady(selected);
+            // WorkBuddy 的 poll 订阅只读本地/网关历史，不依赖其通知 Skill；push 仍由前置安装校验保护。
+            if (setup && !(selected === "workbuddy" && type === "poll"))
+              await setup.requireReady(selected);
             let session =
               type === "poll"
                 ? args.dsh_session_id === undefined ||
@@ -424,7 +426,8 @@ export function createRelayService({
           }
           case "send": {
             const selected = agent(args.agent);
-            if (setup) await setup.requireReady(selected);
+            // WorkBuddy 明确只读，发送请求应落到 Adapter 的固定拒绝，不被 Skill 安装门控改写。
+            if (setup && selected !== "workbuddy") await setup.requireReady(selected);
             const external = text(
               args.external_session_id,
               "external_session_id",

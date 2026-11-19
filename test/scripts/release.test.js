@@ -5,6 +5,10 @@ import { validatePackage } from "../../scripts/release.mjs";
 const pkg = { name: "dsh-agent-relay", version: "0.1.0", exports: { ".": { import: "./lib/index.js", types: "./lib/index.d.ts" }, "./client": { default: "./lib/client.js" } }, dsh: { bundle: { patch: "./cordis.patch.yml" } } };
 const files = ["package.json", "lib/index.js", "lib/index.d.ts", "lib/client.js", "cordis.patch.yml", "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/SKILL.md", "README.md", "CHANGELOG.md", "docs/operations/T0-T1-T3-T7-plugin-release.md"];
 files.push("skills/dsh-notify/send.mjs");
+test("发布检查允许 npm 自动包含的英文 README，仍拒绝其他文件", () => {
+  assert.doesNotThrow(() => validatePackage(pkg, [...files, "README.en.md"]));
+  assert.throws(() => validatePackage(pkg, [...files, "README.secret.json"]), /不允许/);
+});
 test("发布检查拒绝缺失导出和缺失 Skill", () => {
   assert.doesNotThrow(() => validatePackage(pkg, files, "v0.1.0"));
   for (const missing of ["lib/index.d.ts", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/send.mjs"])

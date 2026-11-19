@@ -60,7 +60,8 @@ const relAgo = (value: number) => {
   if (hours < 24) return `${hours} 小时前`;
   return formatStart(value);
 };
-const agentName = (agent: string) => (agent === "claude" ? "Claude" : "Codex");
+const agentName = (agent: string) =>
+  agent === "claude" ? "Claude" : agent === "codex" ? "Codex" : "WorkBuddy";
 const typeLabel = (type: string) => (type === "poll" ? "主动订阅" : "主动通知");
 const expiryText = (sub: any) => {
   if (sub.status === "ended") return "已结束";
@@ -351,7 +352,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     return () => clearInterval(timer);
   }, [drawer, probe?.status]);
   useEffect(() => {
-    if (drawer === "detail" && current?.agent === "codex") void inspect(current);
+    if (drawer === "detail" && (current?.agent === "codex" || current?.agent === "workbuddy")) void inspect(current);
   }, [drawer, current?.id]);
   useEffect(() => {
     setEvents([]); setEventNext(null); setRecoveredBatch(null); setEventsError("");
@@ -836,6 +837,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           [
             ["claude", "Claude"],
             ["codex", "Codex"],
+            ["workbuddy", "WorkBuddy"],
           ],
         ),
         agent === "codex" &&
@@ -844,6 +846,12 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             { className: "notice muted small" },
             "选择已有的 Codex 桌面或 CLI 会话进行订阅，无需另建后台会话。订阅只查阅历史，不接管原会话。",
           ),
+      agent === "workbuddy" &&
+        h(
+          "p",
+          { className: "notice muted" },
+          "WorkBuddy 仅支持查阅和订阅。实时 live/busy 不可用时会回退到历史 JSONL；Relay 不会向 WorkBuddy 会话发送消息。",
+        ),
         fieldSelect(
           "外部会话",
           external,
@@ -1101,16 +1109,18 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const installDrawer = () => h(Drawer, { title: "前置安装接入", onClose: close },
     h("p", { className: "muted" }, installAgent === "claude"
       ? "为 Claude 一次配好接入：通知 Skill（任务完成后通知 DSH）与 channel（把消息送进开在终端里的会话）。已正常的项不会改动，修改前自动备份。"
-      : "为 Codex 一次配好接入：通知 Skill（任务完成后通知 DSH）。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。"),
+      : installAgent === "codex"
+        ? "为 Codex 一次配好接入：通知 Skill（任务完成后通知 DSH）。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。"
+        : "WorkBuddy Adapter 只读，可查阅并订阅已有会话。通知 Skill 需要在 WorkBuddy 会话内按指引安装；Relay 不会反向执行提示词。"),
     fieldSelect("Agent", installAgent, (v) => {
       setInstallAgent(v);
       setSetupReport(null);
       setInstallError("");
       setSetupMessage("");
-    }, [["claude", "Claude"], ["codex", "Codex"]]),
+    }, [["claude", "Claude"], ["codex", "Codex"], ["workbuddy", "WorkBuddy"]]),
     !setupReport && !installError && h("p", { className: "muted" }, "正在检查安装状态…"),
     setupReport && h("div", { className: "notice small" },
-      h("p", null, `${SETUP_OVERALL[setupReport.overall] ?? setupReport.overall}${setupReport.version ? ` · ${installAgent === "claude" ? "Claude Code" : "Codex"} ${setupReport.version}` : ""}`),
+      h("p", null, `${SETUP_OVERALL[setupReport.overall] ?? setupReport.overall}${setupReport.version ? ` · ${installAgent === "claude" ? "Claude Code" : installAgent === "codex" ? "Codex" : "WorkBuddy"} ${setupReport.version}` : ""}`),
       h("ul", null, ...setupReport.items.map((item: any) =>
         h("li", { key: item.key, className: item.status === "ok" ? "" : item.status === "conflict" || item.status === "unavailable" ? "error" : "warn" },
           `${SETUP_ITEM[item.key] ?? item.key}：${SETUP_LABEL[item.status] ?? item.status} · ${item.message}`,
@@ -1209,6 +1219,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             ["", "全部 Agent"],
             ["claude", "Claude"],
             ["codex", "Codex"],
+            ["workbuddy", "WorkBuddy"],
           ],
         ),
         filterSelect(

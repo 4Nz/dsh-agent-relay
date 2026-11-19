@@ -17,7 +17,7 @@
 - 判断主动通知后下一步做什么。`push` 由 DSH 模型结合消息及当前上下文自行推理；`poll` 仅整理汇报订阅会话的进展与结果，不重新执行外部任务。
 - 进展的逐条同步。通知只发结果摘要，不搬运外部会话的上下文。
 - Agent 层面的增强能力，比如 btw 提问；Claude 排队限 channel，Codex 已有会话使用官方 daemon queue/add。
-- WorkBuddy 接入。
+- WorkBuddy 正式入站消息转发；默认接入仍为只读会话查阅、历史订阅和外部 `dsh-notify` Skill 方案。当前分支另有显式配置的 ACP 实验发送，真实投递未确认，不作为生产能力。实验范围与结果见 `docs/superpowers/plans/T5.3-workbuddy-acp-experiment.md`、`docs/research/T5.3-workbuddy-acp-validation.md`。
 - 多用户鉴权。第一版按本机单用户设计，表里保留所有者字段。
 
 部署前提：DSH 和外部 Agent 在同一台机器上。跨机器以后再做。
@@ -164,6 +164,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | --- | --- | --- |
 | T5.1 | Claude Adapter | 列出会话、`snapshot`、发送消息。无进程持有的会话用 `--resume` 发送；被终端持有的会话通过 Agent Relay channel 在空闲时投递，未启用 channel 时拒绝并说明原因。方案见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md` |
 | T5.2 | Codex Adapter | 列会话/快照/增量；本机daemon已有会话官方queue/add，独立历史回退只读；登记专用会话turn/start，不绕过权限或并行接管。历史专项记录不代表新桥梁T7完成 |
+| T5.3 | WorkBuddy Adapter（只读） | 网关会话发现、live/busy 观测、history/replay 读取；历史接口 404 时回退本地 JSONL；只支持快照、增量和 poll 订阅，`sendMessage/runPrompt` 明确关闭。WorkBuddy 的 `dsh-notify` Skill 由 WorkBuddy 会话自行安装并主动回传摘要。实现方案与验证边界见 `docs/superpowers/plans/2026-11-17-T5.3-workbuddy-adapter-plan.md` 和 `docs/research/T5.3-workbuddy-adapter-validation.md` |
 
 每个 Adapter 都要有针对真实会话的冒烟测试，测试会话和业务会话分开。
 

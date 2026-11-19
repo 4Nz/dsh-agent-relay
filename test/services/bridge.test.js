@@ -15,7 +15,8 @@ function fixture(t) {
   let time = 1000,
     busy = false,
     reads = 0,
-    nextTask = 0;
+    nextTask = 0,
+    nextSession = "dsh";
   const wakeups = [],
     tasks = new Map();
   let events = [];
@@ -65,7 +66,7 @@ function fixture(t) {
       confirm: async (...args) =>
         confirmHook ? confirmHook(...args) : confirmation,
     },
-    createSession: async () => "dsh",
+    createSession: async () => nextSession,
     now: () => time,
   });
   return {
@@ -80,6 +81,7 @@ function fixture(t) {
     setConfirmation: (x) => (confirmation = x),
     setTime: (x) => (time = x),
     setBusy: (x) => (busy = x),
+    setNextSession: (x) => (nextSession = x),
     setEvents: (x) => (events = x),
     get reads() {
       return reads;
@@ -549,7 +551,7 @@ test("已确认批次不会被迟到的投递回执复活", async (t) => {
   });
   assert.equal(f.wakeups.length, 2);
 });
-test("无关注和结束后push都有独立恢复提醒，截止留待人工且不阻塞新push", async (t) => {
+test("无关注和结束后push直接送达且不阻塞新push", async (t) => {
   for (const ended of [false, true]) {
     const f = fixture(t);
     if (ended) {
@@ -563,19 +565,17 @@ test("无关注和结束后push都有独立恢复提醒，截止留待人工且�
       summary: "遗留",
       result: "completed",
     });
-    const route = f.store.bridge.route("claude", "external"),
-      batch = f.store.bridge.open(route.id);
+    const route = f.store.bridge.route("claude", "external");
+    assert.equal(f.store.bridge.open(route.id), null);
+    assert.equal(f.store.bridge.event("push:orphan")?.processed_at !== null, true);
     f.setTime(301001);
     await f.bridge.reconcile();
-    assert.equal(f.tasks.size, 1);
-    assert.match([...f.tasks.values()][0].prompt, /relay_batch/);
+    assert.equal(f.tasks.size, 0);
     assert.equal(f.store.bridge.live(route), null);
     assert.equal(f.reads, 0);
     f.setTime(86401001);
     await f.bridge.reconcile();
     assert.equal(f.tasks.size, 0);
-    assert.equal(f.store.bridge.batch(batch.id).state, "needs_attention");
-    assert.equal(f.store.bridge.events(batch.id)[0].processed_at, null);
     await f.bridge.push({
       agent: "claude",
       external_session_id: "external",
@@ -586,6 +586,60 @@ test("无关注和结束后push都有独立恢复提醒，截止留待人工且�
     assert.equal(f.wakeups.length, 2);
   }
 });
+
+test("结束关注后直接push不被旧已送达批次阻塞", async (t) => {
+  const f = fixture(t);
+  const first = (await f.bridge.subscribe({
+    type: "poll",
+    agent: "claude",
+    external_session_id: "external",
+    dsh_session_id: "dsh",
+    request_planning: true,
+  })).subscription;
+  // 规划事件已经送达，但旧订阅随后结束；该批次不能挡住新的直接通知。
+  assert.equal(f.wakeups.length, 1);
+  await f.bridge.stop(first.id);
+
+  const pushed = await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "new-direct",
+    summary: "新的直接通知",
+    result: "completed",
+  });
+
+  assert.equal(pushed.accepted, true);
+  assert.equal(f.wakeups.length, 2);
+  const route = f.store.bridge.route("claude", "external");
+  assert.equal(f.store.bridge.live(route), null);
+  assert.ok(f.store.bridge.event("push:new-direct")?.processed_at);
+});
+
+test("直接push发现旧接收会话不可用时切换新的接收会话", async (t) => {
+  const f = fixture(t);
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "first-direct",
+    summary: "第一条",
+    result: "completed",
+  });
+  f.setNextSession("replacement-dsh");
+  f.setBusy(true);
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "second-direct",
+    summary: "第二条",
+    result: "completed",
+  });
+  assert.equal(f.store.bridge.route("claude", "external").dsh_session_id, "replacement-dsh");
+  f.setBusy(false);
+  await f.bridge.drain();
+  assert.equal(f.wakeups.length, 2);
+  assert.ok(f.store.bridge.event("push:second-direct")?.processed_at);
+});
+
 test("屏蔽push不进入历史检查批次，也不阻止正常历史进展", async (t) => {
   const f = fixture(t);
   const s = (await f.bridge.subscribe(input)).subscription;
@@ -976,17 +1030,23 @@ for (const state of ['active', 'paused', 'ended']) {
     const routeB = f.store.bridge.route('claude', 'external-b');
     const batchA = f.store.bridge.open(routeA.id);
     const batchB = f.store.bridge.open(routeB.id);
-    const factsA = f.bridge.batch(batchA.id), factsB = f.bridge.batch(batchB.id);
-    assert.equal(factsA.agent, 'claude');
-    assert.equal(factsA.external_session_id, 'external');
+    const factsB = f.bridge.batch(batchB.id);
     assert.equal(factsB.external_session_id, 'external-b');
-    assert.ok(factsA.events.every(e => e.body.includes('来自 A')));
     assert.ok(factsB.events.every(e => e.body.includes('来自 B')));
+    if (state === 'ended') {
+      assert.equal(batchA, null);
+      assert.ok(f.store.bridge.event('push:来自 A')?.processed_at);
+    } else {
+      const factsA = f.bridge.batch(batchA.id);
+      assert.equal(factsA.agent, 'claude');
+      assert.equal(factsA.external_session_id, 'external');
+      assert.ok(factsA.events.every(e => e.body.includes('来自 A')));
+    }
     await f.bridge.decide({ batch_id: batchB.id, decision_version: batchB.version, decision: 'continue' });
     assert.equal(f.store.subscriptions.get(a.id).status, state);
     assert.equal(f.store.subscriptions.get(b.id).status, 'active');
     await f.bridge.mute('claude', 'external', true);
-    assert.equal(f.bridge.batch(batchA.id).status, 'muted');
+    if (batchA) assert.equal(f.bridge.batch(batchA.id).status, 'muted');
     assert.equal(f.store.bridge.route('claude', 'external-b').muted, 0);
     assert.equal(f.store.bridge.route('claude', 'external').dsh_session_id, 'dsh');
     if (state === 'paused') {

@@ -237,6 +237,15 @@ export function createBridgeService({
     for (const b of db.routes()) {
       if (!b.dsh_session_id) continue;
       let batch = db.open(b.id);
+      // 已结束关注的送达批次不再等待 DSH 规划；否则它会长期占用路由，
+      // 阻塞后续没有 subscription_id 的直接 push。
+      if (batch?.state === "delivered") {
+        const owner = batch.subscription_id ? subs.get(batch.subscription_id) : null;
+        if (!owner || owner.status === "ended") {
+          db.acknowledge(batch.id, now());
+          batch = null;
+        }
+      }
       if (batch?.state === "unknown") {
         const confirmed = await transport
           .confirm(
@@ -285,13 +294,19 @@ export function createBridgeService({
       } catch {
         result = { status: "unknown" as const };
       }
-      db.state(
-        batch.id,
-        result.status === "failed" ? "pending" : result.status,
-        now(),
-        result.error ?? null,
-        "delivering",
-      );
+      if (result.status === "delivered" && !batch.subscription_id) {
+        // 直接 push 没有 DSH 规划步骤，送达确认后立即收口批次，
+        // 否则它会以 delivered 状态长期阻塞下一条直接通知。
+        db.acknowledge(batch.id, now());
+      } else {
+        db.state(
+          batch.id,
+          result.status === "failed" ? "pending" : result.status,
+          now(),
+          result.error ?? null,
+          "delivering",
+        );
+      }
     }
   }
   const service = {
@@ -619,8 +634,24 @@ export function createBridgeService({
           )
             throw new TypeError("request_id 已绑定其他外部会话");
         }
-        const b = await ensureRoute(input.agent, input.external_session_id);
-        const sub = db.live(b);
+        const existingRoute = db.route(input.agent, input.external_session_id);
+        let b = await ensureRoute(input.agent, input.external_session_id);
+        let sub = db.live(b);
+        // 直接通知没有活跃关注时仍须沿用通知路由。若旧接收会话已归档、
+        // 忙碌或无法解析，创建新的 Agent Relay 接收会话，避免消息挂在旧路由上。
+        if (!sub && existingRoute?.dsh_session_id && !b.muted) {
+          const receiverReady = await transport.idle(existingRoute.dsh_session_id).catch(() => false);
+          if (!receiverReady) {
+            const replacement = await createSession({
+              agent: input.agent,
+              externalSessionId: input.external_session_id,
+              externalSessionTitle: null,
+              type: "push",
+            });
+            db.bind(b.id, replacement);
+            b = db.route(input.agent, input.external_session_id)!;
+          }
+        }
         const created = db.append(
           b,
           {

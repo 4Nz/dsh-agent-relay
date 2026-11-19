@@ -10,6 +10,7 @@ import { startHistoryCleanup } from "./services/cleanup.js";
 import { createAdapterRegistry } from "./adapters/registry.js";
 import { createClaudeAdapter } from "./adapters/claude/index.js";
 import { createCodexAdapter } from "./adapters/codex/index.js";
+import { createWorkBuddyAdapter } from "./adapters/workbuddy/index.js";
 import { createDshScheduler } from "./services/scheduler.js";
 import { createSubscriptionService } from "./services/subscriptions.js";
 import { createCheckService } from "./services/checks.js";
@@ -117,6 +118,7 @@ export function apply(ctx: Context): void {
   const adapters = createAdapterRegistry([
     createClaudeAdapter({ channel }),
     codex,
+    createWorkBuddyAdapter(),
   ]);
   const scheduler = createDshScheduler(host.schedule);
   const subscriptions = createSubscriptionService({

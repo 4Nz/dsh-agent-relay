@@ -17,6 +17,7 @@ export function validatePackage(pkg, files, tag) {
   for (const path of files) {
     const allowed = ["package.json", "cordis.patch.yml", "README.md", "CHANGELOG.md", "LICENSE", guide, "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/SKILL.md"].includes(path)
       || path === "skills/dsh-notify/send.mjs"
+      || path === "README.en.md"
       || /^lib\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+(?:\.d\.ts|\.js)$/.test(path);
     if (!allowed) throw new Error(`不允许发布文件：${path}`);
   }

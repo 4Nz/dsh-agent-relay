@@ -6,12 +6,13 @@ import type { Agent } from "../storage/types.js";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type { RunPromptResult } from "../adapters/types.js";
 
-// 随包分发的外部 Agent 通知 Skill，供 Claude/Codex 安装后向 DSH 推送结果。
+// 随包分发的外部 Agent 通知 Skill，供 Claude/Codex 安装后向 DSH 推送结果；WorkBuddy 通过会话内手动安装。
 export const NOTIFICATION_SKILL = "dsh-notify";
 
 const AGENT_LABEL: Record<Agent, string> = {
   claude: "Claude Code",
   codex: "Codex",
+  workbuddy: "WorkBuddy",
 };
 
 export interface InstallPreview {
@@ -47,6 +48,7 @@ export function createSkillInstallService({
   const skillDir: Record<Agent, string> = {
     claude: join(homeDir, ".claude", "skills"),
     codex: join(homeDir, ".codex", "skills"),
+    workbuddy: join(homeDir, ".workbuddy", "skills"),
   };
 
   async function readSkill(): Promise<string> {

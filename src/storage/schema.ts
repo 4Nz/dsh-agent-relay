@@ -4,7 +4,7 @@ export const migrations = [
   `
 CREATE TABLE relay_subscription (
  id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0), owner TEXT NOT NULL CHECK(length(trim(owner))>0),
- type TEXT NOT NULL CHECK(type IN ('poll','push')), agent TEXT NOT NULL CHECK(agent IN ('claude','codex')),
+ type TEXT NOT NULL CHECK(type IN ('poll','push')), agent TEXT NOT NULL CHECK(agent IN ('claude','codex','workbuddy')),
  external_session_id TEXT NOT NULL CHECK(length(trim(external_session_id))>0), external_session_title TEXT, external_cwd TEXT,
  dsh_session_id TEXT CHECK(dsh_session_id IS NULL OR length(trim(dsh_session_id))>0),
  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','ended')),
@@ -34,7 +34,7 @@ CREATE TABLE relay_notification (
  CHECK(next_attempt_at IS NULL OR (delivery_status='failed' AND delivery_attempts<3))
 ) STRICT;
 CREATE TABLE relay_message (
- id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0),agent TEXT NOT NULL CHECK(agent IN ('claude','codex')),
+ id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0),agent TEXT NOT NULL CHECK(agent IN ('claude','codex','workbuddy')),
  external_session_id TEXT NOT NULL CHECK(length(trim(external_session_id))>0),subscription_id TEXT REFERENCES relay_subscription(id),
  content TEXT NOT NULL CHECK(length(trim(content))>0),status TEXT NOT NULL DEFAULT 'sending' CHECK(status IN ('sending','sent','rejected','failed','unknown')),
  error TEXT,external_ref TEXT,${time("created_at")},${time("sent_at", true)},
@@ -63,7 +63,7 @@ CREATE INDEX message_route ON relay_message(agent,external_session_id,subscripti
   // Claude channel 投递：新增 queued（等会话空闲）状态和 ack 字段。SQLite 不能修改 CHECK，按新结构重建表。
   `
 CREATE TABLE relay_message_v3 (
- id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0),agent TEXT NOT NULL CHECK(agent IN ('claude','codex')),
+ id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0),agent TEXT NOT NULL CHECK(agent IN ('claude','codex','workbuddy')),
  external_session_id TEXT NOT NULL CHECK(length(trim(external_session_id))>0),subscription_id TEXT REFERENCES relay_subscription(id),
  content TEXT NOT NULL CHECK(length(trim(content))>0),status TEXT NOT NULL DEFAULT 'sending' CHECK(status IN ('queued','sending','sent','rejected','failed','unknown')),
  error TEXT,external_ref TEXT,${time("created_at")},${time("sent_at", true)},${time("acked_at", true)},ack_summary TEXT,
@@ -89,7 +89,7 @@ ALTER TABLE relay_subscription ADD COLUMN decision_version INTEGER NOT NULL DEFA
 ALTER TABLE relay_subscription ADD COLUMN selected_interval_seconds INTEGER;
 UPDATE relay_subscription SET selected_interval_seconds=check_interval_seconds, planning_state='ready';
 CREATE TABLE relay_bridge (
- id TEXT PRIMARY KEY, agent TEXT NOT NULL, external_session_id TEXT NOT NULL,
+ id TEXT PRIMARY KEY, agent TEXT NOT NULL CHECK(agent IN ('claude','codex','workbuddy')), external_session_id TEXT NOT NULL,
  dsh_session_id TEXT UNIQUE, muted INTEGER NOT NULL DEFAULT 0,
  UNIQUE(agent,external_session_id)
 ) STRICT;
@@ -132,7 +132,7 @@ PRAGMA defer_foreign_keys=ON;
 CREATE TEMP TABLE relay_bridge_v7_backup AS SELECT * FROM relay_bridge;
 DROP TABLE relay_bridge;
 CREATE TABLE relay_bridge (
- id TEXT PRIMARY KEY, agent TEXT NOT NULL, external_session_id TEXT NOT NULL,
+ id TEXT PRIMARY KEY, agent TEXT NOT NULL CHECK(agent IN ('claude','codex','workbuddy')), external_session_id TEXT NOT NULL,
  dsh_session_id TEXT, muted INTEGER NOT NULL DEFAULT 0,
  UNIQUE(agent,external_session_id)
 ) STRICT;

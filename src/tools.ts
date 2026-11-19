@@ -13,7 +13,7 @@ export function registerTools(
 ): void {
   const agent = {
     type: "string",
-    enum: ["claude", "codex"],
+    enum: ["claude", "codex", "workbuddy"],
     required: true,
   } as const;
   const subscription = {
@@ -30,7 +30,7 @@ export function registerTools(
       endpoint: "create_session",
       description:
         "新建供 Relay 专用的 Codex 后台会话并返回 ID；须指定绝对工作目录。后续可用 relay_send 发送；请勿同时在桌面或 CLI 接管此会话。",
-      parameters: { agent, cwd: { type: "string", required: true } },
+      parameters: { agent: { type: "string", enum: ["codex"], required: true }, cwd: { type: "string", required: true } },
     },
     {
       name: "relay_list_sessions",
@@ -68,7 +68,7 @@ export function registerTools(
       name: "relay_send",
       endpoint: "send",
       description:
-        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递：先为 queued，会话空闲后推送为 sent，Claude 确认后记录 acked_at；未启用 channel 时 rejected。Codex 桌面会话经队列排队投递，专用后台会话直接开始新轮。可显式选择发送成功后复用或创建持续关注，随后按主题规划；不无条件创建重复订阅。",
+        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递；Codex 桌面会话经队列排队投递，专用后台会话直接开始新轮。WorkBuddy Adapter 只读，发送会明确拒绝。可显式选择发送成功后复用或创建持续关注，随后按主题规划；不无条件创建重复订阅。",
       parameters: {
         agent,
         external_session_id: { type: "string", required: true },
@@ -82,7 +82,7 @@ export function registerTools(
       name: "relay_setup_check",
       endpoint: "setup_check",
       description:
-        "检查前置安装接入状态：Claude 检查 channel 参数、MCP 登记、规则、shell 函数、channel 凭证和通知 Skill；Codex 只检查通知 Skill。逐项返回 ok/missing/outdated/conflict/unavailable 与下一步提示。",
+        "检查前置安装接入状态：Claude 检查 channel 参数、MCP 登记、规则、shell 函数、channel 凭证和通知 Skill；Codex 与 WorkBuddy 检查通知 Skill。逐项返回 ok/missing/outdated/conflict/unavailable 与下一步提示。",
       parameters: { agent },
     },
     {
@@ -97,7 +97,7 @@ export function registerTools(
       endpoint: "list",
       description: "分页查看订阅、检查和通知投递状态；任务结果与投递结果不同。",
       parameters: {
-        agent: { type: "string", enum: ["claude", "codex"] },
+        agent: { type: "string", enum: ["claude", "codex", "workbuddy"] },
         status: { type: "string", enum: ["active", "paused", "ended"] },
         type: { type: "string", enum: ["poll", "push"] },
         limit: { type: "integer" },
