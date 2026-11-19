@@ -7,6 +7,41 @@ import { openRelayStore } from "../../lib/storage/index.js";
 import { createRelayService, endpoints } from "../../lib/services/relay.js";
 import { createAdapterRegistry } from "../../lib/adapters/registry.js";
 import { createSubscriptionService } from "../../lib/services/subscriptions.js";
+
+test('外部接力稳定请求 ID 防重，查询不重发，换正文拒绝', async t => {
+  const { relay, store, sendResults } = setup(t);
+  const input = { agent: 'claude', external_session_id: 'ext', content: '审查方案\n'.repeat(200), request_id: 'handoff-1' };
+  const first = await relay.call('send', input);
+  assert.equal(first.ok, true);
+  assert.equal(first.value.message.status, 'sent');
+  const retry = await relay.call('send', input);
+  assert.equal(retry.value.duplicate, true);
+  assert.equal(retry.value.message.id, first.value.message.id);
+  assert.equal(sendResults.length, 1);
+  assert.equal((await relay.call('send', { ...input, content: '不同任务' })).ok, false);
+  const queried = await relay.call('message_status', { request_id: 'handoff-1' });
+  assert.equal(queried.value.message.id, first.value.message.id);
+  assert.equal(store.subscriptions.list().items.length, 0);
+});
+
+test('外部接力并发重试和 unknown 不重复调用 Adapter', async t => {
+  const { relay, adapters } = setup(t);
+  let release, entered, calls = 0;
+  const gate = new Promise(r => { release = r; });
+  const ready = new Promise(r => { entered = r; });
+  adapters.get('claude').sendMessage = async () => { calls++; entered(); await gate; return { status: 'unknown', error: '结果不明' }; };
+  const input = { agent: 'claude', external_session_id: 'ext', content: '接力', request_id: 'concurrent' };
+  const pending = relay.call('send', input);
+  await ready;
+  try {
+    const retry = await relay.call('send', input);
+    assert.equal(retry.value.duplicate, true);
+    assert.equal(retry.value.message.status, 'sending');
+  } finally { release(); }
+  await pending;
+  assert.equal((await relay.call('send', input)).value.message.status, 'unknown');
+  assert.equal(calls, 1);
+});
 function setup(t, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-api-"));
   const store = openRelayStore({ dataDir: dir });

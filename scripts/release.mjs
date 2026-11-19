@@ -12,11 +12,12 @@ export function validatePackage(pkg, files, tag) {
   const flatten = (value) => typeof value === "string" ? [value] : Object.values(value).flatMap(flatten);
   const required = ["package.json", "lib/index.js", "lib/client.js", "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/SKILL.md", "README.md", "CHANGELOG.md", guide,
     ...flatten(pkg.exports).map((path) => path.replace(/^\.\//, "")), pkg.dsh.bundle.patch.replace(/^\.\//, "")];
-  required.push("skills/dsh-notify/send.mjs");
+  const senderFiles = ["dsh-notify", "claude-notify", "codex-notify"].flatMap(name => [`skills/${name}/SKILL.md`, `skills/${name}/send.mjs`]);
+  required.push(...senderFiles);
   for (const path of required) if (!files.includes(path)) throw new Error(`安装包缺少：${path}`);
   for (const path of files) {
-    const allowed = ["package.json", "cordis.patch.yml", "README.md", "CHANGELOG.md", "LICENSE", guide, "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/SKILL.md"].includes(path)
-      || path === "skills/dsh-notify/send.mjs"
+    const allowed = ["package.json", "cordis.patch.yml", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE", guide, "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/SKILL.md"].includes(path)
+      || senderFiles.includes(path)
       || /^lib\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+(?:\.d\.ts|\.js)$/.test(path);
     if (!allowed) throw new Error(`不允许发布文件：${path}`);
   }

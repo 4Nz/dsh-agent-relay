@@ -1,5 +1,5 @@
 import type { BridgeService } from "./bridge.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type { Snapshot } from "../adapters/types.js";
 import type {
@@ -37,6 +37,7 @@ export const endpoints = [
   "subscribe",
   "send",
   "messages",
+  "message_status",
   "update",
   "install_skill",
   "install_skill_preview",
@@ -61,10 +62,13 @@ function object(value: unknown): Record<string, unknown> {
     throw new TypeError("参数必须为对象");
   return value as Record<string, unknown>;
 }
-function text(value: unknown, name: string) {
-  if (typeof value !== "string" || !value.trim() || value.length > 500)
+function text(value: unknown, name: string, max = 500) {
+  if (typeof value !== "string" || !value.trim() || value.length > max)
     throw new TypeError(`${name} 必须为非空字符串`);
   return value;
+}
+function externalMessageId(requestId: unknown) {
+  return `external:${createHash("sha256").update(text(requestId, "request_id")).digest("hex")}`;
 }
 function integer(value: unknown, name: string, min: number, max: number) {
   if (
@@ -282,9 +286,9 @@ export function createRelayService({
           case "setup_probe_status": {
             if (!setup) throw new Error("前置安装接入未就绪");
             if (endpoint === "setup_check")
-              value = await setup.check(agent(args.agent));
+              value = await setup.check(agent(args.agent), args.optional_skills);
             else if (endpoint === "setup_install")
-              value = await setup.install(agent(args.agent));
+              value = await setup.install(agent(args.agent), args.optional_skills);
             else if (endpoint === "setup_uninstall")
               value = await setup.uninstall();
             else if (endpoint === "setup_probe_start")
@@ -424,12 +428,23 @@ export function createRelayService({
           }
           case "send": {
             const selected = agent(args.agent);
-            if (setup) await setup.requireReady(selected);
             const external = text(
               args.external_session_id,
               "external_session_id",
             );
-            const content = text(args.content, "content");
+            const content = text(args.content, "content", 16000);
+            const requestMessageId = args.request_id === undefined ? null : externalMessageId(args.request_id);
+            if (requestMessageId && (args.subscribe_after_send || args.subscription_id))
+              throw new TypeError("外部接力请求不能绑定关注");
+            // 重试先查落库记录，即使当前环境不可用，也不重复投递。
+            const previous = requestMessageId ? store.messages.get(requestMessageId) : null;
+            if (previous) {
+              if (previous.agent !== selected || previous.external_session_id !== external || previous.content !== content)
+                throw new TypeError("request_id 已用于不同目标或内容");
+              value = { message: previous, duplicate: true };
+              break;
+            }
+            if (setup) await setup.requireReady(selected);
             const subscribeAfterSend =
               args.subscribe_after_send === undefined
                 ? false
@@ -451,7 +466,7 @@ export function createRelayService({
                 throw new TypeError("接收通知的 DSH 会话不存在");
             }
 
-            let subscriptionId: string | null = bridge
+            let subscriptionId: string | null = bridge && !requestMessageId
               ? (store.bridge.live(
                   store.bridge.route(selected, external) ?? {
                     id: "",
@@ -477,11 +492,19 @@ export function createRelayService({
             }
 
             const route = JSON.stringify([selected, external]);
+            // requireReady 会让出执行权；在创建前再次检查，覆盖并发重试。
+            const concurrent = requestMessageId ? store.messages.get(requestMessageId) : null;
+            if (concurrent) {
+              if (concurrent.agent !== selected || concurrent.external_session_id !== external || concurrent.content !== content)
+                throw new TypeError("request_id 已用于不同目标或内容");
+              value = { message: concurrent, duplicate: true };
+              break;
+            }
             const ownsLock = !sending.has(route);
             if (ownsLock) sending.add(route);
             try {
               const message = store.messages.create({
-                id: randomUUID(),
+                id: requestMessageId ?? randomUUID(),
                 agent: selected,
                 external_session_id: external,
                 subscription_id: subscriptionId,
@@ -556,7 +579,7 @@ export function createRelayService({
               let createdSubscription = null;
               let subscriptionError: string | null = null;
               if (saved.status === "sent" || saved.status === "queued") {
-                if (!bridge) subscriptions.touch(selected, external);
+                if (!bridge && !requestMessageId) subscriptions.touch(selected, external);
                 if (subscribeAfterSend) {
                   try {
                     const existingRoute = bridge
@@ -600,6 +623,11 @@ export function createRelayService({
             } finally {
               if (ownsLock) sending.delete(route);
             }
+            break;
+          }
+          case "message_status": {
+            const message = store.messages.get(externalMessageId(args.request_id));
+            value = { message };
             break;
           }
           case "messages": {

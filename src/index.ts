@@ -31,6 +31,7 @@ import { createSkillInstallService } from "./services/skill-install.js";
 import { createPushHandler, createPushServer } from "./services/push.js";
 import { createClaudeChannelService } from "./services/claude-channel.js";
 import { createChannelRoutes } from "./services/channel-http.js";
+import { createMessageRoutes } from "./services/message-http.js";
 import { createClaudeAgentList } from "./adapters/claude/agents.js";
 import {
   createRunner,
@@ -221,7 +222,10 @@ export function apply(ctx: Context): void {
   });
   const pushServer = createPushServer({
     handler: pushHandler,
-    routes: createChannelRoutes({ channel, credentials: channelCredentials }),
+    routes: {
+      ...createChannelRoutes({ channel, credentials: channelCredentials }),
+      ...createMessageRoutes({ relay, credentials: notificationCredentials }),
+    },
   });
   const stopChannel = channel.start();
   ctx.effect(() => async () => {

@@ -238,6 +238,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const [message, setMessage] = useState("");
   const [candidateRevision, setCandidateRevision] = useState(0);
   const [installAgent, setInstallAgent] = useState("claude");
+  const [optionalSkills, setOptionalSkills] = useState<string[]>([]);
   const [installBusy, setInstallBusy] = useState(false);
   const [setupReport, setSetupReport] = useState<any>(null);
   const [probe, setProbe] = useState<any>(null);
@@ -331,7 +332,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setInstallError("");
     setSetupMessage("");
     setSetupReport(null);
-    void call("setup_check", { agent: installAgent })
+    void call("setup_check", { agent: installAgent, optional_skills: optionalSkills })
       .then((value) => {
         if (live) setSetupReport(value);
       })
@@ -341,7 +342,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     return () => {
       live = false;
     };
-  }, [drawer, installAgent]);
+  }, [drawer, installAgent, optionalSkills]);
   // 连通测试进行中时每 2 秒刷新一次结果。
   useEffect(() => {
     if (drawer !== "install" || probe?.status !== "waiting") return;
@@ -547,7 +548,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setInstallError("");
     setSetupMessage("");
     try {
-      const report = await call(endpoint, { agent: installAgent });
+      const report = await call(endpoint, { agent: installAgent, optional_skills: optionalSkills });
       setSetupReport(report);
       const changed = report.items.filter((i: any) => i.action && i.action !== "skipped" && i.action !== "none").length;
       if (endpoint === "setup_check") setSetupMessage("检查完成。");
@@ -1097,6 +1098,8 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     claude_md: "CLAUDE.md 引用",
     shell: "claude 函数",
     skill: "通知 Skill",
+    "claude-notify": "向 Claude 接力",
+    "codex-notify": "向 Codex 接力",
   };
   const installDrawer = () => h(Drawer, { title: "前置安装接入", onClose: close },
     h("p", { className: "muted" }, installAgent === "claude"
@@ -1104,10 +1107,25 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       : "为 Codex 一次配好接入：通知 Skill（任务完成后通知 DSH）。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。"),
     fieldSelect("Agent", installAgent, (v) => {
       setInstallAgent(v);
+      setOptionalSkills([]);
       setSetupReport(null);
       setInstallError("");
       setSetupMessage("");
     }, [["claude", "Claude"], ["codex", "Codex"]]),
+    h("fieldset", { disabled: installBusy },
+      h("legend", null, "可选接力 Skill"),
+      ...[["claude-notify", "claude-notify：向指定 Claude 会话发送消息"], ["codex-notify", "codex-notify：向指定 Codex 会话发送消息"]].map(([name, label]) =>
+        h("label", { key: name, style: { display: "block" } },
+          h("input", {
+            type: "checkbox", checked: optionalSkills.includes(name),
+            onChange: (e: any) => {
+              const checked = e.target.checked;
+              setOptionalSkills(current => checked ? [...current, name] : current.filter(item => item !== name));
+              setSetupReport(null);
+              setSetupMessage("");
+            },
+          }), " ", label)),
+      h("p", { className: "muted small" }, "安装到上方选中的 Agent，共用 dsh-notify 的本机凭证。DSH 插件需保持运行；消息直接投递，不经 DSH 模型处理。取消勾选不会卸载已有 Skill。")),
     !setupReport && !installError && h("p", { className: "muted" }, "正在检查安装状态…"),
     setupReport && h("div", { className: "notice small" },
       h("p", null, `${SETUP_OVERALL[setupReport.overall] ?? setupReport.overall}${setupReport.version ? ` · ${installAgent === "claude" ? "Claude Code" : "Codex"} ${setupReport.version}` : ""}`),

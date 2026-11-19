@@ -65,6 +65,8 @@ Codex 展示通知接收回执，并继续处理从 DSH 回传的要求。回执
 
 在 DSH 使用的项目中安装随包的 `dsh-agent-relay` Skill，让 DSH 按会话桥梁规则处理订阅和消息。具体步骤见[安装、Skill 配置与升级说明](docs/operations/T0-T1-T3-T7-plugin-release.md)。
 
+前置安装还可分别勾选 `claude-notify` 和 `codex-notify`，让当前 Agent 向指定的另一会话转发任务或结果，例如在 Codex 中说“用 claude-notify 把方案发给 Claude 会话 UUID 审查”。名称表示接收方，二者共用 `dsh-notify` 的本机凭证。DSH 插件需要保持运行，消息不经过 DSH 模型；真实双向接力验收尚待完成。
+
 ### 2. 在 DSH 会话里直接说
 
 **下班前订阅：**

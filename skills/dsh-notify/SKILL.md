@@ -84,4 +84,4 @@ Claude 使用实际安装目录的脚本，并将 `--agent` 改为 `claude`。�
 - Claude：使用 Claude 会话 UUID 作为 `external_session_id`。
 - Codex：使用当前 Codex 会话 ID；通知入口与 Adapter 发送能力独立；已有 Codex 会话按本机 daemon 的官方队列能力投递，独立历史回退只读，Relay 专用会话可直接发起轮次。通知方只需能访问本机 HTTP 入口。
 
-本 Skill 不创建订阅、不调用 `relay_subscribe`、不调用 `relay_send`，也不通过标题或工作目录查找会话。若用户需要关注外部会话进展或向外部会话发送消息，应交给 DSH 侧 Agent Relay 工具处理。
+本 Skill 不创建订阅、不调用 `relay_subscribe`、不调用 `relay_send`，也不通过标题或工作目录查找会话。若用户需要关注外部会话进展，交给 DSH 侧 Agent Relay 工具处理；若要从当前 Agent 向指定 Claude / Codex 会话转发或接力，可使用已安装的 `claude-notify` / `codex-notify`，它们共用本机凭证。
