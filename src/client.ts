@@ -261,6 +261,24 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     if (!response.ok) throw Object.assign(Error(response.error?.message ?? "操作失败"), response.error);
     return response.value;
   }
+  async function openReceiver(id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await call("dsh_session_status", { dsh_session_id: id });
+      if (result?.status === "archived")
+        throw new Error("该 DSH 接收会话已归档，请先在 DSH 中恢复该会话，再打开。历史接收目标保持不变。");
+      if (result?.status === "missing")
+        throw new Error("该 DSH 接收会话不存在或已删除，无法打开。不会自动新建会话或跳转到其他接收会话。");
+      if (result?.status !== "available" || result.id !== id)
+        throw new Error("无法确认 DSH 接收会话状态，请刷新页面后重试。");
+      openSession(id);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function refresh() {
     const version = ++revision.current;
     setLoading(true);
@@ -480,7 +498,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       else if (sub.muted) await call("mute", { agent: sub.agent, external_session_id: sub.external_session_id, muted: false });
       setNotice("已继续原关注；保留原主题、接收会话与截止时间。");
       setRefreshVersion((v) => v + 1); close();
-      if (sub.dsh_session_id) openSession(sub.dsh_session_id);
+      if (sub.dsh_session_id) await openReceiver(sub.dsh_session_id);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -654,16 +672,10 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           "button",
           {
             disabled: busy,
-            title: "打开接收本次通知的 DSH 会话",
-            onClick: () => {
-              try {
-                openSession(sub.dsh_session_id);
-              } catch (e) {
-                setError((e as Error).message);
-              }
-            },
+            title: "打开这条订阅原来绑定的 DSH 接收会话",
+            onClick: () => openReceiver(sub.dsh_session_id),
           },
-          "打开会话",
+          "打开 DSH 接收会话",
         ),
       !compact && sub.status === "active" &&
         sub.type === "poll" &&
@@ -924,7 +936,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           ...(recoveredBatch.events ?? []).map((event: any) => h("p", { key: event.id, style: { whiteSpace: "pre-wrap" } }, event.body)),
           h("p", { className: "muted small" }, "打开原接收会话，由 DSH 使用 relay_batch 读取，再以原 batch_id 与 decision_version 调用 relay_decide。屏蔽中的批次请先解除屏蔽；待核对状态不能视为已处理。")));
   const routeControls=(route:any)=>h("div",{className:"row"},
-    route.dsh_session_id&&h("button",{onClick:()=>openSession(route.dsh_session_id)},"打开原会话"),
+    route.dsh_session_id&&h("button",{disabled:busy,onClick:()=>openReceiver(route.dsh_session_id)},"打开 DSH 接收会话"),
     h("button",{disabled:busy,onClick:()=>void muteRoute(route)},route.muted?"恢复接收 Agent 消息":"暂停接收 Agent 消息"),
     !route.subscription&&h("button",{disabled:busy,onClick:()=>void resubscribe({...route,topic:"定期汇报新的进展或回复",max_consecutive_failures:3})},"开始关注"));
   const routeDrawer=(route:any)=>h(Drawer,{title:"会话路由",onClose:close},
@@ -1019,20 +1031,6 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       h(
         "footer",
         null,
-        sub.dsh_session_id &&
-          h(
-            "button",
-            {
-              onClick: () => {
-                try {
-                  openSession(sub.dsh_session_id);
-                } catch (e) {
-                  setError((e as Error).message);
-                }
-              },
-            },
-            "打开接收会话",
-          ),
         controls(sub),
       ),
     );

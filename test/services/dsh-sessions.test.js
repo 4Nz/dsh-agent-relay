@@ -2,6 +2,25 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createDshSessions } from "../../lib/services/dsh-sessions.js";
 
+test("导航状态区分已有、归档与不存在，查询失败不伪装为不存在", async () => {
+  const registry = { archivedSessionIds: ["old", "deleted"] };
+  let fail = false;
+  const sessions = createDshSessions({
+    async listSessions() {
+      if (fail) throw Error("宿主查询失败");
+      return ["live", "old"].map(id => ({ header: { id } }));
+    },
+    async readTitleSnapshots() { throw Error("导航不应读取正文或标题"); },
+  }, registry);
+  assert.equal(await sessions.status("live"), "available");
+  assert.equal(await sessions.status("old"), "archived");
+  assert.equal(await sessions.status("deleted"), "missing");
+  registry.archivedSessionIds = [];
+  assert.equal(await sessions.status("old"), "available");
+  fail = true;
+  await assert.rejects(sessions.status("live"), /宿主查询失败/);
+});
+
 test("list 一次批量读取标题，单个缺失/失败回退到该 ID", async () => {
   let titleCalls = 0;
   const host = {

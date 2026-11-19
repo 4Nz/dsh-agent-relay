@@ -175,6 +175,7 @@ export function apply(ctx: Context): void {
     createDshSession: createReceiveSession,
     listDshSessions: () => dshSessions.list(),
     hasDshSession: (id) => dshSessions.has(id),
+    dshSessionStatus: (id) => dshSessions.status(id),
     onQueued: () => channel.tick(),
     setup,
   });

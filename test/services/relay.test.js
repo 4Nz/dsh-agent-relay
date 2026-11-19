@@ -100,6 +100,7 @@ function setup(t, options = {}) {
     },
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
     hasDshSession: options.dshSessions?.has ?? (async (id) => id === "dsh"),
+    dshSessionStatus: options.dshSessions?.status,
     createDshSession: async () => "new-dsh",
     onQueued: options.onQueued,
     observeTitle: options.observeTitle,
@@ -619,4 +620,17 @@ test("手动查阅成功观察标题，关闭或查询异常不触发同步", as
   f.adapters.get("claude").snapshot = async () => ({closed:true, title:"已关闭"});
   await f.relay.call("inspect", {agent:"claude", external_session_id:"ext"});
   assert.equal(observed.length, 1);
+});
+
+test('导航状态接口只核对指定的原接收会话，不创建或替换目标', async t => {
+ const sessions = createDshSessions({
+  listSessions: async () => ['live','old'].map(id=>({header:{id}})),
+  readTitleSnapshots: async () => [],
+ }, {archivedSessionIds:['old']});
+ const {relay,store} = setup(t,{dshSessions:sessions});
+ for (const [id,status] of [['live','available'],['old','archived'],['deleted','missing']]) {
+  assert.deepEqual(await relay.call('dsh_session_status',{dsh_session_id:id}),{ok:true,value:{id,status}});
+ }
+ assert.equal((await relay.call('dsh_session_status',{})).ok,false);
+ assert.equal(store.bridge.routes().length,0);
 });
