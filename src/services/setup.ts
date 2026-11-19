@@ -236,7 +236,7 @@ export function createSetupService({
     if (starts.length !== 1 || ends !== 1) return { key: "shell", status: "conflict", message: `${file} 中 Agent Relay 标记不成对或重复，请手动整理后重试` };
     const block = extractBlock(text);
     if (Number(starts[0][1]) < SETUP_VERSION || block !== shellBlock()) return { key: "shell", status: "outdated", message: `${file} 中的 claude 函数需要更新` };
-    return { key: "shell", status: "ok", message: `${file} 已写入 claude 函数` };
+    return { key: "shell", status: "ok", message: `${file} 已写入 claude 函数；不代表已打开的终端已加载该函数` };
   }
   function tokenItem(): SetupItem {
     const token = read(tokenPath)?.trim();
@@ -372,10 +372,12 @@ export function createSetupService({
     const pending = report.items.some((i) => i.status !== "ok");
     report.overall = blocking ? "unavailable" : pending ? "needs_action" : changed ? "changed" : "ok";
     const steps: string[] = [];
-    if (report.items.some((i) => i.key === "shell" && (i.action === "installed" || i.action === "updated")))
-      steps.push("新开终端，或在已开的终端执行 source 对应的 shell 配置文件，使 claude 函数生效");
+    if (report.items.some((i) => i.key === "shell" && i.status === "ok")) {
+      const quotedRc = `'${rcFile()!.replaceAll("'", "'\\''")}'`;
+      steps.push(`若终端在安装或修复前已打开，请新开终端，或退出 Claude 后执行 source ${quotedRc}，再运行 claude 或 claude --resume <会话 ID>；仅退出 Claude 再恢复会话不会重新加载 shell 配置。可用 type claude 确认函数已加载`);
+    }
     if (report.sessions?.need_restart.length)
-      steps.push(`以下 ${report.sessions.need_restart.length} 个运行中的 Claude 会话未启用 channel，需要退出后用 claude --resume <会话 ID> 重新进入：${report.sessions.need_restart.join("、")}`);
+      steps.push(`以下 ${report.sessions.need_restart.length} 个运行中的 Claude 会话未发现在线 channel 登记；请退出 Claude，新开终端或重新加载 shell 配置后，再用 claude --resume <会话 ID> 重新进入：${report.sessions.need_restart.join("、")}`);
     if (report.agent === "claude" && !blocking && changed) steps.push("建议运行一次连通测试，确认消息能送进会话");
     report.next_steps = steps;
     return report;

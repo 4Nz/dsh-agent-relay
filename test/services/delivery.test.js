@@ -92,3 +92,38 @@ test("桥梁只在明确idle时投递且不把规划渲染成任务完成",async
  assert.equal(await transport.idle("s"),false);assert.equal((await transport.deliver("s",n)).status,"failed");assert.equal(messages.length,0);
  status="idle";await transport.deliver("s",n);assert.equal(messages[0].content[0].text,"规划关注");
 });
+
+test("归档接收会话即使 idle 也不唤醒，解除归档后正常投递", async () => {
+  const registry = { archivedSessionIds: ["s"] }, messages = [];
+  const transport = createDshDelivery({
+    workspaceRegistry: registry,
+    sessionController: { resolveAgent: async () => ({ agent: { status: "idle", session: {}, followup: (m) => messages.push(m) } }) },
+    sessionQuery: { readSession: async () => ({ events: [] }) },
+    sessions: { flush: async () => true },
+  });
+  const n = { delivery_key: "plan", bridge_context: true, summary: "规划频率" };
+  assert.equal(await transport.idle("s"), false);
+  const result = await transport.deliver("s", n);
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /已归档/);
+  assert.equal(messages.length, 0);
+  registry.archivedSessionIds = [];
+  assert.equal(await transport.idle("s"), true);
+  assert.equal((await transport.deliver("s", n)).status, "delivered");
+  assert.equal(messages.length, 1);
+});
+
+test("等待加载接收实例期间归档，不把规划消息交给被阻止的会话", async () => {
+  const registry = { archivedSessionIds: [] }, messages = [];
+  const transport = createDshDelivery({
+    workspaceRegistry: registry,
+    sessionController: { resolveAgent: async () => {
+      registry.archivedSessionIds = ["s"];
+      return { agent: { status: "idle", session: {}, followup: (m) => messages.push(m) } };
+    } },
+    sessionQuery: { readSession: async () => ({ events: [] }) },
+    sessions: { flush: async () => true },
+  });
+  assert.equal((await transport.deliver("s", { delivery_key: "plan", bridge_context: true })).status, "failed");
+  assert.equal(messages.length, 0);
+});

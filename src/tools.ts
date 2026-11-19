@@ -43,7 +43,7 @@ export function registerTools(
       name: "relay_inspect",
       endpoint: "inspect",
       description:
-        "查阅指定外部会话快照与最后回复节选；查阅不延长固定24小时关注期，发现会话关闭则登记关闭事实。Codex 轮次状态来自历史，interrupted、unknown、held 均不能单独说明卡住或需用户介入。runtime_note 是能力说明；events 含已有内容，非空不等于新增，进展需比较前后内容或用 relay_check 增量判断。活动时间差不是空闲时长。",
+        "查阅指定外部会话快照与最后回复节选；查阅不延长固定24小时关注期，发现会话关闭则登记关闭事实。Claude 的 held 表示被进程持有，不代表挂起或禁止 channel 投递；queued 也可能在等待前条消息 ack 或 channel 连接，不能仅据 held 要求用户唤醒。Codex 轮次状态来自历史，interrupted、unknown、held 均不能单独说明卡住或需用户介入。runtime_note 是能力说明；events 含已有内容，非空不等于新增，进展需比较前后内容或用 relay_check 增量判断。活动时间差不是空闲时长。",
       parameters: {
         agent,
         external_session_id: { type: "string", required: true },
@@ -68,7 +68,7 @@ export function registerTools(
       name: "relay_send",
       endpoint: "send",
       description:
-        "向指定外部会话发送消息；返回状态为 sent 只表示外部 Agent 已接收，不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递；Codex 桌面会话经队列排队投递，专用后台会话直接开始新轮。WorkBuddy Adapter 只读，发送会明确拒绝。可显式选择发送成功后复用或创建持续关注，随后按主题规划；不无条件创建重复订阅。",
+        "向指定外部会话发送消息；content 最多 2000 个 UTF-16 码元（普通汉字计 1，部分 emoji 计 2）。超长请先整理汇总；调研等完整内容保存为接收方可访问的文档，发送摘要与路径，不建议分段。sent 不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递：先为 queued，会话空闲且前条已 ack 或超时后推送为 sent；sent 仅表示 Relay 已交给 channel 轮询，不保证 Claude 已收到，Claude 确认后记录 acked_at；未有在线 channel 登记时 rejected。Codex 桌面会话经队列排队投递，专用后台会话直接开始新轮。WorkBuddy Adapter 只读，发送会明确拒绝。可显式选择发送成功后复用或创建持续关注，随后按主题规划；不无条件创建重复订阅。",
       parameters: {
         agent,
         external_session_id: { type: "string", required: true },

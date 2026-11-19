@@ -280,3 +280,12 @@ test("Claude 增量跨200条分页保留多轮与无文本页后的回复",async
  const second=await a.incremental(ID,first.cursor);assert.deepEqual(second.events.map(e=>e.text),["新","中间","继续","最终"]);assert.equal(second.has_more,false);
  assert.deepEqual((await a.incremental(ID,second.cursor)).events,[]);
 });
+
+
+test("Claude 仅改名也通过增量检测返回最新标题", async t => {
+ const {dir,file}=fixture(t);writeFileSync(file,title("原名")+prompt("任务",1)+reply("结果",2));
+ const a=adapter(dir,runner().run),base=(await a.snapshot(ID)).cursor;
+ appendFileSync(file,line({type:"custom-title",customTitle:"新名称"}));
+ const page=await a.incremental(ID,base);
+ assert.equal(page.title,"新名称");assert.deepEqual(page.events,[]);
+});
