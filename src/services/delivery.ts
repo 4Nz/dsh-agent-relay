@@ -35,7 +35,7 @@ export interface DshDeliveryContext {
 }
 export function createDshDelivery(
   ctx: DshDeliveryContext,
-): DeliveryTransport & { idle(session: string): Promise<boolean> } {
+): DeliveryTransport & { idle(session: string): Promise<boolean>; archived(session: string): boolean } {
   const archived = (id: string) => ctx.workspaceRegistry?.archivedSessionIds.includes(id) ?? false;
   async function contains(sessionId: string, key: string) {
     const log = await ctx.sessionQuery.readSession(sessionId);
@@ -62,6 +62,7 @@ export function createDshDelivery(
     }
   }
   return {
+    archived,
     async idle(sessionId) {
       if (archived(sessionId)) return false;
       const resolved = await ctx.sessionController.resolveAgent(sessionId);
