@@ -372,6 +372,7 @@ export function createCodexAdapter(
         incremental: true,
       });
       return {
+        title: snap.check_error ? undefined : snap.title,
         events: snap.events ?? [],
         cursor: snap.cursor,
         has_more: false,

@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const guide = "docs/operations/T0-T1-T3-T7-plugin-release.md";
+const showcaseFiles = ["task-dashboard", "dsh-subscribe", "dsh-pause", "codex-notify-request", "dsh-send-to-codex", "codex-notify-and-reply", "claude-cli-notify"].map((name) => `docs/images/showcase/${name}.png`);
 export function validatePackage(pkg, files, tag) {
   if (pkg.name !== "dsh-agent-relay" || !/^\d+\.\d+\.\d+(?:-[\da-zA-Z.-]+)?$/.test(pkg.version)) throw new Error("包名或版本不合法");
   if (tag && tag !== `v${pkg.version}`) throw new Error("发布标签与 package.json 版本不一致");
@@ -14,11 +15,11 @@ export function validatePackage(pkg, files, tag) {
     ...flatten(pkg.exports).map((path) => path.replace(/^\.\//, "")), pkg.dsh.bundle.patch.replace(/^\.\//, "")];
   const senderFiles = ["dsh-notify", "claude-notify", "codex-notify"].flatMap(name => [`skills/${name}/SKILL.md`, `skills/${name}/send.mjs`]);
   senderFiles.push("skills/claude-notify/open.mjs", "skills/claude-notify/directory.mjs", "skills/codex-notify/directory.mjs", "skills/claude-notify/start.mjs", "skills/codex-notify/start.mjs");
-  required.push(...senderFiles);
+  required.push(...senderFiles, "README.en.md", ...showcaseFiles);
   for (const path of required) if (!files.includes(path)) throw new Error(`安装包缺少：${path}`);
   for (const path of files) {
     const allowed = ["package.json", "cordis.patch.yml", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE", guide, "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/SKILL.md"].includes(path)
-      || senderFiles.includes(path)
+      || senderFiles.includes(path) || showcaseFiles.includes(path)
       || /^lib\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+(?:\.d\.ts|\.js)$/.test(path);
     if (!allowed) throw new Error(`不允许发布文件：${path}`);
   }

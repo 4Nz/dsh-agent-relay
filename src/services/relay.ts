@@ -71,6 +71,13 @@ function text(value: unknown, name: string, max = 500) {
 function externalMessageId(requestId: unknown) {
   return `external:${createHash("sha256").update(text(requestId, "request_id")).digest("hex")}`;
 }
+function messageContent(value: unknown): string {
+  if (typeof value !== "string" || !value.trim())
+    throw new TypeError("content 必须为非空字符串");
+  if (value.length > 2000)
+    throw new TypeError("content 最多 2000 个 UTF-16 码元（普通汉字计 1，部分 emoji 计 2）；请先整理汇总，或将完整内容保存为接收方可访问的文档后发送摘要与路径，不建议分段发送");
+  return value;
+}
 function integer(value: unknown, name: string, min: number, max: number) {
   if (
     typeof value !== "number" ||
@@ -99,8 +106,10 @@ export function createRelayService({
   onQueued,
   setup,
   bridge,
+  observeTitle,
 }: {
   bridge?: BridgeService;
+  observeTitle?: (agent: Agent, external: string, title: string | null) => void;
   store: RelayStore;
   adapters: AdapterRegistry;
   subscriptions: SubscriptionService;
@@ -108,7 +117,7 @@ export function createRelayService({
   notifications: NotificationService;
   skillInstall: SkillInstallService;
   listDshSessions: () => Promise<DshSessionOption[]>;
-  // 仅用于存在性验证，不读取标题/正文；失败向上抛 unavailable，不当作不存在。
+  // 验证接收会话存在且未归档，不读取标题/正文；归档抛明确错误，查询失败不当作不存在。
   hasDshSession?: (id: string) => Promise<boolean>;
   createDshSession?: (context: ReceiveSessionContext) => Promise<string>;
   // 消息进入 channel 队列后触发一次推送检查。
@@ -333,10 +342,13 @@ export function createRelayService({
             const selected = agent(args.agent);
             if (!adapters.get(selected).capabilities().snapshot)
               throw new TypeError("该 Agent 不支持查阅会话");
-            value = await subscriptions.inspect(
+            const snapshot = await subscriptions.inspect(
               selected,
               text(args.external_session_id, "external_session_id"),
             );
+            value = snapshot;
+            if (!snapshot.closed && !snapshot.check_error)
+              observeTitle?.(selected, text(args.external_session_id, "external_session_id"), snapshot.title);
             await notifications.drain();
             break;
           }
@@ -444,7 +456,7 @@ export function createRelayService({
               args.external_session_id,
               "external_session_id",
             );
-            const content = text(args.content, "content", 16000);
+            const content = messageContent(args.content);
             const requestMessageId = args.request_id === undefined ? null : externalMessageId(args.request_id);
             if (requestMessageId && (args.subscribe_after_send || args.subscription_id))
               throw new TypeError("外部接力请求不能绑定关注");

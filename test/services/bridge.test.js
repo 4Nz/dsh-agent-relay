@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openRelayStore } from "../../lib/storage/index.js";
 import { createBridgeService } from "../../lib/services/bridge.js";
-function fixture(t) {
+function fixture(t, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "bridge-"));
   const store = openRelayStore({ dataDir: dir });
   t.after(() => {
@@ -39,6 +39,7 @@ function fixture(t) {
   };
   const bridge = createBridgeService({
     store,
+    observeTitle: options.observeTitle,
     adapters: { get: () => adapter },
     scheduler: {
       create: async (x) => {
@@ -586,6 +587,45 @@ test("无关注和结束后push都有独立恢复提醒，截止留待人工且�
     assert.equal(f.wakeups.length, 2);
   }
 });
+test("活跃关注下的 push 仍按订阅汇报语义投递", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe(input);
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "active",
+    summary: "进展",
+    result: "completed",
+  });
+  assert.equal(f.wakeups.length, 1);
+  const notice = JSON.parse(f.wakeups[0].summary);
+  assert.match(notice.instructions, /会话桥梁的增量事实/);
+  assert.equal(notice.topic, "定期汇报新的进展或回复");
+});
+
+test("订阅结束后的 push 用主动通知语义，要求汇报而非静默跳过", async (t) => {
+  const f = fixture(t);
+  const s = (await f.bridge.subscribe(input)).subscription;
+  await f.bridge.stop(s.id);
+  await f.bridge.push({
+    agent: "claude",
+    external_session_id: "external",
+    request_id: "after-end",
+    summary: "结束后主动通知",
+    result: "completed",
+  });
+  assert.equal(f.wakeups.length, 1);
+  const notice = JSON.parse(f.wakeups[0].summary);
+  assert.equal(notice.topic, null);
+  assert.match(notice.instructions, /主动/);
+  assert.match(notice.instructions, /无变化静默/);
+  assert.ok(
+    notice.events.some(
+      (e) => e.kind === "push" && e.body.includes("结束后主动通知"),
+    ),
+  );
+});
+
 test("屏蔽push不进入历史检查批次，也不阻止正常历史进展", async (t) => {
   const f = fixture(t);
   const s = (await f.bridge.subscribe(input)).subscription;
@@ -1031,4 +1071,19 @@ test('Codex interrupted 增量经过桥梁仍带历史语义，重复检查无�
   const current = f.store.subscriptions.get(sub.id);
   assert.equal(current.status, 'active');
   assert.equal(current.consecutive_failures, 0);
+});
+
+
+test("增量无事件仍观察标题；失败和关闭不触发标题同步", async t => {
+  const observed = [];
+  const f = fixture(t, { observeTitle: (...args) => observed.push(args) });
+  const s = (await f.bridge.subscribe(input)).subscription;
+  f.adapter.incremental = async () => ({ title: "新名称", events: [], cursor: null, has_more: false, closed: false });
+  assert.equal((await f.bridge.check(s.id)).status, "unchanged");
+  assert.deepEqual(observed, [["claude", "external", "新名称"]]);
+  f.adapter.incremental = async () => { throw Error("读取失败"); };
+  assert.equal((await f.bridge.check(s.id)).status, "check_failed");
+  f.adapter.incremental = async () => ({ title: "关闭", events: [], cursor: null, has_more: false, closed: true });
+  assert.equal((await f.bridge.check(s.id)).status, "closed");
+  assert.equal(observed.length, 1);
 });

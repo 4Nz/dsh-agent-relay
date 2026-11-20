@@ -65,6 +65,8 @@ test('外部接力并发重试和 unknown 不重复调用 Adapter', async t => {
   assert.equal((await relay.call('send', input)).value.message.status, 'unknown');
   assert.equal(calls, 1);
 });
+import { createBridgeService } from "../../lib/services/bridge.js";
+import { createDshSessions } from "../../lib/services/dsh-sessions.js";
 function setup(t, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-api-"));
   const store = openRelayStore({ dataDir: dir });
@@ -127,6 +129,12 @@ function setup(t, options = {}) {
     },
   });
   const relay = createRelayService({
+    bridge: options.bridge ? createBridgeService({
+      store, adapters,
+      scheduler: { create: async () => "task", delete: async () => {}, catalog: async () => [] },
+      transport: { idle: async () => true, deliver: async () => ({ status: "delivered" }), confirm: async () => "delivered" },
+      createSession: async () => "new-dsh",
+    }) : undefined,
     store,
     adapters,
     subscriptions,
@@ -149,9 +157,10 @@ function setup(t, options = {}) {
       instructions: [],
     },
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
-    hasDshSession: async (id) => id === "dsh",
+    hasDshSession: options.dshSessions?.has ?? (async (id) => id === "dsh"),
     createDshSession: async () => "new-dsh",
     onQueued: options.onQueued,
+    observeTitle: options.observeTitle,
   });
   return {
     relay,
@@ -164,6 +173,50 @@ function setup(t, options = {}) {
     adapters,
   };
 }
+test("页面新建默认复用已归档路由时拒绝落库，明确选其他会话后可规划", async (t) => {
+  const dshSessions = createDshSessions({
+    listSessions: async () => [{ header: { id: "old" } }, { header: { id: "dsh" } }],
+    readTitleSnapshots: async () => [],
+  }, { archivedSessionIds: ["old"] });
+  const { relay, store } = setup(t, { bridge: true, dshSessions });
+  const route = store.bridge.ensure("claude", "ext", "old");
+  for (const extra of [{}, { dsh_session_id: "old" }]) {
+    const result = await relay.call("subscribe", { agent: "claude", external_session_id: "ext", ...extra });
+    assert.equal(result.ok, false);
+    assert.match(result.error.message, /接收.*已归档/);
+    assert.equal(store.bridge.live(route), null);
+    assert.equal(store.bridge.pending(route.id).length, 0);
+    assert.equal(store.bridge.route("claude", "ext").dsh_session_id, "old");
+  }
+  const result = await relay.call("subscribe", { agent: "claude", external_session_id: "ext", dsh_session_id: "dsh" });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.subscription.planning_state, "pending");
+  assert.equal(store.bridge.route("claude", "ext").dsh_session_id, "dsh");
+  assert.equal(store.bridge.pending(route.id)[0].kind, "planning");
+});
+
+test("消息正文支持完整 2K，超长时给出汇总或文档建议且不入库", async (t) => {
+  const { relay, store, sendResults } = setup(t);
+  const content = "中".repeat(2000);
+  const sent = await relay.call("send", { agent: "claude", external_session_id: "s", content });
+  assert.equal(sent.ok, true);
+  assert.equal(sent.value.message.status, "sent");
+  assert.equal(store.messages.get(sent.value.message.id).content, content);
+  assert.equal(sendResults[0][1], content);
+  for (const content of ["中".repeat(2001), "😀".repeat(1001)]) {
+    const rejected = await relay.call("send", { agent: "claude", external_session_id: "s", content });
+    assert.equal(rejected.error.code, "invalid_input");
+    assert.match(rejected.error.message, /2000/);
+    assert.match(rejected.error.message, /汇总.*文档/);
+  }
+  assert.equal(store.messages.list().items.length, 1);
+  assert.equal(sendResults.length, 1);
+  for (const content of ["", "   ", null, 42]) {
+    const rejected = await relay.call("send", { agent: "claude", external_session_id: "s", content });
+    assert.match(rejected.error.message, /非空字符串/);
+  }
+});
+
 test("订阅使用调用上下文，定时任务未创建时明确返回未就绪", async (t) => {
   const { relay } = setup(t);
   const result = await relay.call(
@@ -611,4 +664,17 @@ test("Claude 终端持有的会话：消息记为 queued 并触发推送检查�
   assert.equal(rejected.value.message.status, "rejected");
   assert.match(rejected.value.message.error, /channel/);
   assert.equal(triggered, 1);
+});
+
+
+test("手动查阅成功观察标题，关闭或查询异常不触发同步", async t => {
+  const observed = [];
+  const f = setup(t, { observeTitle: (...args) => observed.push(args) });
+  assert.equal((await f.relay.call("inspect", {agent:"claude", external_session_id:"ext"})).ok, true);
+  assert.deepEqual(observed, [["claude", "ext", "测试"]]);
+  f.adapters.get("claude").snapshot = async () => ({closed:false, title:"错误标题", check_error:"失败"});
+  await f.relay.call("inspect", {agent:"claude", external_session_id:"ext"});
+  f.adapters.get("claude").snapshot = async () => ({closed:true, title:"已关闭"});
+  await f.relay.call("inspect", {agent:"claude", external_session_id:"ext"});
+  assert.equal(observed.length, 1);
 });

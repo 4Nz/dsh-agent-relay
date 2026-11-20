@@ -97,6 +97,8 @@ Then open the corresponding conversation from another DSH client to view progres
 
 ## Usage notes
 
+- **One-to-one subscriptions with a single topic:** Use session subscriptions on a one-to-one basis, with only one active topic per session. To follow a different topic or session, cancel the current subscription with Stop Following (结束关注) before creating a new one. Pausing monitoring does not cancel the subscription.
+- **Intended use:** This plugin supports session subscriptions and notifications between agents. It is not intended for specialized Agent Team orchestration or multi-agent team collaboration. Claude and Codex are currently supported; PRs adding integrations for more agents are welcome.
 - Each monitoring window lasts at most 24 hours. Pausing or restarting does not extend it. DSH stays silent when there are no relevant changes, and a completed turn does not necessarily mean the monitoring goal has been reached.
 - “Sent” does not mean the task is complete. If the delivery outcome is unknown, check the original session before retrying to avoid duplicate messages. Being able to read Codex history does not necessarily mean messages can be sent to that session.
 - The plugin is designed for a single local user. Credentials stay in a private local directory and must not be committed to the repository. Uninstalling preserves data; follow the [upgrade guide](docs/operations/T0-T1-T3-T7-plugin-release.md) (in Chinese) to back it up before upgrading.

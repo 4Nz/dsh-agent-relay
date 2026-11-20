@@ -309,6 +309,7 @@ export function createClaudeAdapter(
         entries = remaining.slice(0, 200);
       return {
         closed: false,
+        title: transcript.title,
         events: entries
           .filter((e) => textOf(e.record.message?.content))
           .map((e) => ({

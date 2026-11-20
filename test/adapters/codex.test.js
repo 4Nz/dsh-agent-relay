@@ -324,3 +324,12 @@ test('Codex 查询来源与实时状态分开，专用后台保留 busy/idle 能
     assert.equal(s.status_context.runtime_source, 'codex_daemon');
   }
 });
+
+
+test("Codex 仅改名也通过增量检测返回最新标题", async () => {
+ const metadata={...thread};const {adapter}=await setup({metadata});
+ const baseline=(await adapter.snapshot(ID)).cursor;
+ metadata.name="新名称";
+ const page=await adapter.incremental(ID,baseline);
+ assert.equal(page.title,"新名称");assert.deepEqual(page.events,[]);
+});

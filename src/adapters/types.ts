@@ -35,6 +35,8 @@ export interface IncrementalEvent {
   cursor: SessionCursor;
 }
 export interface IncrementalPage {
+  // 本次读取观察到的标题；旧 Adapter 可不提供。
+  title?: string | null;
   events: IncrementalEvent[];
   cursor: SessionCursor | null;
   has_more: boolean;

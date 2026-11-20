@@ -7,6 +7,14 @@ const files = ["package.json", "lib/index.js", "lib/index.d.ts", "lib/client.js"
 files.push("skills/dsh-notify/send.mjs");
 files.push('skills/claude-notify/SKILL.md', 'skills/claude-notify/send.mjs', 'skills/codex-notify/SKILL.md', 'skills/codex-notify/send.mjs');
 files.push('skills/claude-notify/open.mjs', 'skills/claude-notify/directory.mjs', 'skills/codex-notify/directory.mjs', 'skills/claude-notify/start.mjs', 'skills/codex-notify/start.mjs');
+const showcaseFiles = ["task-dashboard", "dsh-subscribe", "dsh-pause", "codex-notify-request", "dsh-send-to-codex", "codex-notify-and-reply", "claude-cli-notify"].map((name) => `docs/images/showcase/${name}.png`);
+files.push("README.en.md", ...showcaseFiles);
+test("发布检查包含双语说明和全部展示图片，拒绝额外图片", () => {
+  assert.doesNotThrow(() => validatePackage(pkg, files));
+  for (const missing of ["README.en.md", ...showcaseFiles])
+    assert.throws(() => validatePackage(pkg, files.filter((f) => f !== missing)), /缺少/);
+  assert.throws(() => validatePackage(pkg, [...files, "docs/images/showcase/private.png"]), /不允许/);
+});
 test("发布检查拒绝缺失导出和缺失 Skill", () => {
   assert.doesNotThrow(() => validatePackage(pkg, files, "v0.1.0"));
   assert.doesNotThrow(() => validatePackage(pkg, [...files, 'README.en.md'], "v0.1.0"));
