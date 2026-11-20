@@ -14,8 +14,9 @@ for (const agent of ['codex', 'claude']) {
     const cwd = join(root, '项目 空格');
     const bin = join(root, 'bin');
     await mkdir(cwd); await mkdir(bin);
-    await writeFile(join(bin, agent), `#!${process.execPath}\n${source}`, { mode: 0o700 });
-    const env = { ...process.env, DSH_HOME: root, PATH: `${bin}:${process.env.PATH}`,
+    const cli = join(bin, `${agent}.mjs`);
+    await writeFile(cli, source);
+    const env = { ...process.env, DSH_HOME: root, PATH: bin, Path: bin, [agent === 'codex' ? 'DSH_CODEX_BIN' : 'DSH_CLAUDE_BIN']: cli,
       CODEX_THREAD_ID: '22222222-2222-4222-8222-222222222222', CODEX_SESSION_ID: '22222222-2222-4222-8222-222222222222', CLAUDE_CODE_SESSION_ID: '' };
     const module = await import(`../../skills/${agent}-notify/start.mjs`);
     return { root, cwd, env, ...module };

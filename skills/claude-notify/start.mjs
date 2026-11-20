@@ -157,7 +157,9 @@ export async function runJob(directory, { env = process.env } = {}) {
   }
   let outcome;
   try {
-    const child = spawn(request.agent, args, { cwd: request.cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+    const cli = childEnv[request.agent === 'codex' ? 'DSH_CODEX_BIN' : 'DSH_CLAUDE_BIN'] || request.agent;
+    const script = /\.[cm]?js$/i.test(cli);
+    const child = spawn(script ? process.execPath : cli, script ? [cli, ...args] : args, { cwd: request.cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       keep(output, chunk);
@@ -191,7 +193,7 @@ export async function runJob(directory, { env = process.env } = {}) {
   await persist();
 }
 
-if (process.argv[1] && await realpath(process.argv[1]) === self) {
+if (process.argv[1] && await realpath(process.argv[1]) === await realpath(self)) {
   try {
     const args = process.argv.slice(2);
     if (args[0] === '--worker' && args.length === 2) await runJob(args[1]);
