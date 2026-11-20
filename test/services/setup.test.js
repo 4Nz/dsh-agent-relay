@@ -88,6 +88,7 @@ for (const agent of ['claude', 'codex']) {
       writeFileSync(join(skillsDir, name, 'SKILL.md'), `---\nname: ${name}\n---\n接力`);
       writeFileSync(join(skillsDir, name, 'send.mjs'), '// sender');
       writeFileSync(join(skillsDir, name, 'directory.mjs'), '// directory');
+      writeFileSync(join(skillsDir, name, 'start.mjs'), '// background starter');
       if (name === 'claude-notify') writeFileSync(join(skillsDir, name, 'open.mjs'), '// visible launcher');
     }
     const target = name => join(home, `.${agent}`, 'skills', name);
@@ -98,6 +99,7 @@ for (const agent of ['claude', 'codex']) {
     assert.equal(readFileSync(join(target('claude-notify'), 'send.mjs'), 'utf8'), '// sender');
     assert.equal(readFileSync(join(target('claude-notify'), 'open.mjs'), 'utf8'), '// visible launcher');
     assert.equal(readFileSync(join(target('claude-notify'), 'directory.mjs'), 'utf8'), '// directory');
+    assert.equal(readFileSync(join(target('claude-notify'), 'start.mjs'), 'utf8'), '// background starter');
     assert.equal(existsSync(target('codex-notify')), false);
     // 旧版受管理安装缺少新脚本时可升级，不能误报为用户冲突。
     const manifestPath = join(target('claude-notify'), '.agent-relay-skill.json');

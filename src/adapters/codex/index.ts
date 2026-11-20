@@ -9,6 +9,7 @@ import type {
   SessionCursor,
   SessionInfo,
   Snapshot,
+  MessageProgress,
 } from "../types.js";
 import {
   codexEndpoint,
@@ -376,6 +377,57 @@ export function createCodexAdapter(
         has_more: false,
         closed: snap.closed,
       };
+    },
+    async messageProgress(sessionId, message) {
+      checkId(sessionId);
+      return using(async client => {
+        const matches: RecordValue[] = [];
+        let next: string | null = null, incomplete = false, uncertain = false;
+        const seen = new Set<string>();
+        // 排队回执不是 turn ID；按落库时间和原正文核对，多个匹配时不猜测。
+        for (let n = 0; n < 20; n++) {
+          const turns = page(await client.request("thread/turns/list", {
+            threadId: sessionId, limit: 50, cursor: next, sortDirection: "desc", itemsView: "full",
+          }));
+          let before = false;
+          for (const raw of turns.data) {
+            const candidate = object(raw);
+            if (!Array.isArray(candidate.items)) bad();
+            const started = candidate.startedAt == null ? null : millis(candidate.startedAt);
+            // CLI 时间为秒精度，允许当前秒；正文相同时仍做歧义检查。
+            if (started !== null && started < Math.floor(message.created_at / 1000) * 1000) { before = true; continue; }
+            const prompts = candidate.items.map(object).filter(item => item.type === "userMessage");
+            const matching = prompts.filter(item => Array.isArray(item.content) && item.content.map(object)
+              .filter(block => block.type === "text").map(block => string(block.text)).join("\n").trim() === message.content.trim());
+            if (matching.some(item => typeof item.startedAtMs === "number" && item.startedAtMs >= message.created_at)) {
+              if (prompts.length !== 1) uncertain = true;
+              matches.push(candidate);
+            } else if (matching.some(item => item.startedAtMs == null)) {
+              // 只有秒精度的轮次时间，无法排除同秒旧消息。
+              uncertain = true;
+            }
+          }
+          if (before || !turns.nextCursor) break;
+          if (seen.has(turns.nextCursor)) bad();
+          seen.add(turns.nextCursor); next = turns.nextCursor;
+          if (n === 19) incomplete = true;
+        }
+        const note = "只读持久化历史；轮次结束不等于业务完成，未观察到或 interrupted 不证明任务未执行。";
+        if (incomplete || uncertain || matches.length > 1) return {
+          status: "unknown", turn_id: null, reply: null, truncated: false,
+          note: incomplete ? "查询达到上限，无法唯一关联本次任务" : "匹配存在歧义或缺少时间证据，无法唯一关联本次任务",
+        };
+        const selected = matches[0];
+        if (!selected) return { status: "not_observed", turn_id: null, reply: null, truncated: false, note };
+        const messages = (selected.items as unknown[]).map(object).filter(item => item.type === "agentMessage");
+        const finals = messages.filter(item => item.phase === "final_answer");
+        const chosen = (finals.length ? finals : messages).at(-1);
+        const reply = chosen ? string(chosen.text) : null;
+        const status: MessageProgress["status"] = selected.status === "completed" ? "completed"
+          : selected.status === "failed" ? "failed" : selected.status === "inProgress" ? "observed" : "unknown";
+        return { status, turn_id: string(selected.id), reply: reply?.slice(0, 16000) ?? null,
+          truncated: (reply?.length ?? 0) > 16000, note };
+      });
     },
     async snapshot(sessionId, baseline = null, readOptions = {}) {
       checkId(sessionId);

@@ -53,6 +53,12 @@ for (const agent of ['claude', 'codex']) {
     const server = createServer(async (req, res) => {
       let content = ''; for await (const chunk of req) content += chunk;
       received.push({ path: req.url, token: req.headers.authorization, body: JSON.parse(content) });
+      if (req.url.endsWith('/progress')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ agent, external_session_id: '11111111-1111-1111-1111-111111111111', message_id: 'm', delivery_status: 'sent', observed_at: 1,
+          progress: { status: 'completed', reply: '本次结果', turn_id: 'turn', truncated: false, note: '只读' }, secret: '不要返回此字段' }));
+        return;
+      }
       if (req.url.endsWith('/resolve')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ agent, status: 'unique', candidates: [{ id: '11111111-1111-1111-1111-111111111111', title: '接力测试', cwd: '/tmp/test', last_activity_at: 1, secret: '不要返回此字段' }] }));
@@ -85,10 +91,14 @@ for (const agent of ['claude', 'codex']) {
     assert.equal(JSON.parse(resolved.stdout).candidates[0].id, '11111111-1111-1111-1111-111111111111');
     assert.equal(resolved.stdout.includes('不要返回'), false);
     assert.deepEqual(received[2].body, { agent, session_name: '接力测试' });
+    const progress = await run(['--progress', '--request-id', 'stable']);
+    assert.equal(JSON.parse(progress.stdout).progress.reply, '本次结果');
+    assert.equal(progress.stdout.includes('不要返回'), false);
+    assert.deepEqual(received[3].body, { request_id: 'stable' });
     await assert.rejects(run(['--resolve', '--session-name', '接力测试', '--content', '不应发送']), /查找/);
     writeFileSync(config, JSON.stringify({ endpoint: 'https://example.com', token: 'B'.repeat(43) }));
     await assert.rejects(run(['--status', '--request-id', 'stable']), e => /本机/.test(e.stderr) && !e.stderr.includes('B'.repeat(43)));
-    assert.equal(received.length, 3);
+    assert.equal(received.length, 4);
   });
 }
 
@@ -129,4 +139,29 @@ test('会话名称入口需鉴权，只允许元数据查找，不透传创建�
   assert.equal(calls.length,0);
   assert.equal((await routes[SESSION_RESOLVE_PATH](request('valid'))).status,200);
   assert.deepEqual(calls,[{endpoint:'resolve_session',args:{agent:'claude',session_name:'测试'}}]);
+});
+
+test('进度入口只读查询已发送请求，不调用订阅检查或重新发送', async t => {
+  const { MESSAGE_PROGRESS_PATH } = await import('../../lib/services/message-http.js');
+  assert.equal(typeof MESSAGE_PROGRESS_PATH, 'string');
+  const root = mkdtempSync(join(tmpdir(), 'relay-progress-http-'));
+  const store = openRelayStore({ dataDir: root });
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  let sends = 0;
+  const relay = createRelayService({ store, adapters: { get: () => ({ capabilities: () => ({ sendMessage: true }),
+    snapshot: async () => ({ closed: false, held: true }),
+    sendMessage: async () => { sends++; return { status: 'sent', external_ref: 'queue' }; },
+    messageProgress: async () => ({ status: 'completed', turn_id: 'turn', reply: '执行结果', truncated: false, note: '只读历史' }),
+  }) }, subscriptions: {}, checks: {}, notifications: {}, skillInstall: {}, listDshSessions: async () => [] });
+  const routes = createMessageRoutes({ relay, credentials: { verify: token => token === 'local' } });
+  const request = (body, token = 'local') => new Request('http://127.0.0.1', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  await routes[MESSAGE_PATH](request({ agent: 'codex', external_session_id: 'target', request_id: 'task', content: '任务' }));
+  assert.equal((await routes[MESSAGE_PROGRESS_PATH](request({ request_id: 'task' }, 'wrong'))).status, 401);
+  const result = await (await routes[MESSAGE_PROGRESS_PATH](request({ request_id: 'task' }))).json();
+  assert.equal(result.progress.status, 'completed');
+  assert.equal(result.progress.reply, '执行结果');
+  assert.equal(result.delivery_status, 'sent');
+  assert.equal(sends, 1);
+  assert.equal(store.subscriptions.list().items.length, 0);
+  assert.equal((await routes[MESSAGE_PROGRESS_PATH](request({ request_id: 'missing' }))).status, 404);
 });

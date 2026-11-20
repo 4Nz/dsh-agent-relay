@@ -641,6 +641,20 @@ export function createRelayService({
             }
             break;
           }
+          case "message_progress": {
+            const message = store.messages.get(externalMessageId(args.request_id));
+            if (!message) { value = null; break; }
+            const adapter = adapters.get(message.agent);
+            if (!adapter.messageProgress) throw new TypeError("该 Agent 不支持消息进度查询");
+            // 直接只读 Adapter；不经 inspect 的订阅触碰和通知排空。
+            const progress = await adapter.messageProgress(message.external_session_id, {
+              message_id: message.id, content: message.content, external_ref: message.external_ref, created_at: message.created_at,
+            });
+            value = { agent: message.agent, external_session_id: message.external_session_id, message_id: message.id,
+              delivery_status: message.status, observed_at: Date.now(), progress,
+              acked_at: message.acked_at, ack_summary: message.ack_summary };
+            break;
+          }
           case "message_status": {
             const message = store.messages.get(externalMessageId(args.request_id));
             value = { message };

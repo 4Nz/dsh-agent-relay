@@ -13,7 +13,7 @@ export function validatePackage(pkg, files, tag) {
   const required = ["package.json", "lib/index.js", "lib/client.js", "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/SKILL.md", "README.md", "CHANGELOG.md", guide,
     ...flatten(pkg.exports).map((path) => path.replace(/^\.\//, "")), pkg.dsh.bundle.patch.replace(/^\.\//, "")];
   const senderFiles = ["dsh-notify", "claude-notify", "codex-notify"].flatMap(name => [`skills/${name}/SKILL.md`, `skills/${name}/send.mjs`]);
-  senderFiles.push("skills/claude-notify/open.mjs", "skills/claude-notify/directory.mjs", "skills/codex-notify/directory.mjs");
+  senderFiles.push("skills/claude-notify/open.mjs", "skills/claude-notify/directory.mjs", "skills/codex-notify/directory.mjs", "skills/claude-notify/start.mjs", "skills/codex-notify/start.mjs");
   required.push(...senderFiles);
   for (const path of required) if (!files.includes(path)) throw new Error(`安装包缺少：${path}`);
   for (const path of files) {

@@ -267,6 +267,9 @@ export function createSetupService({
     const sender = read(join(skillsDir, name, "send.mjs"));
     const launcher = name === "claude-notify" ? read(join(skillsDir, name, "open.mjs")) : null;
     const directory = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "directory.mjs")) : null;
+    const starter = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "start.mjs")) : null;
+    if (name !== NOTIFICATION_SKILL && starter === null)
+      return { key, status: "unavailable", message: `插件缺少 ${name}/start.mjs，请重新安装插件` };
     if (name !== NOTIFICATION_SKILL && directory === null)
       return { key, status: "unavailable", message: `插件缺少 ${name}/directory.mjs，请重新安装插件` };
     if (name === "claude-notify" && launcher === null)
@@ -278,14 +281,16 @@ export function createSetupService({
     const installedSender = read(join(dirname(target), "send.mjs"));
     const installedLauncher = name === "claude-notify" ? read(join(dirname(target), "open.mjs")) : null;
     const installedDirectory = name !== NOTIFICATION_SKILL ? read(join(dirname(target), "directory.mjs")) : null;
-    if (name !== NOTIFICATION_SKILL && (installed !== null || installedSender !== null || installedLauncher !== null || installedDirectory !== null)
-      && (installed?.trim() !== packaged.trim() || installedSender !== sender || installedLauncher !== launcher || installedDirectory !== directory)) {
+    const installedStarter = name !== NOTIFICATION_SKILL ? read(join(dirname(target), "start.mjs")) : null;
+    if (name !== NOTIFICATION_SKILL && (installedStarter !== null || installed !== null || installedSender !== null || installedLauncher !== null || installedDirectory !== null)
+      && (installed?.trim() !== packaged.trim() || installedSender !== sender || installedLauncher !== launcher || installedDirectory !== directory || installedStarter !== starter)) {
       let record: Record<string, string> = {};
       try { record = JSON.parse(read(join(dirname(target), ".agent-relay-skill.json")) ?? "{}"); } catch { /* 交给冲突提示 */ }
       if (!record || (installed !== null && record.skill !== digest(installed))
         || (installedSender !== null && record.sender !== digest(installedSender))
         || (installedLauncher !== null && record.launcher !== digest(installedLauncher))
-        || (installedDirectory !== null && record.directory !== digest(installedDirectory)))
+        || (installedDirectory !== null && record.directory !== digest(installedDirectory))
+        || (installedStarter !== null && record.starter !== digest(installedStarter)))
         return { key, status: "conflict", message: `${name} 已存在且内容不属于本次安装管理或被修改，请人工核对；不会自动覆盖` };
     }
     if (installed === null) return { key, status: "missing", message: `未安装 ${name}，点击「安装 / 修复」安装到 ${dirname(target)}` };
@@ -294,6 +299,8 @@ export function createSetupService({
       return { key, status: "outdated", message: "通知发送脚本缺失或需更新，请重新安装通知 Skill" };
     if (installedLauncher !== launcher)
       return { key, status: "outdated", message: "可见终端启动脚本缺失或需更新，请重新安装接力 Skill" };
+    if (installedStarter !== starter)
+      return { key, status: "outdated", message: "后台启动脚本缺失或需更新，请重新安装接力 Skill" };
     if (installedDirectory !== directory)
       return { key, status: "outdated", message: "目录查找脚本缺失或需更新，请重新安装接力 Skill" };
     return { key, status: "ok", message: `${name} 已安装，说明与发送脚本均匹配当前插件` };
@@ -359,18 +366,21 @@ export function createSetupService({
     const sender = read(join(skillsDir, name, "send.mjs"));
     const launcher = name === "claude-notify" ? read(join(skillsDir, name, "open.mjs")) : null;
     const directory = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "directory.mjs")) : null;
-    if (content === null || sender === null || (name === "claude-notify" && launcher === null) || (name !== NOTIFICATION_SKILL && directory === null))
+    const starter = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "start.mjs")) : null;
+    if (content === null || sender === null || (name === "claude-notify" && launcher === null) || (name !== NOTIFICATION_SKILL && (directory === null || starter === null)))
       return { ...skillItem(agent, name), action: "none" };
     const skillBackup = backup(target);
     const senderBackup = backup(senderTarget);
     if (launcher !== null) backup(join(dir, "open.mjs"));
     if (directory !== null) backup(join(dir, "directory.mjs"));
+    if (starter !== null) backup(join(dir, "start.mjs"));
     write(target, content);
     write(senderTarget, sender);
     if (launcher !== null) write(join(dir, "open.mjs"), launcher);
     if (directory !== null) write(join(dir, "directory.mjs"), directory);
+    if (starter !== null) write(join(dir, "start.mjs"), starter);
     if (name !== NOTIFICATION_SKILL)
-      write(join(dir, ".agent-relay-skill.json"), JSON.stringify({ skill: digest(content), sender: digest(sender), ...(launcher !== null ? { launcher: digest(launcher) } : {}), ...(directory !== null ? { directory: digest(directory) } : {}) }) + "\n");
+      write(join(dir, ".agent-relay-skill.json"), JSON.stringify({ skill: digest(content), sender: digest(sender), ...(launcher !== null ? { launcher: digest(launcher) } : {}), ...(directory !== null ? { directory: digest(directory) } : {}), ...(starter !== null ? { starter: digest(starter) } : {}) }) + "\n");
     return { ...skillItem(agent, name), action: item.status === "missing" ? "installed" : "updated", backup: skillBackup ?? senderBackup };
   }
 

@@ -3,6 +3,7 @@ import type { Message } from "../storage/types.js";
 
 export const MESSAGE_PATH = "/api/agent-relay/messages";
 export const MESSAGE_STATUS_PATH = "/api/agent-relay/messages/status";
+export const MESSAGE_PROGRESS_PATH = "/api/agent-relay/messages/progress";
 export const SESSION_RESOLVE_PATH = "/api/agent-relay/sessions/resolve";
 
 // 外部 Skill 的薄入口：共用本机通知凭证，开放可见会话发送、单请求状态和名称查找。
@@ -10,7 +11,7 @@ export function createMessageRoutes({ relay, credentials }: {
   relay: RelayService;
   credentials: { verify(token: string): boolean };
 }): Record<string, (request: Request) => Promise<Response>> {
-  function handler(query: boolean, resolve = false) {
+  function handler(query: boolean, resolve = false, progress = false) {
     return async (request: Request): Promise<Response> => {
       if (request.method !== "POST") return new Response("方法不支持", { status: 405 });
       const token = (request.headers.get("authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
@@ -28,6 +29,11 @@ export function createMessageRoutes({ relay, credentials }: {
       }
       if (typeof input.request_id !== "string" || !input.request_id.trim() || input.request_id.length > 500)
         return new Response("需要稳定的 request_id", { status: 400 });
+      if (progress) {
+        const result = await relay.call("message_progress", { request_id: input.request_id });
+        if (!result.ok) return Response.json({ error: result.error.message }, { status: result.error.code === "invalid_input" ? 400 : 503 });
+        return result.value ? Response.json(result.value) : new Response("未找到原发送请求，不会自动发送或新建", { status: 404 });
+      }
       // 白名单构造，外部请求不能开启关注或调用其他 Relay 操作。
       const result = await relay.call(query ? "message_status" : "send", query
         ? { request_id: input.request_id }
@@ -42,5 +48,5 @@ export function createMessageRoutes({ relay, credentials }: {
       }, { status: query ? 200 : 202 });
     };
   }
-  return { [MESSAGE_PATH]: handler(false), [MESSAGE_STATUS_PATH]: handler(true), [SESSION_RESOLVE_PATH]: handler(false, true) };
+  return { [MESSAGE_PATH]: handler(false), [MESSAGE_STATUS_PATH]: handler(true), [MESSAGE_PROGRESS_PATH]: handler(true, false, true), [SESSION_RESOLVE_PATH]: handler(false, true) };
 }

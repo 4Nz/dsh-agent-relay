@@ -26,7 +26,8 @@ export async function sendMessage(input, { env = process.env, home = homedir() }
     throw new Error('查找必须提供会话名称');
   if (!resolving && (!input || typeof input.request_id !== 'string' || !input.request_id.trim() || input.request_id.length > 500))
     throw new Error('必须提供稳定的 request_id');
-  const query = input.status === true;
+  const progress = input.progress === true;
+  const query = input.status === true || progress;
   if (!query && !resolving && (typeof input.external_session_id !== 'string' || !sessionId.test(input.external_session_id)
     || typeof input.content !== 'string' || !input.content.trim() || input.content.length > 16000))
     throw new Error('必须提供真实目标会话 UUID 和 1～16000 字符的正文');
@@ -38,7 +39,7 @@ export async function sendMessage(input, { env = process.env, home = homedir() }
     endpoint = new URL(config.endpoint);
     if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.username || endpoint.password
       || endpoint.pathname !== '/api/agent-relay/notifications' || endpoint.search || endpoint.hash) throw new Error();
-    endpoint.pathname = resolving ? '/api/agent-relay/sessions/resolve' : query ? '/api/agent-relay/messages/status' : '/api/agent-relay/messages';
+    endpoint.pathname = resolving ? '/api/agent-relay/sessions/resolve' : progress ? '/api/agent-relay/messages/progress' : query ? '/api/agent-relay/messages/status' : '/api/agent-relay/messages';
   } catch { throw new Error('配置必须指向本机 127.0.0.1 的 HTTP 通知入口'); }
   if (typeof config.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(config.token))
     throw new Error('本机凭证格式无效，请在前置安装接入重新生成');
@@ -48,7 +49,7 @@ export async function sendMessage(input, { env = process.env, home = homedir() }
   let response;
   try {
     response = await fetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(15000), redirect: 'error' });
+      body: JSON.stringify(body), signal: AbortSignal.timeout(progress ? 30000 : 15000), redirect: 'error' });
   } catch { throw new Error(resolving ? '会话查找失败；请确认 DSH 已启动，不代表没有匹配会话' : '连接失败或结果未知；确认 DSH 已启动，先用 --status 和原 request_id 查询，不要生成新 ID 重发'); }
   if (response.status === 401) throw new Error('凭证已失效，请核对 DSH_HOME 或重新生成凭证');
   if (response.status === 404) throw new Error('未找到请求记录或当前插件尚未提供接力入口；核对版本与原请求，不要盲目重发');
@@ -56,6 +57,16 @@ export async function sendMessage(input, { env = process.env, home = homedir() }
     throw new Error(`请求失败（HTTP ${response.status}）；检查安装状态与参数，发送结果不明时先查询原 request_id`);
   let result;
   try { result = await response.json(); } catch { throw new Error('响应无法解析，先用原 request_id 查询状态'); }
+  if (progress) {
+    if (result.agent !== targetAgent || !['not_observed', 'observed', 'completed', 'failed', 'unknown'].includes(result.progress?.status))
+      throw new Error('进度响应无法确认，不推断任务完成');
+    const p = result.progress;
+    const clean = value => typeof value === 'string' ? value.replaceAll(config.token, '[已隐藏]') : null;
+    return { agent: result.agent, external_session_id: result.external_session_id, message_id: result.message_id,
+      delivery_status: result.delivery_status, observed_at: result.observed_at,
+      progress: { status: p.status, turn_id: p.turn_id ?? null, reply: clean(p.reply), truncated: p.truncated === true, note: clean(p.note) },
+      acked_at: result.acked_at ?? null, ack_summary: clean(result.ack_summary) };
+  }
   if (resolving) {
     if (result.agent !== targetAgent || !['unique', 'ambiguous', 'not_found', 'incomplete'].includes(result.status)
       || !Array.isArray(result.candidates) || result.candidates.some(item => !item || typeof item.id !== 'string' || !sessionId.test(item.id))
@@ -92,14 +103,16 @@ if (process.argv[1] && (import.meta.url === pathToFileURL(resolve(process.argv[1
       if (!args[i].startsWith('--') || seen.has(key)) throw new Error('参数无效或重复');
       seen.add(key);
       if (key === 'status') { input.status = true; continue; }
+      if (key === 'progress') { input.progress = true; continue; }
       if (key === 'resolve') { input.resolve = true; continue; }
       if (!allowed.has(key) || args[i + 1] === undefined) throw new Error('参数无效：发送需 --external-session-id、--request-id 和 --content-file；查询用 --status --request-id');
       input[key.replaceAll('-', '_')] = args[++i];
     }
-    if (input.resolve && (input.status || input.request_id !== undefined || input.content !== undefined || input.content_file !== undefined || input.external_session_id !== undefined))
+    if ([input.resolve, input.status, input.progress].filter(Boolean).length > 1) throw new Error('查找、投递状态和执行进度不能同时查询');
+    if (input.resolve && (input.status || input.progress || input.request_id !== undefined || input.content !== undefined || input.content_file !== undefined || input.external_session_id !== undefined))
       throw new Error('查找仅接受 --resolve 与 --session-name，不会发送消息');
     if (!input.resolve && input.session_name !== undefined) throw new Error('先用 --resolve --session-name 查找，再以返回的 ID 发送');
-    if (input.status && (input.content !== undefined || input.content_file !== undefined || input.external_session_id !== undefined))
+    if ((input.status || input.progress) && (input.content !== undefined || input.content_file !== undefined || input.external_session_id !== undefined))
       throw new Error('状态查询仅接受 --status 与 --request-id');
     if (input.content_file !== undefined) {
       if (input.content !== undefined) throw new Error('--content 与 --content-file 不能同时使用');

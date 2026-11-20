@@ -108,10 +108,22 @@ export interface AgentAdapter {
     baseline?: SessionCursor | null,
   ): Promise<IncrementalPage>;
   createSession?(input: { cwd: string }): Promise<SessionInfo>;
+  // 只查指定消息对应的历史，不启动任务、不影响订阅。
+  messageProgress?(sessionId: string, message: {
+    message_id: string; content: string; external_ref: string | null; created_at: number;
+  }): Promise<MessageProgress>;
   dispose?(): void | Promise<void>;
   sendMessage(sessionId: string, text: string, options?: { visibleOnly?: boolean }): Promise<SendResult>;
   runPrompt(
     text: string,
     options?: { addDirs?: string[] },
   ): Promise<RunPromptResult>;
+}
+
+export interface MessageProgress {
+  status: "not_observed" | "observed" | "completed" | "failed" | "unknown";
+  turn_id: string | null;
+  reply: string | null;
+  truncated: boolean;
+  note: string;
 }
