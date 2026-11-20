@@ -48,7 +48,7 @@ Node.js >=24，TypeScript ESM，运行依赖限 DSH 官方包和 Node 内置模�
 - 工具与页面接口共用服务层；各 Agent 通过 Adapter 声明能力，不支持的操作应明确返回原因。
 - Codex 支持会话发现和快照查阅；本机 daemon 的已有会话通过官方队列发送，独立历史回退只读；Relay 创建登记专用会话直接发起轮次。专用会话不得同时交给桌面或 CLI 执行；会话绑定不是全局排他锁。daemon 可读持久化历史，不代表它掌握桌面会话的实时状态；`notLoaded` 不等于空闲或任务完成。
 - Claude 被终端持有的会话通过 Agent Relay channel 投递：消息先排队，会话空闲时再推送，Claude 处理后调用 `ack` 确认；会话未启用 channel 时拒绝并说明原因。无进程持有的会话沿用 `claude -p --resume`。不用 `--resume` 向被持有的会话注入。Claude 等空闲排队限 channel 会话，Codex 使用官方队列；btw 不在第一版范围内。方案与实测见 `docs/superpowers/plans/T2.7-T5.1-T6.6-T7.4-claude-channel-relay.md`。代码已实施并通过单元测试，真实宿主验收（T7.4）尚未完成。
-- `claude-notify` / `codex-notify` 的 HTTP 入口限定可见会话：Claude 终端退出后拒绝后台 resume，Codex 拒绝 Relay 后台绑定。新建 Claude 在 macOS 可见 Terminal 中执行；Codex 需桌面原生创建工具，Claude CLI 缺少该工具时只能打开目录界面并等待用户提交。2026-11-20 两端指定目录与真实投递的隔离服务验证已通过，真实 DSH 升级及自动回传闭环尚未验收，见 `docs/research/T3.4-T6.6-T7.6-visible-handoff-validation.md`。
+- `claude-notify` / `codex-notify` 的 HTTP 入口限定可见会话：Claude 终端退出后拒绝后台 resume，Codex 拒绝 Relay 后台绑定。新建 Claude 在 macOS 可见 Terminal 中执行；Codex 需桌面原生创建工具，Claude CLI 缺少该工具时只能打开目录界面并等待用户提交。2026-11-20 两端隔离服务验证、真实 DSH 升级及 Claude Skill → Codex 投递已通过，自动回传闭环尚未验收，见 `docs/research/T3.4-T6.6-T7.6-visible-handoff-validation.md`。
 
 ## 状态、数据与验证
 

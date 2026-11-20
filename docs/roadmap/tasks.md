@@ -200,7 +200,7 @@ T3.4 的外部 Skill 使用实际本机 HTTP 路径 `POST /api/agent-relay/messa
 | T7.3a | 用户消息提醒：外部 Agent 通知写入 DSH 会话后，已授权且保持打开的 DSH 浏览器前端显示消息通知；核验首条新通知、历史不补弹、重复请求和刷新防重、权限拒绝/不支持、断网恢复。步骤与判定见 `docs/superpowers/plans/T7.3a-external-notification-acceptance.md`；当前待真实浏览器验收 |
 | T7.4 | 转发：依Adapter能力核验拒绝或排队；Codex已有会话queue/add与专用turn/start分开验收；显式发送后关注复用路由，由DSH按主题规划/确认。Claude 终端持有的会话：空闲时经 channel 送达并收到 ack；忙碌时保持 `queued`，空闲后送达；未启用 channel 时被拒绝并提示重新进入；ack 超时记 `unknown` 不重发；重复安装返回自检结果 |
 | T7.5 | 异常：检查失败、外部会话不存在、投递失败重试、DSH 重启后订阅和定时任务恢复、检查重叠 |
-| T7.6 | 跨 Agent 接力：前置安装选择接力 Skill，在专用 Codex / Claude 会话双向发送并按明确授权回传；确认不新建 DSH 接收会话/关注、忙时排队、未知不重发、共享凭证轮换。303 项单测、安装包冒烟以及指定目录的可见 Claude / Codex 新建与已有 ID 接力已通过；运行在隔离测试 HTTP 服务，真实 DSH 宿主升级及 Agent 自动回传闭环仍未验收。详见 `docs/research/T3.4-T6.6-T7.6-visible-handoff-validation.md` |
+| T7.6 | 跨 Agent 接力：前置安装选择接力 Skill，在专用 Codex / Claude 会话双向发送并按明确授权回传；确认不新建 DSH 接收会话/关注、忙时排队、未知不重发、共享凭证轮换。303 项单测、安装包冒烟、两端隔离服务下的指定目录新建与已有 ID 接力已通过；2026-11-20 完成真实 DSH 宿主升级及 Claude Skill → Codex 投递、防重和状态查询。Agent 自动回传闭环仍未验收。详见 `docs/research/T3.4-T6.6-T7.6-visible-handoff-validation.md` |
 
 ## 依赖与顺序
 
