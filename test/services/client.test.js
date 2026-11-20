@@ -10,7 +10,10 @@ test("客户端面板注入 RPC 和会话跳转，卸载回收注册", () => {
       window: {
         __ModuleLoader__: {
           load(entry) {
-            plugin = entry.factory(() => ({ createElement() {} }));
+            plugin = entry.factory(() => ({
+              createElement: (type, props, ...children) => ({ type, props, children }),
+              useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+            }));
           },
         },
       },
@@ -38,8 +41,19 @@ test("客户端面板注入 RPC 和会话跳转，卸载回收注册", () => {
   assert.ok(panel);
   assert.equal(typeof panel.options.inject().rpc.call, "function");
   assert.equal(typeof panel.options.inject().openSession, "function");
+  const leading = entries.find(e => e.options.name === 'sidebar.session.row.leading');
+  const hover = entries.find(e => e.options.name === 'sidebar.session.row.hover');
+  const watcher = entries.find(e => e.options.name === 'shell.overlay');
+  assert.ok(leading, '通过官方插槽提供会话未读标记');
+  assert.ok(hover);
+  assert.ok(watcher, '轮询不依赖侧栏展开或浏览器通知权限');
+  assert.equal(leading.options.inject().unread, watcher.options.inject().unread);
+  const unread = { subscribe() {}, getSnapshot: () => new Map([['receiver', { sequence: 1 }]]) };
+  assert.equal(leading.component({ sessionId: 'other', unread }), null);
+  assert.equal(leading.component({ sessionId: 'receiver', unread }).props['aria-label'], '外部消息未读');
+  assert.match(hover.component({ sessionId: 'receiver', unread }).children.join(''), /未读/);
   for (const cleanup of cleanups.reverse()) cleanup();
-  assert.equal(disposed, 2);
+  assert.equal(disposed, 5);
 });
 
 test("新建订阅选择已有 Codex 会话，不展示专用会话创建和过时发送限制",async()=>{

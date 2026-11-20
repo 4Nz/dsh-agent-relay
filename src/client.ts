@@ -1,6 +1,7 @@
-import { createElement as h, useEffect, useState, useRef } from "react";
+import { createElement as h, useEffect, useState, useRef, useSyncExternalStore } from "react";
+import { createUnreadController, type UnreadController, type UnreadHost } from "./client/unread.js";
 
-export const inject = ["slots", "connection", "uiWorkspace"];
+export const inject = ["slots", "connection", "uiWorkspace", "sessions", "layout"];
 const PANEL_ID = "agent-relay";
 const labels: Record<string, string> = {
   active: "关注中",
@@ -1476,6 +1477,24 @@ function AgentRelayIcon({ rpc,openSession }: { rpc: Rpc;openSession?:(id:string)
     ),
   );
 }
+function UnreadWatcher({ unread }: { unread: UnreadController }) {
+  useEffect(() => unread.start(), [unread]);
+  return null;
+}
+
+function RelayUnreadDot({ sessionId, unread }: { sessionId: string; unread: UnreadController }) {
+  const receipts = useSyncExternalStore(unread.subscribe, unread.getSnapshot);
+  if (!receipts.has(sessionId)) return null;
+  return h("span", { role: "img", "aria-label": "外部消息未读", title: "外部消息未读",
+    "data-dsh-part": "relay-unread",
+    style: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", backgroundColor: "#3b82f6" } });
+}
+
+function RelayUnreadHover({ sessionId, unread }: { sessionId: string; unread: UnreadController }) {
+  const receipts = useSyncExternalStore(unread.subscribe, unread.getSnapshot);
+  return receipts.has(sessionId) ? h("span", null, "有未读的外部 Agent 消息") : null;
+}
+
 interface RelayClientContext {
   slots: {
     inject(name: string, callback: () => () => void): () => void;
@@ -1483,8 +1502,36 @@ interface RelayClientContext {
   };
   connection: { rpc: Rpc };
   uiWorkspace: { openSession(id: string): void };
+  sessions: UnreadHost["sessions"];
+  layout: UnreadHost["layout"];
 }
 export function apply(ctx: RelayClientContext): void {
+  const unread = createUnreadController(ctx.connection.rpc, {
+    sessions: ctx.sessions,
+    layout: ctx.layout,
+    visible: () => document.visibilityState === "visible" && document.hasFocus(),
+    onVisibilityChange(listener) {
+      document.addEventListener("visibilitychange", listener);
+      window.addEventListener("focus", listener);
+      return () => {
+        document.removeEventListener("visibilitychange", listener);
+        window.removeEventListener("focus", listener);
+      };
+    },
+    every(listener) {
+      const timer = setInterval(listener, 5_000);
+      return () => clearInterval(timer);
+    },
+  });
+  for (const [name, component] of [
+    ["shell.overlay", UnreadWatcher],
+    ["sidebar.session.row.leading", RelayUnreadDot],
+    ["sidebar.session.row.hover", RelayUnreadHover],
+  ] as const) {
+    ctx.slots.inject(name, () => ctx.slots.register({
+      name, id: "agent-relay.unread", order: 10, inject: () => ({ unread }),
+    }, component));
+  }
   ctx.slots.inject("main", () =>
     ctx.slots.inject("sidebar.panellist", () => {
       const stopMain = ctx.slots.register(

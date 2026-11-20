@@ -47,6 +47,8 @@
 
 通知轮询 `notify_poll` 使用 `(after,after_id)` 双游标分页；事件详情用 `events` 的 `after_sequence`，不得用旧单条 notification 代表全部新事件。
 
+T1/T3/T6 侧栏未读独立于通知弹窗：SQLite v8 记录确认投递的原接收会话、幂等键和递增序号，用户已读水位单独保存；`processed` 不等于已读。客户端每 5 秒读取 `unread`，通过 `mark_read(dsh_session_id,sequence)` 只确认已经看见的水位。当前接收会话已加载对应消息和后续轮次结束、处于空闲，且全局面板关闭、页面可见并获得焦点时才清除。官方 `sidebar.session.row.leading` 插槽在宿主空闲状态时显示插件蓝点；运行、审批或宿主完成标记优先，插件未读记录不因此删除。升级前历史不补未读。实施与验证见 `docs/research/T1-T3-T6-T7-receiver-unread.md`。
+
 ## T0 插件骨架与 DSH 接入点确认
 
 本机 DSH 版本是 `@deepseek-ai/dsh` 0.2.1-rc.2，基于 cordis 插件体系。后续任务依赖这里的结论。
