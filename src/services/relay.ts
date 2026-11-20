@@ -14,6 +14,7 @@ import type { NotificationService } from "./notifications.js";
 import type { SkillInstallService } from "./skill-install.js";
 import type { SetupService } from "./setup.js";
 import type { ReceiveSessionContext } from "./receive-session.js";
+import type { DshSessionStatus } from "./dsh-sessions.js";
 export interface DshSessionOption {
   id: string;
   title: string;
@@ -34,6 +35,7 @@ export const endpoints = [
   "create_session",
   "inspect",
   "dsh_sessions",
+  "dsh_session_status",
   "subscribe",
   "send",
   "messages",
@@ -47,6 +49,8 @@ export const endpoints = [
   "setup_probe_status",
   "list",
   "notify_poll",
+  "unread",
+  "mark_read",
   "get",
   "pause",
   "resume",
@@ -97,6 +101,7 @@ export function createRelayService({
   skillInstall,
   listDshSessions,
   hasDshSession,
+  dshSessionStatus,
   createDshSession,
   onQueued,
   setup,
@@ -114,6 +119,7 @@ export function createRelayService({
   listDshSessions: () => Promise<DshSessionOption[]>;
   // 验证接收会话存在且未归档，不读取标题/正文；归档抛明确错误，查询失败不当作不存在。
   hasDshSession?: (id: string) => Promise<boolean>;
+  dshSessionStatus?: (id: string) => Promise<DshSessionStatus>;
   createDshSession?: (context: ReceiveSessionContext) => Promise<string>;
   // 消息进入 channel 队列后触发一次推送检查。
   onQueued?: () => Promise<void>;
@@ -339,6 +345,12 @@ export function createRelayService({
           case "dsh_sessions":
             value = await listDshSessions();
             break;
+          case "dsh_session_status": {
+            const id = text(args.dsh_session_id, "dsh_session_id");
+            if (!dshSessionStatus) throw new Error("DSH 会话状态查询不可用，请刷新页面或升级插件后重试");
+            value = { id, status: await dshSessionStatus(id) };
+            break;
+          }
           case "subscribe": {
             const type = args.type === undefined ? "poll" : args.type;
             if (type !== "poll" && type !== "push")
@@ -633,6 +645,18 @@ export function createRelayService({
                 "subscription_id",
               );
             value = store.messages.list(options);
+            break;
+          }
+          case "unread": {
+            value = store.unread.list();
+            break;
+          }
+          case "mark_read": {
+            const session = text(args.dsh_session_id, "dsh_session_id");
+            const sequence = integer(args.sequence, "sequence", 1, Number.MAX_SAFE_INTEGER);
+            if (!store.unread.markRead(session, sequence))
+              throw new TypeError("已读水位不属于该接收会话");
+            value = { read: true };
             break;
           }
           case "notify_poll": {

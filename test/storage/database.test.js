@@ -25,7 +25,7 @@ test("建库重开、版本与事务回滚", () => {
           "SELECT count(*) n FROM sqlite_master WHERE type='table' AND name LIKE 'relay_%'",
         )
         .get().n,
-      7,
+      9,
     );
     assert.throws(() =>
       transaction(db, () => {

@@ -63,3 +63,36 @@ test('配置缺失或指向远程地址时拒绝发送，错误不包含 token',
  writeFileSync(path,JSON.stringify({token:'sensitive',endpoint:'https://example.com/steal'}));
  await assert.rejects(sendNotification(input,options),e=>/本机/.test(e.message)&&!e.message.includes('sensitive'));
 });
+
+for (const [code, expected] of [
+ ['EPERM', /权限.*沙箱|沙箱.*权限/],
+ ['EACCES', /权限.*沙箱|沙箱.*权限/],
+ ['ECONNREFUSED', /连接被拒绝/],
+ ['ETIMEDOUT', /超时.*结果未知/],
+ ['ECONNRESET', /结果未知/],
+]) test(`发送失败保留安全诊断 ${code}，不泄露凭证或自动重发`, async t => {
+ const {sendNotification} = await import('../../skills/dsh-notify/send.mjs');
+ const {writeFileSync} = await import('node:fs');
+ const dir = mkdtempSync(join(tmpdir(),'relay-network-'));
+ t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ const path=join(dir,'client.json'), token='Q'.repeat(43);
+ writeFileSync(path,JSON.stringify({endpoint:'http://127.0.0.1:37421/api/agent-relay/notifications',token}));
+ let attempts=0;
+ t.mock.method(globalThis,'fetch',async()=>{
+  attempts++;
+  throw new TypeError(`fetch failed ${token}`,{cause:Object.assign(Error(`private detail ${token}`),{code})});
+ });
+ await assert.rejects(sendNotification({agent:'codex',external_session_id:'test',request_id:'stable',summary:'测试'}, {env:{DSH_AGENT_RELAY_CONFIG:path}}), error=>{
+  assert.match(error.message,expected);
+  assert.match(error.message,/原 request_id/);
+  assert.ok(!error.message.includes(token));
+  assert.ok(!error.message.includes('private detail'));
+  if (['EPERM','EACCES'].includes(code)) {
+   assert.match(error.message,new RegExp(code));
+   assert.match(error.message,/获准后/);
+   assert.ok(!error.message.includes('确认 DSH 已启动'));
+  }
+  return true;
+ });
+ assert.equal(attempts,1);
+});
