@@ -106,7 +106,7 @@ Windows Skill 目录使用 junction，不要求管理员或开发者模式；其
 
 发送路径是 `POST /api/agent-relay/messages`，字段为目标 `agent`、真实 `external_session_id`、稳定 `request_id` 和不超过 16000 字符的 `content`。查询路径是 `POST /api/agent-relay/messages/status`，仅传 `request_id`。发送 HTTP 202 只表示消息记录已接收，必须读取返回的 `status`（sending、queued、sent、rejected、failed、unknown）；sent 不等于任务完成。另有 `POST /api/agent-relay/sessions/resolve` 接受 `agent`、`session_name`，只返回同名候选的 ID、标题、目录和活动时间；达到 1000 条查找上限返回 incomplete，不声明唯一。另有 `POST /api/agent-relay/messages/progress`，按原 request_id 只读核对对应消息的进度和回复，最多返回 16000 字符并标记截断；不调用模型、不发送消息、不触碰订阅。所有入口均要求同一 Bearer token，发送回执不原样回显正文。
 
-同一 request_id 不得换目标或正文；并发重试、重启后的重试只返回已有消息状态。记录沿用 30 天历史清理，清理后不保证防重；超时或 unknown 先用原 ID 查询，404 也不能证明未发送。只有用户明确要求回传，才在交接正文中附真实来源会话与回传要求，不自动无限接力。
+同一 request_id 不得换目标、正文或来源；并发重试、重启后的重试只返回已有消息状态。记录沿用 30 天历史清理，清理后不保证防重；超时或 unknown 先用原 ID 查询，404 也不能证明未发送。发送与后台新建默认从当前运行环境附加来源 Agent、会话 ID 和请求 ID，也支持成对的 `--source-agent` / `--source-session-id`；来源仅用于路由，只有用户明确要求才附加回传任务，不自动无限接力。没有可靠来源时返回提示，不猜测。升级前未带来源的旧发送请求需以 `--omit-source` 保持原文，补充来源使用新 request_id；后台旧记录不改写、不重跑。来源后缀计入正文 16000 字符上限。
 
 有有效会话 ID 时直接发送；完整会话名先精确查询，重名由用户选择。没有目标会话时，先验证用户给出的目录，或按项目名用 `directory.mjs` 查找：macOS Spotlight 查已索引目录，递归补查用户主目录，可用 `--root` 补查其他磁盘。未指定、无结果、歧义或搜索不完整时继续询问，确定真实可访问的绝对目录后才创建，不自动用当前目录/新目录替代。
 

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 for (const agent of ['codex', 'claude']) {
   async function fixture(t, source) {
@@ -12,7 +15,8 @@ for (const agent of ['codex', 'claude']) {
     const bin = join(root, 'bin');
     await mkdir(cwd); await mkdir(bin);
     await writeFile(join(bin, agent), `#!${process.execPath}\n${source}`, { mode: 0o700 });
-    const env = { ...process.env, DSH_HOME: root, PATH: `${bin}:${process.env.PATH}` };
+    const env = { ...process.env, DSH_HOME: root, PATH: `${bin}:${process.env.PATH}`,
+      CODEX_THREAD_ID: '22222222-2222-4222-8222-222222222222', CODEX_SESSION_ID: '22222222-2222-4222-8222-222222222222', CLAUDE_CODE_SESSION_ID: '' };
     const module = await import(`../../skills/${agent}-notify/start.mjs`);
     return { root, cwd, env, ...module };
   }
@@ -22,7 +26,7 @@ for (const agent of ['codex', 'claude']) {
 import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 const input=readFileSync(0,'utf8');
 appendFileSync('次数.txt','1');
-writeFileSync('输入.json',JSON.stringify({input,args:process.argv.slice(2)}));
+writeFileSync('输入.json',JSON.stringify({input,args:process.argv.slice(2),env:Object.fromEntries(['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_CODE_SESSION_ID'].map(k=>[k,process.env[k]??null]))}));
 const id='11111111-1111-4111-8111-111111111111';
 if('${agent}'==='codex') {
  console.log(JSON.stringify({type:'thread.started',thread_id:id}));
@@ -36,7 +40,8 @@ if('${agent}'==='codex') {
     assert.equal(again.duplicate, true);
     assert.equal((await f.inspectJob('一次任务', { env: f.env })).status, 'prepared');
     await assert.rejects(readFile(join(f.cwd, '次数.txt')), /ENOENT/);
-    await Promise.all([f.runJob(prepared.directory, { env: f.env }), f.runJob(prepared.directory, { env: f.env })]);
+    await Promise.all([1, 2].map(() => promisify(execFile)(process.execPath,
+      [join(prepared.directory, 'worker.mjs'), '--worker', prepared.directory], { env: f.env })));
     const result = await f.inspectJob('一次任务', { env: f.env });
     assert.equal(result.status, 'completed');
     assert.match(result.session_id, /^[0-9a-f-]{36}$/);
@@ -44,9 +49,34 @@ if('${agent}'==='codex') {
     assert.equal(await readFile(join(f.cwd, '次数.txt'), 'utf8'), '1');
     const actual = JSON.parse(await readFile(join(f.cwd, '输入.json'), 'utf8'));
     assert.ok(actual.input.includes(input.content));
+    assert.ok(actual.input.includes('22222222-2222-4222-8222-222222222222'));
+    assert.equal(actual.env.CODEX_THREAD_ID, null);
+    assert.equal(actual.env.CODEX_SESSION_ID, null);
+    assert.equal(actual.env.CLAUDE_CODE_SESSION_ID, agent === 'claude' ? result.session_id : null);
     assert.equal(actual.args.some(a => a.includes('bypass') || a.includes('skip-permissions')), false);
+    assert.deepEqual(result.source, { agent: 'codex', session_id: f.env.CODEX_THREAD_ID });
     await assert.rejects(f.prepareJob({ ...input, content: '改变任务' }, { env: f.env }), /request_id/);
+    await assert.rejects(f.prepareJob({ ...input, source_agent: 'claude', source_session_id: '33333333-3333-4333-8333-333333333333' }, { env: f.env }), /request_id/);
     await assert.rejects(f.prepareJob({ ...input, request_id: '缺目录', cwd: '/不存在目录' }, { env: f.env }));
+  });
+
+  test(`${agent} 旧启动记录保留原始任务，升级后不追加来源或再次启动`, async t => {
+    const f = await fixture(t, 'process.exit(0);');
+    const input = { request_id: '升级前的任务', cwd: f.cwd, content: '旧任务' };
+    const job = await f.prepareJob(input, { env: f.env });
+    const path = join(job.directory, 'request.json');
+    const request = JSON.parse(await readFile(path, 'utf8'));
+    delete request.source;
+    request.prompt = '旧任务原始提示';
+    request.fingerprint = createHash('sha256').update(JSON.stringify({ cwd: request.cwd, content: input.content, reply: null })).digest('hex');
+    const previous = JSON.stringify(request);
+    await writeFile(path, previous);
+    const duplicate = await f.prepareJob(input, { env: f.env });
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(duplicate.source, null);
+    assert.equal(await readFile(path, 'utf8'), previous);
+    assert.equal((await f.launchJob(duplicate, { env: f.env })).status, 'prepared');
+    await assert.rejects(readFile(join(job.directory, 'launch.lock')), /ENOENT/);
   });
 
   test(`${agent} 没有结束事件不能仅凭退出码认定完成，残留启动记录不得重跑`, async t => {

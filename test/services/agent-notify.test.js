@@ -75,12 +75,17 @@ for (const agent of ['claude', 'codex']) {
     const endpoint = `http://127.0.0.1:${server.address().port}/api/agent-relay/notifications`;
     writeFileSync(config, JSON.stringify({ endpoint, token: 'A'.repeat(43) }));
     const script = fileURLToPath(new URL(`../../skills/${agent}-notify/send.mjs`, import.meta.url));
-    const run = args => promisify(execFile)(process.execPath, [script, ...args], { env: { ...process.env, DSH_AGENT_RELAY_CONFIG: config } });
+    const sourceId = '22222222-2222-4222-8222-222222222222';
+    const run = args => promisify(execFile)(process.execPath, [script, ...args], { env: {
+      ...process.env, DSH_AGENT_RELAY_CONFIG: config, CODEX_THREAD_ID: sourceId, CODEX_SESSION_ID: sourceId, CLAUDE_CODE_SESSION_ID: '',
+    } });
     const sent = await run(['--external-session-id', '11111111-1111-1111-1111-111111111111', '--request-id', 'stable', '--content-file', content]);
     assert.equal(JSON.parse(sent.stdout).status, 'queued');
     assert.equal(sent.stdout.includes('不要返回'), false);
     assert.equal(received[0].body.agent, agent);
-    assert.equal(received[0].body.content, '请审查\n保持换行与中文');
+    assert.ok(received[0].body.content.startsWith('请审查\n保持换行与中文\n'));
+    assert.ok(received[0].body.content.includes(sourceId));
+    assert.deepEqual(JSON.parse(sent.stdout).source, { agent: 'codex', session_id: sourceId });
     assert.equal(received[0].path, '/api/agent-relay/messages');
     writeFileSync(config, JSON.stringify({ endpoint, token: 'B'.repeat(43) }));
     await run(['--status', '--request-id', 'stable']);
@@ -96,9 +101,37 @@ for (const agent of ['claude', 'codex']) {
     assert.equal(progress.stdout.includes('不要返回'), false);
     assert.deepEqual(received[3].body, { request_id: 'stable' });
     await assert.rejects(run(['--resolve', '--session-name', '接力测试', '--content', '不应发送']), /查找/);
+    await assert.rejects(run(['--status', '--request-id', 'stable', '--omit-source']), /查询/);
+    const sendArgs = ['--external-session-id', '11111111-1111-1111-1111-111111111111', '--request-id', 'legacy'];
+    const legacy = await run([...sendArgs, '--content', '旧正文', '--omit-source']);
+    assert.equal(received[4].body.content, '旧正文');
+    assert.equal(JSON.parse(legacy.stdout).source, null);
+    const explicit = await run([...sendArgs, '--content', '来自Claude', '--source-agent', 'claude', '--source-session-id', '33333333-3333-4333-8333-333333333333']);
+    assert.equal(JSON.parse(explicit.stdout).source.agent, 'claude');
+    assert.ok(received[5].body.content.includes('33333333-3333-4333-8333-333333333333'));
+    await assert.rejects(run([...sendArgs, '--content', '长'.repeat(16000)]), /来源信息超过/);
     writeFileSync(config, JSON.stringify({ endpoint: 'https://example.com', token: 'B'.repeat(43) }));
     await assert.rejects(run(['--status', '--request-id', 'stable']), e => /本机/.test(e.stderr) && !e.stderr.includes('B'.repeat(43)));
-    assert.equal(received.length, 4);
+    assert.equal(received.length, 6);
+  });
+}
+
+for (const name of ['claude-notify', 'codex-notify']) {
+  test(`${name} 来源只取明确会话信息，冲突拒绝，旧消息可保持原文`, async () => {
+    const sender = await import(`../../skills/${name}/send.mjs`);
+    assert.equal(typeof sender.resolveSource, 'function');
+    const codex = '22222222-2222-4222-8222-222222222222', claude = '33333333-3333-4333-8333-333333333333';
+    assert.deepEqual(sender.resolveSource({}, { CODEX_THREAD_ID: codex }), { agent: 'codex', session_id: codex });
+    assert.deepEqual(sender.resolveSource({}, { CLAUDE_CODE_SESSION_ID: claude }), { agent: 'claude', session_id: claude });
+    assert.equal(sender.resolveSource({}, {}), null);
+    assert.throws(() => sender.resolveSource({}, { CODEX_THREAD_ID: codex, CLAUDE_CODE_SESSION_ID: claude }), /来源/);
+    assert.throws(() => sender.resolveSource({}, { CODEX_THREAD_ID: codex, CODEX_SESSION_ID: claude }), /来源/);
+    assert.throws(() => sender.resolveSource({ source_agent: 'claude' }, {}), /来源/);
+    assert.throws(() => sender.resolveSource({ source_agent: 'claude', source_session_id: '不是ID' }, {}), /来源/);
+    assert.deepEqual(sender.resolveSource({ source_agent: 'claude', source_session_id: claude }, { CODEX_THREAD_ID: codex }), { agent: 'claude', session_id: claude });
+    assert.equal(sender.resolveSource({ omit_source: true }, { CODEX_THREAD_ID: codex }), null);
+    assert.throws(() => sender.resolveSource({ omit_source: true, source_agent: 'claude', source_session_id: claude }), /来源/);
+    assert.equal(sender.withSource('原文', null, '旧请求'), '原文');
   });
 }
 

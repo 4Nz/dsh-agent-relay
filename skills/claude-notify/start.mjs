@@ -31,13 +31,18 @@ export async function prepareJob(input, options = {}) {
   if (!(await stat(cwd)).isDirectory()) throw new Error('工作目录不是目录');
   if (typeof input.content !== 'string' || !input.content.trim() || input.content.length > 16000)
     throw new Error('正文必须为 1～16000 字符');
+  // worker.mjs 被单独复制；仅准备阶段加载 Skill 中的来源助手。
+  const { resolveSource, withSource } = await import('./send.mjs');
+  const source = resolveSource(input, options.env ?? process.env);
+  const content = withSource(input.content, source, input.request_id);
+  if (content.length > 16000) throw new Error('正文加来源信息超过 16000 字符，请缩短正文，未启动');
   let reply = null;
   if (input.reply_agent !== undefined || input.reply_session_id !== undefined) {
     if (!['claude', 'codex'].includes(input.reply_agent) || !uuid.test(input.reply_session_id ?? ''))
       throw new Error('回传必须同时指定来源 Agent 与真实会话 ID');
     reply = { agent: input.reply_agent, session_id: input.reply_session_id, request_id: `${input.request_id}:result` };
   }
-  const fingerprint = hash(JSON.stringify({ cwd, content: input.content, reply }));
+  const fingerprint = hash(JSON.stringify({ cwd, content: input.content, reply, source }));
   await mkdir(dirname(directory), { recursive: true, mode: 0o700 });
   try { await mkdir(directory, { mode: 0o700 }); }
   catch (error) {
@@ -45,17 +50,18 @@ export async function prepareJob(input, options = {}) {
     let previous;
     try { previous = JSON.parse(await readFile(join(directory, 'request.json'), 'utf8')); }
     catch { throw new Error('原启动请求状态未知，请检查记录，不要更换 request_id 重开'); }
-    if (previous.fingerprint !== fingerprint) throw new Error('request_id 已用于其他目录、正文或回传目标');
+    const legacy = previous.source === undefined && previous.fingerprint === hash(JSON.stringify({ cwd, content: input.content, reply }));
+    if (previous.fingerprint !== fingerprint && !legacy) throw new Error('request_id 已用于其他目录、正文、来源或回传目标');
     return { directory, duplicate: true, ...await inspectJob(input.request_id, options) };
   }
   const env = options.env ?? process.env;
   const home = options.home ?? homedir();
   const skills = target === 'codex' ? join(env.CODEX_HOME || join(home, '.codex'), 'skills')
     : join(env.CLAUDE_CONFIG_DIR || join(home, '.claude'), 'skills');
-  const prompt = `${input.content}\n\n[接力任务 ${input.request_id}]\n` + (reply
+  const prompt = `${content}\n\n[接力任务 ${input.request_id}]\n` + (reply
     ? `用户已要求本次结果回传：处理完成、失败或需用户介入时，使用 ${reply.agent}-notify 向 ${reply.agent} 会话 ${reply.session_id} 发送一次结果。发送脚本：${join(skills, `${reply.agent}-notify`, 'send.mjs')}。固定 request_id：${reply.request_id}。同次结果核对/重试保持 ID、目标和正文不变；结果不明先查状态。回传入队后结束，不等待对方再回信，不另建会话，不扩大任务授权。请在最终回复中记录实际回传状态；无法回传时保留结果并说明原因。`
     : '本次仅委托处理，未要求主动回传；请在最终回复中写明结果或阻碍，供发起方只读查询。');
-  const request = { agent: target, request_id: input.request_id, cwd, prompt, reply, fingerprint,
+  const request = { agent: target, request_id: input.request_id, cwd, prompt, reply, source, fingerprint,
     session_id: target === 'claude' ? randomUUID() : null, created_at: Date.now() };
   await writeFile(join(directory, 'request.json'), JSON.stringify(request) + '\n', { mode: 0o600, flag: 'wx' });
   await copyFile(self, join(directory, 'worker.mjs'));
@@ -77,7 +83,8 @@ export async function inspectJob(requestId, options = {}) {
     updated_at: state.updated_at, finished_at: state.finished_at ?? null,
     result: state.result ?? null, result_file: state.result_file ?? null,
     result_truncated: state.result_truncated === true, error: state.error ?? null,
-    record_file: join(directory, 'state.json'), reply: request.reply,
+    record_file: join(directory, 'state.json'), reply: request.reply, source: request.source ?? null,
+    ...(!request.source ? { source_warning: '此任务没有来源会话信息；需回传时请补充已核实的来源 ID' } : {}),
     note: 'completed 仅表示本轮执行结束；业务是否完成及回传是否成功需看结果。查询不会启动或重发任务。' };
 }
 
@@ -111,6 +118,12 @@ export async function runJob(directory, { env = process.env } = {}) {
   const args = request.agent === 'codex'
     ? ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-C', request.cwd, '-']
     : ['-p', '--session-id', request.session_id, '--output-format', 'stream-json', '--verbose', '--permission-prompts', 'none'];
+  // 子 Agent 的来源必须是自己的会话，不能继承发起方的身份。
+  const childEnv = { ...env };
+  delete childEnv.CODEX_THREAD_ID;
+  delete childEnv.CODEX_SESSION_ID;
+  delete childEnv.CLAUDE_CODE_SESSION_ID;
+  if (request.agent === 'claude') childEnv.CLAUDE_CODE_SESSION_ID = request.session_id;
   let final = null, lastReply = null, ended = false, denied = false, line = '', parseError = false;
   const output = await open(join(directory, 'output.jsonl'), 'a', 0o600);
   const stderr = await open(join(directory, 'stderr.log'), 'a', 0o600);
@@ -144,7 +157,7 @@ export async function runJob(directory, { env = process.env } = {}) {
   }
   let outcome;
   try {
-    const child = spawn(request.agent, args, { cwd: request.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(request.agent, args, { cwd: request.cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       keep(output, chunk);
@@ -189,7 +202,8 @@ if (process.argv[1] && await realpath(process.argv[1]) === self) {
         if (!args[i].startsWith('--') || seen.has(key)) throw new Error('参数无效或重复');
         seen.add(key);
         if (key === 'status') { status = true; continue; }
-        if (!['request-id', 'cwd', 'content-file', 'reply-agent', 'reply-session-id'].includes(key) || args[i + 1] === undefined)
+        if (key === 'omit-source') { input.omit_source = true; continue; }
+        if (!['request-id', 'cwd', 'content-file', 'reply-agent', 'reply-session-id', 'source-agent', 'source-session-id'].includes(key) || args[i + 1] === undefined)
           throw new Error('新建使用 --cwd --request-id --content-file；查询使用 --status --request-id');
         input[key.replaceAll('-', '_')] = args[++i];
       }

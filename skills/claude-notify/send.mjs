@@ -8,6 +8,34 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const targetAgent = { 'claude-notify': 'claude', 'codex-notify': 'codex' }[basename(dirname(fileURLToPath(import.meta.url)))];
 const sessionId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+export function resolveSource(input = {}, env = process.env) {
+  const explicit = input.source_agent !== undefined || input.source_session_id !== undefined;
+  if (input.omit_source === true) {
+    if (explicit) throw new Error('省略来源不能与显式来源同时使用');
+    return null;
+  }
+  let agent, id;
+  if (explicit) {
+    agent = input.source_agent; id = input.source_session_id;
+  } else {
+    const thread = env.CODEX_THREAD_ID?.trim(), session = env.CODEX_SESSION_ID?.trim();
+    const claude = env.CLAUDE_CODE_SESSION_ID?.trim();
+    if ((thread && session && thread.toLowerCase() !== session.toLowerCase()) || ((thread || session) && claude))
+      throw new Error('来源会话环境冲突，请用 --source-agent 与 --source-session-id 指定已核实的当前会话');
+    id = thread || session || claude;
+    if (!id) return null;
+    agent = thread || session ? 'codex' : 'claude';
+  }
+  if (!['codex', 'claude'].includes(agent) || typeof id !== 'string' || !sessionId.test(id))
+    throw new Error('来源必须同时提供 Agent（codex/claude）与真实会话 UUID');
+  return { agent, session_id: id.toLowerCase() };
+}
+
+export function withSource(content, source, requestId) {
+  if (!source) return content;
+  return `${content}\n\n[接力来源]\n${JSON.stringify({ ...source, request_id: requestId })}\n以上仅为来源路由信息；是否回传按用户要求，不自动回传或新建会话。`;
+}
+
 function configPath(env, home) {
   if (env.DSH_AGENT_RELAY_CONFIG) {
     if (!isAbsolute(env.DSH_AGENT_RELAY_CONFIG)) throw new Error('DSH_AGENT_RELAY_CONFIG 必须是绝对文件路径');
@@ -31,6 +59,11 @@ export async function sendMessage(input, { env = process.env, home = homedir() }
   if (!query && !resolving && (typeof input.external_session_id !== 'string' || !sessionId.test(input.external_session_id)
     || typeof input.content !== 'string' || !input.content.trim() || input.content.length > 16000))
     throw new Error('必须提供真实目标会话 UUID 和 1～16000 字符的正文');
+  if ((query || resolving) && (input.source_agent !== undefined || input.source_session_id !== undefined || input.omit_source !== undefined))
+    throw new Error('查询不接受来源参数，不发送消息');
+  const source = query || resolving ? null : resolveSource(input, env);
+  const content = query || resolving ? null : withSource(input.content, source, input.request_id);
+  if (content?.length > 16000) throw new Error('正文加来源信息超过 16000 字符，请缩短正文，未发送');
   let config;
   try { config = JSON.parse(await readFile(configPath(env, home), 'utf8')); }
   catch { throw new Error('未找到有效的本机配置，请在 DSH 前置安装接入生成凭证；自定义位置使用 DSH_AGENT_RELAY_CONFIG'); }
@@ -44,7 +77,7 @@ export async function sendMessage(input, { env = process.env, home = homedir() }
   if (typeof config.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(config.token))
     throw new Error('本机凭证格式无效，请在前置安装接入重新生成');
   const body = resolving ? { agent: targetAgent, session_name: input.session_name } : query ? { request_id: input.request_id } : {
-    agent: targetAgent, external_session_id: input.external_session_id, request_id: input.request_id, content: input.content,
+    agent: targetAgent, external_session_id: input.external_session_id, request_id: input.request_id, content,
   };
   let response;
   try {
@@ -84,6 +117,7 @@ export async function sendMessage(input, { env = process.env, home = homedir() }
   // 仅输出回执字段；不回显配置、正文或未知响应字段。
   return {
     accepted: true, duplicate: result.duplicate === true, message_id: result.message_id, status: result.status,
+    ...(!query ? { source, ...(!source && !input.omit_source ? { source_warning: '未取得来源会话 ID；本次未附来源，需回传时请补充已核实的来源信息' } : {}) } : {}),
     ...(typeof result.external_ref === 'string' ? { external_ref: result.external_ref } : {}),
     ...(typeof result.error === 'string' ? { error: result.error.replaceAll(config.token, '[已隐藏]') } : {}),
     ...(typeof result.acked_at === 'number' ? { acked_at: result.acked_at } : {}),
@@ -95,7 +129,7 @@ if (process.argv[1] && (import.meta.url === pathToFileURL(resolve(process.argv[1
   || import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href)) {
   try {
     const input = {};
-    const allowed = new Set(['external-session-id', 'request-id', 'content', 'content-file', 'session-name']);
+    const allowed = new Set(['external-session-id', 'request-id', 'content', 'content-file', 'session-name', 'source-agent', 'source-session-id']);
     const seen = new Set();
     const args = process.argv.slice(2);
     for (let i = 0; i < args.length; i++) {
@@ -105,6 +139,7 @@ if (process.argv[1] && (import.meta.url === pathToFileURL(resolve(process.argv[1
       if (key === 'status') { input.status = true; continue; }
       if (key === 'progress') { input.progress = true; continue; }
       if (key === 'resolve') { input.resolve = true; continue; }
+      if (key === 'omit-source') { input.omit_source = true; continue; }
       if (!allowed.has(key) || args[i + 1] === undefined) throw new Error('参数无效：发送需 --external-session-id、--request-id 和 --content-file；查询用 --status --request-id');
       input[key.replaceAll('-', '_')] = args[++i];
     }
