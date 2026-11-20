@@ -10,7 +10,10 @@ test("客户端面板注入 RPC 和会话跳转，卸载回收注册", () => {
       window: {
         __ModuleLoader__: {
           load(entry) {
-            plugin = entry.factory(() => ({ createElement() {} }));
+            plugin = entry.factory(() => ({
+              createElement: (type, props, ...children) => ({ type, props, children }),
+              useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+            }));
           },
         },
       },
@@ -38,8 +41,19 @@ test("客户端面板注入 RPC 和会话跳转，卸载回收注册", () => {
   assert.ok(panel);
   assert.equal(typeof panel.options.inject().rpc.call, "function");
   assert.equal(typeof panel.options.inject().openSession, "function");
+  const leading = entries.find(e => e.options.name === 'sidebar.session.row.leading');
+  const hover = entries.find(e => e.options.name === 'sidebar.session.row.hover');
+  const watcher = entries.find(e => e.options.name === 'shell.overlay');
+  assert.ok(leading, '通过官方插槽提供会话未读标记');
+  assert.ok(hover);
+  assert.ok(watcher, '轮询不依赖侧栏展开或浏览器通知权限');
+  assert.equal(leading.options.inject().unread, watcher.options.inject().unread);
+  const unread = { subscribe() {}, getSnapshot: () => new Map([['receiver', { sequence: 1 }]]) };
+  assert.equal(leading.component({ sessionId: 'other', unread }), null);
+  assert.equal(leading.component({ sessionId: 'receiver', unread }).props['aria-label'], '外部消息未读');
+  assert.match(hover.component({ sessionId: 'receiver', unread }).children.join(''), /未读/);
   for (const cleanup of cleanups.reverse()) cleanup();
-  assert.equal(disposed, 2);
+  assert.equal(disposed, 5);
 });
 
 test("新建订阅选择已有 Codex 会话，不展示专用会话创建和过时发送限制",async()=>{
@@ -174,7 +188,7 @@ test('订阅列表：主动通知不显示立即检查与重新订阅，最近�
  assert.ok(nodes(rowOf('通知中的会话')).some(n=>Array.isArray(n.children)&&n.children.includes('不适用（主动通知）')));
  const pushEnded=rowButtons(rowOf('已结束的通知'));
  assert.ok(!pushEnded.includes('重新订阅'));
- assert.ok(pushEnded.includes('打开会话')===false);
+ assert.ok(pushEnded.includes('打开 DSH 接收会话')===false);
  assert.ok(!rowButtons(rowOf('检查中的会话')).includes('立即检查'));
  assert.ok(nodes(rowOf('检查中的会话')).some(n=>Array.isArray(n.children)&&n.children.includes('尚未选择频率')));
  const inconsistent=rowOf('规划状态缺频率');
@@ -211,7 +225,7 @@ test('主题冲突通过精确current询问，继续保留原主题并恢复，�
  const calls = []; let current = bridgeSub({ status: 'paused', muted: 1 });
  const rpc = { async call(_channel, method, args) {
   const endpoint = method.split('/').at(-1); calls.push({ endpoint, args });
-  const values = { agents: [], list: { items: [], next_cursor: null }, sessions: [{ id:'ext', title:'原关注会话' }], dsh_sessions: [], current: { route:{ dsh_session_id:'original-dsh' }, subscription: current }, resume:{}, stop:{}, subscribe:{ subscription:bridgeSub(), schedule_ready:false } };
+  const values = { agents: [], list: { items: [], next_cursor: null }, sessions: [{ id:'ext', title:'原关注会话' }], dsh_sessions: [], dsh_session_status: {id:'original-dsh',status:'available'}, current: { route:{ dsh_session_id:'original-dsh' }, subscription: current }, resume:{}, stop:{}, subscribe:{ subscription:bridgeSub(), schedule_ready:false } };
   if (endpoint === 'stop') current = null;
   return { ok:true, value:values[endpoint] };
  } };
@@ -287,7 +301,7 @@ test('通知分页使用时间加ID游标，同毫秒50条续页不漏报并持�
 
 test('同主题新建返回暂停关注时如实提示，明确继续才恢复原关注', async () => {
  const calls=[];const sub=bridgeSub({status:'paused',planning_state:'ready',selected_interval_seconds:300});
- const rpc={async call(_channel,method,args){const endpoint=method.split('/').at(-1);calls.push({endpoint,args});return{ok:true,value:endpoint==='agents'?[]:endpoint==='list'?{items:[]}:endpoint==='sessions'?[{id:'ext',title:'原关注会话'}]:endpoint==='dsh_sessions'?[]:endpoint==='current'?{route:{dsh_session_id:'original-dsh'},subscription:sub}:endpoint==='subscribe'?{subscription:sub,schedule_ready:false}:{}};}};
+ const rpc={async call(_channel,method,args){const endpoint=method.split('/').at(-1);calls.push({endpoint,args});return{ok:true,value:endpoint==='agents'?[]:endpoint==='list'?{items:[]}:endpoint==='sessions'?[{id:'ext',title:'原关注会话'}]:endpoint==='dsh_sessions'?[]:endpoint==='dsh_session_status'?{id:'original-dsh',status:'available'}:endpoint==='current'?{route:{dsh_session_id:'original-dsh'},subscription:sub}:endpoint==='subscribe'?{subscription:sub,schedule_ready:false}:{}};}};
  const ui=clientHarness(rpc);const{nodes}=ui;let tree=ui.render();await ui.flush();tree=ui.render();
  nodes(tree).find(n=>n.type==='button'&&n.children.includes('新建订阅')).props.onClick();tree=ui.render();await ui.flush();tree=ui.render();
  nodes(nodes(tree).find(n=>n.type==='label'&&n.children.includes('外部会话'))).find(n=>n.type==='select').props.onChange({target:{value:'ext'}});
@@ -327,4 +341,29 @@ test('真实push不展示路由管理，浏览器通知仍按原路由打开DSH'
  assert.equal(store.subscriptions.list().items.length,0);
  const notices=[];class Notify{static permission='granted';constructor(title,options){this.title=title;this.options=options;notices.push(this);}}
  const storage=new Map([['dsh-agent-relay:notify:lastSeen','1']]);const icon=clientHarness(rpc,{Notification:Notify,localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)}});icon.mountIcon();await icon.flush();assert.equal(notices.length,1);assert.equal(typeof notices[0].onclick,'function');notices[0].onclick();assert.deepEqual(icon.opened,['original-push-dsh']);
+});
+
+test('打开接收会话先核对状态，历史订阅保留原目标，异常时留在列表', async () => {
+ const sub = bridgeSub({status:'ended', dsh_session_id:'historical-dsh'});
+ let status = 'archived', failure = false;
+ const calls = [];
+ const rpc = {async call(_channel, method, args) {
+  const endpoint = method.split('/').at(-1); calls.push({endpoint,args});
+  if (endpoint === 'dsh_session_status') return failure ? {ok:false,error:{message:'宿主查询失败'}} : {ok:true,value:{id:args.dsh_session_id,status}};
+  return {ok:true,value:endpoint==='agents'?[]:endpoint==='list'?{items:[sub]}:endpoint==='routes'?{items:[]}:{}};
+ }};
+ const ui = clientHarness(rpc);
+ ui.render(); await ui.flush();
+ const click = async () => {
+  const button = ui.nodes(ui.render()).find(n=>n.type==='button'&&n.children.includes('打开 DSH 接收会话'));
+  assert.ok(button, '按钮应明确指向 DSH 接收会话');
+  await button.props.onClick(); await ui.flush();
+ };
+ const text = () => ui.nodes(ui.render()).flatMap(n=>n.children.filter(c=>typeof c==='string')).join(' ');
+ await click(); assert.deepEqual(ui.opened,[]); assert.match(text(),/已归档.*恢复/);
+ status = 'missing'; await click(); assert.deepEqual(ui.opened,[]); assert.match(text(),/不存在/);
+ status = 'available'; failure = true; await click(); assert.deepEqual(ui.opened,[]); assert.match(text(),/宿主查询失败/);
+ failure = false; await click(); assert.deepEqual(ui.opened,['historical-dsh']);
+ assert.ok(calls.filter(c=>c.endpoint==='dsh_session_status').every(c=>c.args.dsh_session_id==='historical-dsh'));
+ assert.ok(!calls.some(c=>['current','subscribe','create_session'].includes(c.endpoint)));
 });

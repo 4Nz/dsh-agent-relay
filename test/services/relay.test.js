@@ -100,6 +100,7 @@ function setup(t, options = {}) {
     },
     listDshSessions: async () => [{ id: "dsh", title: "接收会话" }],
     hasDshSession: options.dshSessions?.has ?? (async (id) => id === "dsh"),
+    dshSessionStatus: options.dshSessions?.status,
     createDshSession: async () => "new-dsh",
     onQueued: options.onQueued,
     observeTitle: options.observeTitle,
@@ -368,6 +369,18 @@ test("发送时发现外部会话关闭，立即结束订阅并拒绝发送", as
   assert.equal(store.subscriptions.get(created.value.subscription.id).end_reason, "session_closed");
 });
 
+test("未读查询与精确已读水位接口不会清除其他会话或未来消息", async t => {
+  const { relay, store } = setup(t);
+  assert.deepEqual(await relay.call('unread', {}), { ok: true, value: [] });
+  store.unread.record('receiver', 'notice');
+  const [notice] = (await relay.call('unread', {})).value;
+  for (const sequence of [-1, 0, 1.5, '1', Number.MAX_SAFE_INTEGER + 1])
+    assert.equal((await relay.call('mark_read', { dsh_session_id: 'receiver', sequence })).ok, false);
+  assert.equal((await relay.call('mark_read', { dsh_session_id: 'other', sequence: notice.sequence })).ok, false);
+  assert.equal((await relay.call('mark_read', { dsh_session_id: 'receiver', sequence: notice.sequence })).ok, true);
+  assert.deepEqual((await relay.call('unread', {})).value, []);
+});
+
 test("notify_poll 按游标返回新增通知并校验输入", async (t) => {
   const { relay, store } = setup(t);
   assert.deepEqual((await relay.call("notify_poll", {})).value, []);
@@ -619,4 +632,17 @@ test("手动查阅成功观察标题，关闭或查询异常不触发同步", as
   f.adapters.get("claude").snapshot = async () => ({closed:true, title:"已关闭"});
   await f.relay.call("inspect", {agent:"claude", external_session_id:"ext"});
   assert.equal(observed.length, 1);
+});
+
+test('导航状态接口只核对指定的原接收会话，不创建或替换目标', async t => {
+ const sessions = createDshSessions({
+  listSessions: async () => ['live','old'].map(id=>({header:{id}})),
+  readTitleSnapshots: async () => [],
+ }, {archivedSessionIds:['old']});
+ const {relay,store} = setup(t,{dshSessions:sessions});
+ for (const [id,status] of [['live','available'],['old','archived'],['deleted','missing']]) {
+  assert.deepEqual(await relay.call('dsh_session_status',{dsh_session_id:id}),{ok:true,value:{id,status}});
+ }
+ assert.equal((await relay.call('dsh_session_status',{})).ok,false);
+ assert.equal(store.bridge.routes().length,0);
 });

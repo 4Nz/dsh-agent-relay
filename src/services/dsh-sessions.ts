@@ -22,6 +22,8 @@ export interface DshSessionOption {
   title: string;
 }
 
+export type DshSessionStatus = "available" | "archived" | "missing";
+
 export interface DshSessionArchiveRegistry {
   readonly archivedSessionIds: readonly string[];
 }
@@ -31,6 +33,12 @@ export const ARCHIVED_RECEIVER = "接收通知的 DSH 会话已归档，无法�
 export function createDshSessions(host: DshSessionHost, registry?: DshSessionArchiveRegistry) {
   const archived = (id: string) => registry?.archivedSessionIds.includes(id) ?? false;
   return {
+    // 导航前核对当前状态；历史目标不存在时不回退到其他路由或创建新会话。
+    async status(id: string): Promise<DshSessionStatus> {
+      const sessions = await host.listSessions();
+      if (!sessions.some((s) => s.header.id === id)) return "missing";
+      return archived(id) ? "archived" : "available";
+    },
     // 一次批量读取标题；单个标题缺失/失败回退到该 ID，其余结果仍可展示；
     // 批量整体失败向上抛出明确错误。
     async list(): Promise<DshSessionOption[]> {

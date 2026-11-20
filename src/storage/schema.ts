@@ -140,4 +140,18 @@ INSERT INTO relay_bridge SELECT * FROM relay_bridge_v7_backup;
 DROP TABLE relay_bridge_v7_backup;
 CREATE INDEX bridge_receiver ON relay_bridge(dsh_session_id);
 `,
+  `
+-- 只记录升级后确认投递的消息；历史没有用户阅读事实，不批量补未读。
+CREATE TABLE relay_receipt (
+ sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+ dsh_session_id TEXT NOT NULL,
+ delivery_key TEXT NOT NULL,
+ UNIQUE(dsh_session_id,delivery_key)
+) STRICT;
+CREATE INDEX receipt_receiver ON relay_receipt(dsh_session_id,sequence);
+CREATE TABLE relay_read_cursor (
+ dsh_session_id TEXT PRIMARY KEY NOT NULL,
+ sequence INTEGER NOT NULL CHECK(sequence>0)
+) STRICT;
+`,
 ];
