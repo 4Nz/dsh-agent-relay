@@ -3,13 +3,14 @@ import type { Message } from "../storage/types.js";
 
 export const MESSAGE_PATH = "/api/agent-relay/messages";
 export const MESSAGE_STATUS_PATH = "/api/agent-relay/messages/status";
+export const SESSION_RESOLVE_PATH = "/api/agent-relay/sessions/resolve";
 
-// 外部 Skill 的薄入口：共用本机通知凭证，只开放发送与单请求状态查询。
+// 外部 Skill 的薄入口：共用本机通知凭证，开放可见会话发送、单请求状态和名称查找。
 export function createMessageRoutes({ relay, credentials }: {
   relay: RelayService;
   credentials: { verify(token: string): boolean };
 }): Record<string, (request: Request) => Promise<Response>> {
-  function handler(query: boolean) {
+  function handler(query: boolean, resolve = false) {
     return async (request: Request): Promise<Response> => {
       if (request.method !== "POST") return new Response("方法不支持", { status: 405 });
       const token = (request.headers.get("authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
@@ -21,12 +22,16 @@ export function createMessageRoutes({ relay, credentials }: {
         input = await request.json();
         if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error();
       } catch { return new Response("JSON 无效", { status: 400 }); }
+      if (resolve) {
+        const result = await relay.call("resolve_session", { agent: input.agent, session_name: input.session_name });
+        return result.ok ? Response.json(result.value) : Response.json({ error: result.error.message }, { status: result.error.code === "invalid_input" ? 400 : 503 });
+      }
       if (typeof input.request_id !== "string" || !input.request_id.trim() || input.request_id.length > 500)
         return new Response("需要稳定的 request_id", { status: 400 });
       // 白名单构造，外部请求不能开启关注或调用其他 Relay 操作。
       const result = await relay.call(query ? "message_status" : "send", query
         ? { request_id: input.request_id }
-        : { request_id: input.request_id, agent: input.agent, external_session_id: input.external_session_id, content: input.content });
+        : { request_id: input.request_id, agent: input.agent, external_session_id: input.external_session_id, content: input.content, visible_only: true });
       if (!result.ok) return Response.json({ error: result.error.message }, { status: result.error.code === "invalid_input" ? 400 : 503 });
       const { message, duplicate } = result.value as { message: Message | null; duplicate?: boolean };
       if (!message) return new Response("未找到请求记录；请核对原请求，不要盲目重发", { status: 404 });
@@ -37,5 +42,5 @@ export function createMessageRoutes({ relay, credentials }: {
       }, { status: query ? 200 : 202 });
     };
   }
-  return { [MESSAGE_PATH]: handler(false), [MESSAGE_STATUS_PATH]: handler(true) };
+  return { [MESSAGE_PATH]: handler(false), [MESSAGE_STATUS_PATH]: handler(true), [SESSION_RESOLVE_PATH]: handler(false, true) };
 }

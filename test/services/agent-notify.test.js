@@ -18,7 +18,7 @@ test('HTTP 接力落库后重启仍防重，中断转 unknown，只查询不创�
   let sends = 0;
   const makeRoutes = () => createMessageRoutes({ credentials: { verify: token => token === 'local' }, relay: createRelayService({
     store, adapters: { get: () => ({ capabilities: () => ({ sendMessage: true }),
-      snapshot: async () => ({ closed: false }), sendMessage: async () => { sends++; return { status: 'queued' }; } }) },
+      snapshot: async () => ({ closed: false, held: true }), sendMessage: async () => { sends++; return { status: 'queued' }; } }) },
     subscriptions: {}, checks: {}, notifications: {}, skillInstall: {}, listDshSessions: async () => [],
   }) });
   const input = { request_id: 'restart', agent: 'claude', external_session_id: 'target', content: '审查任务' };
@@ -53,6 +53,11 @@ for (const agent of ['claude', 'codex']) {
     const server = createServer(async (req, res) => {
       let content = ''; for await (const chunk of req) content += chunk;
       received.push({ path: req.url, token: req.headers.authorization, body: JSON.parse(content) });
+      if (req.url.endsWith('/resolve')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ agent, status: 'unique', candidates: [{ id: '11111111-1111-1111-1111-111111111111', title: '接力测试', cwd: '/tmp/test', last_activity_at: 1, secret: '不要返回此字段' }] }));
+        return;
+      }
       res.writeHead(req.url.endsWith('/status') ? 200 : 202, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ accepted: true, status: 'queued', message_id: 'm', token: '不要返回此字段' }));
     });
@@ -76,9 +81,14 @@ for (const agent of ['claude', 'codex']) {
     assert.equal(received[1].path, '/api/agent-relay/messages/status');
     assert.equal(received[1].token, 'Bearer ' + 'B'.repeat(43));
     assert.deepEqual(received[1].body, { request_id: 'stable' });
+    const resolved = await run(['--resolve', '--session-name', '接力测试']);
+    assert.equal(JSON.parse(resolved.stdout).candidates[0].id, '11111111-1111-1111-1111-111111111111');
+    assert.equal(resolved.stdout.includes('不要返回'), false);
+    assert.deepEqual(received[2].body, { agent, session_name: '接力测试' });
+    await assert.rejects(run(['--resolve', '--session-name', '接力测试', '--content', '不应发送']), /查找/);
     writeFileSync(config, JSON.stringify({ endpoint: 'https://example.com', token: 'B'.repeat(43) }));
     await assert.rejects(run(['--status', '--request-id', 'stable']), e => /本机/.test(e.stderr) && !e.stderr.includes('B'.repeat(43)));
-    assert.equal(received.length, 2);
+    assert.equal(received.length, 3);
   });
 }
 
@@ -103,7 +113,20 @@ test('跨 Agent HTTP 入口只允许发送和查询单条状态，鉴权失败�
   const result = await sent.json();
   assert.equal(result.status, 'queued');
   assert.equal(result.content, undefined);
-  assert.deepEqual(calls[0], { endpoint: 'send', args: { agent: 'claude', external_session_id: 'session', request_id: 'request', content: '请审查' } });
+  assert.deepEqual(calls[0], { endpoint: 'send', args: { agent: 'claude', external_session_id: 'session', request_id: 'request', content: '请审查', visible_only: true } });
   assert.equal((await routes[MESSAGE_STATUS_PATH](request(MESSAGE_STATUS_PATH, 'test-token', { request_id: 'request' }))).status, 200);
   assert.equal(calls[1].endpoint, 'message_status');
+});
+
+test('会话名称入口需鉴权，只允许元数据查找，不透传创建或发送字段', async () => {
+  const { SESSION_RESOLVE_PATH } = await import('../../lib/services/message-http.js');
+  const calls = [];
+  const routes = createMessageRoutes({credentials:{verify:t=>t==='valid'},relay:{call:async(endpoint,args)=>{
+    calls.push({endpoint,args}); return {ok:true,value:{agent:'claude',status:'ambiguous',candidates:[]}};
+  }}});
+  const request = token => new Request('http://127.0.0.1', {method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:JSON.stringify({agent:'claude',session_name:'测试',content:'不得发送',cwd:'/tmp',create:true})});
+  assert.equal((await routes[SESSION_RESOLVE_PATH](request('wrong'))).status,401);
+  assert.equal(calls.length,0);
+  assert.equal((await routes[SESSION_RESOLVE_PATH](request('valid'))).status,200);
+  assert.deepEqual(calls,[{endpoint:'resolve_session',args:{agent:'claude',session_name:'测试'}}]);
 });

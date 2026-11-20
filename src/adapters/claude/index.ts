@@ -131,7 +131,7 @@ export function createClaudeAdapter(
     return all.get(sessionId) ?? { runtime: "idle", held: false, error: null };
   }
 
-  async function send(sessionId: string, text: string): Promise<SendResult> {
+  async function send(sessionId: string, text: string, visibleOnly = false): Promise<SendResult> {
     const file = await findFile(sessionId);
     if (!file) return { status: "rejected", reason: "会话不存在" };
     // 发送前扫描一次，取得文件身份与读至的字节偏移；之后轮询只读新增字节。
@@ -151,6 +151,7 @@ export function createClaudeAdapter(
       return options.channel.accept(sessionId);
     const refusal = refuse(state);
     if (refusal) return { status: "rejected", reason: refusal };
+    if (visibleOnly) return { status: "rejected", reason: "目标 Claude 未在终端中运行，请打开原会话并启用 channel；不使用后台 resume" };
     const child = run(
       [
         "-p",
@@ -360,12 +361,12 @@ export function createClaudeAdapter(
         last_reply: transcript.last_reply,
       };
     },
-    async sendMessage(sessionId, text) {
+    async sendMessage(sessionId, text, sendOptions) {
       checkId(sessionId);
       if (typeof text !== "string" || !text.trim())
         throw new AdapterError("invalid_input", "消息内容不能为空");
       const previous = sending.get(sessionId) ?? Promise.resolve();
-      const current = previous.then(() => send(sessionId, text));
+      const current = previous.then(() => send(sessionId, text, sendOptions?.visibleOnly));
       const settled = current.catch(() => undefined);
       sending.set(sessionId, settled);
       void settled.then(() => {

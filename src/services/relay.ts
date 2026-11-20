@@ -31,6 +31,7 @@ export const endpoints = [
   "mute",
   "agents",
   "sessions",
+  "resolve_session",
   "create_session",
   "inspect",
   "dsh_sessions",
@@ -305,6 +306,17 @@ export function createRelayService({
             value = await adapter.createSession({ cwd: text(args.cwd, "cwd") });
             break;
           }
+          case "resolve_session": {
+            const selected = agent(args.agent);
+            const name = text(args.session_name, "session_name").trim();
+            const adapter = adapters.get(selected);
+            if (!adapter.capabilities().listSessions) throw new TypeError("该 Agent 不支持查找会话");
+            const sessions = await adapter.listSessions({ limit: 1000 });
+            const candidates = [...new Map(sessions.filter(session => session.title?.trim() === name).map(session => [session.id, session])).values()]
+              .map(({ id, title, cwd, last_activity_at }) => ({ id, title, cwd, last_activity_at }));
+            value = { agent: selected, status: sessions.length >= 1000 ? "incomplete" : candidates.length === 1 ? "unique" : candidates.length ? "ambiguous" : "not_found", candidates };
+            break;
+          }
           case "sessions": {
             const adapter = adapters.get(agent(args.agent));
             if (!adapter.capabilities().listSessions)
@@ -545,9 +557,13 @@ export function createRelayService({
                       status: "rejected",
                       reason: snapshot.check_error,
                     };
+                  } else if (args.visible_only === true && selected === "claude" && snapshot.held !== true) {
+                    sendResult = { status: "rejected", reason: "目标 Claude 未在终端中运行，请先在可见终端用 claude --resume <会话 ID> 打开并启用 channel；不使用后台 resume" };
                   } else {
                     baselineSnapshot = snapshot;
-                    sendResult = await adapter.sendMessage(external, content);
+                    sendResult = args.visible_only === true
+                      ? await adapter.sendMessage(external, content, { visibleOnly: true })
+                      : await adapter.sendMessage(external, content);
                   }
                 } catch (error) {
                   sendResult = { status: "failed", error: messageOf(error) };

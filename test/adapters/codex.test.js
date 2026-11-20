@@ -171,6 +171,17 @@ async function writable(t, overrides = {}) {
   t.after(async () => { await adapter.dispose?.(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { adapter, store, calls, dir, closes: () => closes };
 }
+test('Codex 可见接力拒绝后台绑定，桌面会话走官方队列', async t => {
+  const { adapter, store, calls } = await writable(t);
+  store.codexSessions.register({ session_id: ID, endpoint: ENDPOINT, created_at: Date.now() });
+  assert.equal((await adapter.sendMessage(ID, '继续', { visibleOnly: true })).status, 'rejected');
+  assert.equal(calls.length, 0);
+  const other = '22222222-2222-3333-4444-555555555555';
+  assert.equal((await adapter.sendMessage(other, '继续', { visibleOnly: true })).status, 'sent');
+  assert.equal(calls.some(c => c.method === 'turn/start'), false);
+  assert.equal(calls.some(c => c.method === 'thread/queue/add'), true);
+});
+
 test('Codex 写入：新建专用会话登记后发送，接收即 sent 且不关闭写连接', async t => {
   const { adapter, store, calls, dir, closes } = await writable(t);
   assert.equal(adapter.capabilities().createSession, true);

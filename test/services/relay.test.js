@@ -8,6 +8,29 @@ import { createRelayService, endpoints } from "../../lib/services/relay.js";
 import { createAdapterRegistry } from "../../lib/adapters/registry.js";
 import { createSubscriptionService } from "../../lib/services/subscriptions.js";
 
+test('可见接力拒绝未被终端持有的 Claude，不退回隐藏 resume', async t => {
+  const { relay, sendResults } = setup(t);
+  const result = await relay.call('send', { agent: 'claude', external_session_id: 'closed-terminal', content: '继续', request_id: 'visible-only', visible_only: true });
+  assert.equal(result.value.message.status, 'rejected');
+  assert.match(result.value.message.error, /终端/);
+  assert.equal(sendResults.length, 0);
+});
+
+test('名称查找返回唯一或重名候选，截断不宣称唯一，不执行发送', async t => {
+  const { relay, adapters, sendResults } = setup(t);
+  const adapter = adapters.get('claude');
+  adapter.listSessions = async () => [{ id: 'one', title: '接力测试', cwd: '/tmp/a', last_activity_at: 1, secret: '不得返回' }];
+  const unique = await relay.call('resolve_session', { agent: 'claude', session_name: ' 接力测试 ' });
+  assert.equal(unique.value.status, 'unique');
+  assert.deepEqual(unique.value.candidates, [{ id: 'one', title: '接力测试', cwd: '/tmp/a', last_activity_at: 1 }]);
+  assert.equal((await relay.call('resolve_session', { agent: 'claude', session_name: '接力' })).value.status, 'not_found');
+  adapter.listSessions = async () => [{ id: 'one', title: '接力测试' }, { id: 'two', title: '接力测试' }];
+  assert.equal((await relay.call('resolve_session', { agent: 'claude', session_name: '接力测试' })).value.status, 'ambiguous');
+  adapter.listSessions = async () => Array.from({length:1000}, (_,i) => ({ id: String(i), title: i === 0 ? '接力测试' : '其他' }));
+  assert.equal((await relay.call('resolve_session', { agent: 'claude', session_name: '接力测试' })).value.status, 'incomplete');
+  assert.equal(sendResults.length, 0);
+});
+
 test('外部接力稳定请求 ID 防重，查询不重发，换正文拒绝', async t => {
   const { relay, store, sendResults } = setup(t);
   const input = { agent: 'claude', external_session_id: 'ext', content: '审查方案\n'.repeat(200), request_id: 'handoff-1' };

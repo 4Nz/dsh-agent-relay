@@ -109,7 +109,7 @@ export interface AgentAdapter {
   ): Promise<IncrementalPage>;
   createSession?(input: { cwd: string }): Promise<SessionInfo>;
   dispose?(): void | Promise<void>;
-  sendMessage(sessionId: string, text: string): Promise<SendResult>;
+  sendMessage(sessionId: string, text: string, options?: { visibleOnly?: boolean }): Promise<SendResult>;
   runPrompt(
     text: string,
     options?: { addDirs?: string[] },

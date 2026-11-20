@@ -280,12 +280,14 @@ export function createCodexAdapter(
       });
       return metadata(created);
     },
-    async sendMessage(sessionId, text): Promise<SendResult> {
+    async sendMessage(sessionId, text, sendOptions): Promise<SendResult> {
       if (!options.bindings)
         return { status: "rejected", reason: "Codex 第一版不支持发送消息" };
       checkId(sessionId);
       if (typeof text !== "string" || !text.trim())
         return { status: "rejected", reason: "消息不能为空" };
+      if (sendOptions?.visibleOnly && bound(sessionId))
+        return { status: "rejected", reason: "目标是 Relay 专用后台会话，请提供 Codex 桌面或 CLI 会话 ID" };
       if (sending.has(sessionId))
         return { status: "rejected", reason: "此会话正在发送消息" };
       sending.add(sessionId);

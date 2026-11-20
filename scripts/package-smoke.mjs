@@ -10,8 +10,11 @@ const [root, version] = process.argv.slice(2);
 const load = (path) => import(pathToFileURL(join(root, path)).href);
 assert.equal((await load("lib/version.js")).PLUGIN_VERSION, version);
 assert.equal(typeof (await load("lib/index.js")).apply, "function");
-for (const name of ["claude-notify", "codex-notify"])
+for (const name of ["claude-notify", "codex-notify"]) {
   assert.equal(typeof (await load(`skills/${name}/send.mjs`)).sendMessage, "function");
+  assert.equal(typeof (await load(`skills/${name}/directory.mjs`)).resolveDirectory, "function");
+}
+assert.equal(typeof (await load("skills/claude-notify/open.mjs")).prepareLaunch, "function");
 let registration;
 runInNewContext(await readFile(join(root, "lib/client.js"), "utf8"), {
   window: { __ModuleLoader__: { load(entry) { registration = entry; } } },

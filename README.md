@@ -65,7 +65,9 @@ Codex 展示通知接收回执，并继续处理从 DSH 回传的要求。回执
 
 在 DSH 使用的项目中安装随包的 `dsh-agent-relay` Skill，让 DSH 按会话桥梁规则处理订阅和消息。具体步骤见[安装、Skill 配置与升级说明](docs/operations/T0-T1-T3-T7-plugin-release.md)。
 
-前置安装还可分别勾选 `claude-notify` 和 `codex-notify`，让当前 Agent 向指定的另一会话转发任务或结果，例如在 Codex 中说“用 claude-notify 把方案发给 Claude 会话 UUID 审查”。名称表示接收方，二者共用 `dsh-notify` 的本机凭证。DSH 插件需要保持运行，消息不经过 DSH 模型；真实双向接力验收尚待完成。
+前置安装还可分别勾选 `claude-notify` 和 `codex-notify`，让当前 Agent 向指定的另一会话转发任务或结果，例如在 Codex 中说“用 claude-notify 把方案发给 Claude 会话 UUID 审查”。名称表示接收方，二者共用 `dsh-notify` 的本机凭证。DSH 插件需要保持运行，消息不经过 DSH 模型。
+
+有效会话 ID 可直接发送，也可按完整会话名查找。需要新建时，先按用户路径或项目名查找真实目录，找不到/重名时继续询问，不默用当前目录。Claude 在可见终端启动；Codex 使用桌面原生创建工具，在 Claude CLI 缺少该工具时只能打开所选目录的新会话界面，需用户提交首条消息。两端的目录、真实投递与防重验证见 [T7.6 验收记录](docs/research/T3.4-T6.6-T7.6-visible-handoff-validation.md)。
 
 ### 2. 在 DSH 会话里直接说
 

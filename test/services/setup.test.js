@@ -87,6 +87,8 @@ for (const agent of ['claude', 'codex']) {
       mkdirSync(join(skillsDir, name));
       writeFileSync(join(skillsDir, name, 'SKILL.md'), `---\nname: ${name}\n---\n接力`);
       writeFileSync(join(skillsDir, name, 'send.mjs'), '// sender');
+      writeFileSync(join(skillsDir, name, 'directory.mjs'), '// directory');
+      if (name === 'claude-notify') writeFileSync(join(skillsDir, name, 'open.mjs'), '// visible launcher');
     }
     const target = name => join(home, `.${agent}`, 'skills', name);
     await service.install(agent);
@@ -94,7 +96,24 @@ for (const agent of ['claude', 'codex']) {
     const installed = await service.install(agent, ['claude-notify']);
     assert.equal(byKey(installed)['claude-notify'].status, 'ok');
     assert.equal(readFileSync(join(target('claude-notify'), 'send.mjs'), 'utf8'), '// sender');
+    assert.equal(readFileSync(join(target('claude-notify'), 'open.mjs'), 'utf8'), '// visible launcher');
+    assert.equal(readFileSync(join(target('claude-notify'), 'directory.mjs'), 'utf8'), '// directory');
     assert.equal(existsSync(target('codex-notify')), false);
+    // 旧版受管理安装缺少新脚本时可升级，不能误报为用户冲突。
+    const manifestPath = join(target('claude-notify'), '.agent-relay-skill.json');
+    const oldManifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    delete oldManifest.launcher; delete oldManifest.directory;
+    writeFileSync(manifestPath, JSON.stringify(oldManifest));
+    rmSync(join(target('claude-notify'), 'open.mjs'));
+    rmSync(join(target('claude-notify'), 'directory.mjs'));
+    const migrated = await service.install(agent, ['claude-notify']);
+    assert.equal(byKey(migrated)['claude-notify'].status, 'ok');
+    assert.equal(readFileSync(join(target('claude-notify'), 'directory.mjs'), 'utf8'), '// directory');
+    const codex = await service.install(agent, ['codex-notify']);
+    assert.equal(byKey(codex)['codex-notify'].status, 'ok');
+    writeFileSync(join(target('codex-notify'), 'directory.mjs'), '// 用户自定义目录策略');
+    assert.equal(byKey(await service.install(agent, ['codex-notify']))['codex-notify'].status, 'conflict');
+    assert.equal(readFileSync(join(target('codex-notify'), 'directory.mjs'), 'utf8'), '// 用户自定义目录策略');
     writeFileSync(join(skillsDir, 'claude-notify', 'send.mjs'), '// sender v2');
     const upgraded = await service.install(agent, ['claude-notify']);
     assert.equal(byKey(upgraded)['claude-notify'].action, 'updated');
