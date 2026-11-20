@@ -369,6 +369,18 @@ test("发送时发现外部会话关闭，立即结束订阅并拒绝发送", as
   assert.equal(store.subscriptions.get(created.value.subscription.id).end_reason, "session_closed");
 });
 
+test("未读查询与精确已读水位接口不会清除其他会话或未来消息", async t => {
+  const { relay, store } = setup(t);
+  assert.deepEqual(await relay.call('unread', {}), { ok: true, value: [] });
+  store.unread.record('receiver', 'notice');
+  const [notice] = (await relay.call('unread', {})).value;
+  for (const sequence of [-1, 0, 1.5, '1', Number.MAX_SAFE_INTEGER + 1])
+    assert.equal((await relay.call('mark_read', { dsh_session_id: 'receiver', sequence })).ok, false);
+  assert.equal((await relay.call('mark_read', { dsh_session_id: 'other', sequence: notice.sequence })).ok, false);
+  assert.equal((await relay.call('mark_read', { dsh_session_id: 'receiver', sequence: notice.sequence })).ok, true);
+  assert.deepEqual((await relay.call('unread', {})).value, []);
+});
+
 test("notify_poll 按游标返回新增通知并校验输入", async (t) => {
   const { relay, store } = setup(t);
   assert.deepEqual((await relay.call("notify_poll", {})).value, []);

@@ -49,6 +49,8 @@ export const endpoints = [
   "setup_probe_status",
   "list",
   "notify_poll",
+  "unread",
+  "mark_read",
   "get",
   "pause",
   "resume",
@@ -643,6 +645,18 @@ export function createRelayService({
                 "subscription_id",
               );
             value = store.messages.list(options);
+            break;
+          }
+          case "unread": {
+            value = store.unread.list();
+            break;
+          }
+          case "mark_read": {
+            const session = text(args.dsh_session_id, "dsh_session_id");
+            const sequence = integer(args.sequence, "sequence", 1, Number.MAX_SAFE_INTEGER);
+            if (!store.unread.markRead(session, sequence))
+              throw new TypeError("已读水位不属于该接收会话");
+            value = { read: true };
             break;
           }
           case "notify_poll": {
