@@ -273,6 +273,15 @@ test("sendMessage：被终端持有的会话交给 channel，不调用 -p；无�
   assert.equal(printed, true);
 });
 
+test('可见发送在最终执行时复查持有状态，终端退出不能回退到 -p', async t => {
+  const { dir, file } = fixture(t);
+  writeFileSync(file, prompt('任务', 1) + reply('结果', 2));
+  const r = runner({ agents: [], onPrint: () => assert.fail('禁止后台执行') });
+  const result = await adapter(dir, r.run).sendMessage(ID, '继续', { visibleOnly: true });
+  assert.equal(result.status, 'rejected');
+  assert.match(result.reason, /终端/);
+});
+
 test("Claude 增量跨200条分页保留多轮与无文本页后的回复",async t=>{
  const {dir,file}=fixture(t);writeFileSync(file,prompt("旧",1)+reply("旧结果",2));const a=adapter(dir,runner().run),base=(await a.snapshot(ID)).cursor;
  appendFileSync(file,Array.from({length:200},(_,i)=>toolResult(3+i)).join("")+prompt("新",204)+reply("中间",205)+prompt("继续",206)+reply("最终",207));

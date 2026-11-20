@@ -197,6 +197,30 @@ test('订阅列表：主动通知不显示立即检查与重新订阅，最近�
  assert.ok(rowButtons(rowOf('已结束的检查')).includes('重新订阅'));
 });
 
+test('前置安装两项接力 Skill 默认关闭，按选择提交，切换 Agent 清空选择', async () => {
+ const calls = [];
+ const rpc = { async call(_c, method, args) {
+  const endpoint = method.split('/').at(-1); calls.push({ endpoint, args });
+  return { ok: true, value: endpoint === 'list' ? { items: [] } : endpoint === 'agents' ? [] : { overall: 'ok', items: [], next_steps: [] } };
+ } };
+ const ui = clientHarness(rpc); let tree = ui.render(); await ui.flush(); tree = ui.render();
+ ui.nodes(tree).find(n => n.type === 'button' && n.children.includes('前置安装接入')).props.onClick();
+ tree = ui.render(); await ui.flush(); tree = ui.render();
+ const boxes = () => ui.nodes(tree).filter(n => n.type === 'input' && n.props.type === 'checkbox');
+ assert.equal(boxes().length, 2); assert.ok(boxes().every(n => n.props.checked === false));
+ boxes()[0].props.onChange({ target: { checked: true } });
+ tree = ui.render(); await ui.flush(); tree = ui.render();
+ ui.nodes(tree).find(n => n.type === 'button' && n.children.includes('重新检查并修复')).props.onClick();
+ await ui.flush(); tree = ui.render();
+ assert.equal(calls.find(c => c.endpoint === 'setup_install').args.optional_skills.join(','), 'claude-notify');
+ const label = ui.nodes(tree).find(n => n.type === 'label' && n.children.includes('Agent'));
+ ui.nodes(label).find(n => n.type === 'select').props.onChange({ target: { value: 'codex' } });
+ tree = ui.render(); await ui.flush(); tree = ui.render();
+ assert.ok(boxes().every(n => n.props.checked === false));
+ assert.equal(calls.filter(c => c.endpoint === 'setup_check').at(-1).args.agent, 'codex');
+ assert.equal(calls.filter(c => c.endpoint === 'setup_check').at(-1).args.optional_skills.length, 0);
+});
+
 function clientHarness(rpc, extra = {}) {
  let plugin, cursor = 0; const states = [], effects = [], timers = [], opened = [];
  const react = {

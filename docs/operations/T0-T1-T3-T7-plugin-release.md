@@ -98,6 +98,30 @@ Windows Skill 目录使用 junction，不要求管理员或开发者模式；其
 
 ## Skill 安装与升级
 
+### T2-T3-T4-T6-T7 跨 Agent 接力（2026-11-20）
+
+前置安装接入新增两个独立的可选项，默认不勾选：`claude-notify` 向 Claude 发送，`codex-notify` 向 Codex 发送。选择上方 Agent 表示把 Skill 安装到哪个 Agent 的用户目录。例如在 Codex 页勾选 `claude-notify`，即可在 Codex 内要求“把方案交给 Claude 会话 UUID 审查”。两个选项都可安装到任一 Agent，尊重 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`。取消勾选不卸载；再次勾选可检查并更新。基础接入自检不要求安装可选 Skill。
+
+安装复制每个目录的 `SKILL.md`、`send.mjs`、`directory.mjs` 和 `start.mjs`，`claude-notify` 还包含 `open.mjs`；安装本身不会开模型会话。可选 Skill 的文件摘要保存在同目录 `.agent-relay-skill.json`，升级前分别备份说明和全部脚本，旧版自有安装可补上目录查找/启动脚本；发现不同来源或用户修改时返回冲突，不覆盖。项目链接安装脚本仍只处理原 `dsh` / `external` / `all` 范围；需要可选接力 Skill 时使用前置安装页面。
+
+两者共用 `dsh-notify` 的 `notification-client.json` 和 Bearer token，不增加凭证配置；现有共享 token 也因此具备向本机外部会话发送消息的能力。脚本每次读取配置，只访问 127.0.0.1，不跟随重定向。DSH 插件须保持运行，消息经本机 HTTP 薄入口复用 Adapter，不经 DSH 模型、不自动创建关注或接收会话。Claude 终端持有会话依赖 channel，终端退出时此入口拒绝发送，不回退到后台 resume；Codex 使用 daemon 官方队列，此入口拒绝 Relay 专用后台绑定。原 DSH 的发送行为保持原规则。
+
+发送路径是 `POST /api/agent-relay/messages`，字段为目标 `agent`、真实 `external_session_id`、稳定 `request_id` 和不超过 16000 字符的 `content`。查询路径是 `POST /api/agent-relay/messages/status`，仅传 `request_id`。发送 HTTP 202 只表示消息记录已接收，必须读取返回的 `status`（sending、queued、sent、rejected、failed、unknown）；sent 不等于任务完成。另有 `POST /api/agent-relay/sessions/resolve` 接受 `agent`、`session_name`，只返回同名候选的 ID、标题、目录和活动时间；达到 1000 条查找上限返回 incomplete，不声明唯一。另有 `POST /api/agent-relay/messages/progress`，按原 request_id 只读核对对应消息的进度和回复，最多返回 16000 字符并标记截断；不调用模型、不发送消息、不触碰订阅。所有入口均要求同一 Bearer token，发送回执不原样回显正文。
+
+同一 request_id 不得换目标、正文或来源；并发重试、重启后的重试只返回已有消息状态。记录沿用 30 天历史清理，清理后不保证防重；超时或 unknown 先用原 ID 查询，404 也不能证明未发送。发送与后台新建默认从当前运行环境附加来源 Agent、会话 ID 和请求 ID，也支持成对的 `--source-agent` / `--source-session-id`；来源仅用于路由，只有用户明确要求才附加回传任务，不自动无限接力。没有可靠来源时返回提示，不猜测。升级前未带来源的旧发送请求需以 `--omit-source` 保持原文，补充来源使用新 request_id；后台旧记录不改写、不重跑。来源后缀计入正文 16000 字符上限。
+
+有有效会话 ID 时直接发送；完整会话名先精确查询，重名由用户选择。没有目标会话时，先验证用户给出的目录，或按项目名用 `directory.mjs` 查找：macOS Spotlight 查已索引目录，递归补查用户主目录，可用 `--root` 补查其他磁盘。未指定、无结果、歧义或搜索不完整时继续询问，确定真实可访问的绝对目录后才创建，不自动用当前目录/新目录替代。
+
+默认新建采用官方 CLI 后台执行：`start.mjs --cwd <绝对目录> --request-id <唯一ID> --content-file <正文文件>`，不打开终端。`start.mjs --status --request-id <原ID>` 只读查询本次执行状态、真实会话 ID 和结果。两端都保留独立会话及私有记录；启动与执行锁保证同一请求不重复执行，异常或失去心跳标记 unknown，不自动恢复任务。记录位于 `$DSH_HOME/agent-relay/background-jobs/<agent>/`；完整结果保存在 result.txt，返回正文截断时可按 result_file 读取。CLI 权限配置仍生效，后台模式无法交互审批时可能拒绝工具。
+
+用户明确要求回传时，可以给 start.mjs 增加 `--reply-agent` 和 `--reply-session-id`。启动器只把用户授权的回传目标和固定结果 request_id 写入任务，执行 Agent 自己调用对应发送 Skill；启动器不自动发送，不承诺模型不会漏发。只要求发送时不默认回传或轮询。回到运行中的 Claude 仍需 channel，发起方提交后应结束当前轮。执行完成与结果发送成功分开判断。
+
+已有目标使用 `send.mjs --progress --request-id <发送ID>`：Claude 按 channel 消息 ID 定位；Codex 核对原正文和消息毫秒时间，同文多轮、缺少证据或分页上限时返回 unknown，不能拿旧回复冒充结果。`--status` 仍只表示投递状态。不同模式的请求记录不互换。
+
+用户明确要求可见会话时保留原路径：macOS Claude 使用 open.mjs；Codex 有桌面原生工具时按项目目录创建，否则 `codex app <目录>` 只打开界面，需人工提交首条消息。后台 CLI 不冒充桌面创建，也不伪造客户端身份。
+
+验证记录见 `docs/research/T3.4-T6.6-T7.6-visible-handoff-validation.md`。安装 Skill 后仍须部署相同构建的插件并重载宿主，使新增 HTTP 查询入口生效；刷新页面不会更新服务端代码。
+
 通知 Skill 已由 `external-agent-notification` 更名为 `dsh-notify`，使用时可说“完成后用 dsh-notify 通知我”。新安装使用短名称；旧项目链接通过 `--scope external --update` 迁移，安装器仅处理记录匹配的自有链接，用户修改过的内容不会被覆盖。迁移后旧路径不再可用，请同步更新自己保存的命令。
 
 Claude/Codex 用户目录内已复制安装的旧 Skill 不会被自动删除，其发送脚本仍可使用。请在前置安装接入页安装新版 `dsh-notify`，验证后自行移除旧 Skill 目录，避免两个名称同时出现。无安装记录的旧项目链接须人工核对后迁移。

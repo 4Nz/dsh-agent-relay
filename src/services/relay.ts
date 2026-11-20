@@ -1,5 +1,5 @@
 import type { BridgeService } from "./bridge.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type { Snapshot } from "../adapters/types.js";
 import type {
@@ -32,6 +32,7 @@ export const endpoints = [
   "mute",
   "agents",
   "sessions",
+  "resolve_session",
   "create_session",
   "inspect",
   "dsh_sessions",
@@ -39,6 +40,7 @@ export const endpoints = [
   "subscribe",
   "send",
   "messages",
+  "message_status",
   "update",
   "install_skill",
   "install_skill_preview",
@@ -65,10 +67,13 @@ function object(value: unknown): Record<string, unknown> {
     throw new TypeError("参数必须为对象");
   return value as Record<string, unknown>;
 }
-function text(value: unknown, name: string) {
-  if (typeof value !== "string" || !value.trim() || value.length > 500)
+function text(value: unknown, name: string, max = 500) {
+  if (typeof value !== "string" || !value.trim() || value.length > max)
     throw new TypeError(`${name} 必须为非空字符串`);
   return value;
+}
+function externalMessageId(requestId: unknown) {
+  return `external:${createHash("sha256").update(text(requestId, "request_id")).digest("hex")}`;
 }
 function messageContent(value: unknown): string {
   if (typeof value !== "string" || !value.trim())
@@ -297,9 +302,9 @@ export function createRelayService({
           case "setup_probe_status": {
             if (!setup) throw new Error("前置安装接入未就绪");
             if (endpoint === "setup_check")
-              value = await setup.check(agent(args.agent));
+              value = await setup.check(agent(args.agent), args.optional_skills);
             else if (endpoint === "setup_install")
-              value = await setup.install(agent(args.agent));
+              value = await setup.install(agent(args.agent), args.optional_skills);
             else if (endpoint === "setup_uninstall")
               value = await setup.uninstall();
             else if (endpoint === "setup_probe_start")
@@ -314,6 +319,17 @@ export function createRelayService({
             if (!adapter.capabilities().createSession || !adapter.createSession)
               throw new TypeError("该 Agent 不支持新建专用会话");
             value = await adapter.createSession({ cwd: text(args.cwd, "cwd") });
+            break;
+          }
+          case "resolve_session": {
+            const selected = agent(args.agent);
+            const name = text(args.session_name, "session_name").trim();
+            const adapter = adapters.get(selected);
+            if (!adapter.capabilities().listSessions) throw new TypeError("该 Agent 不支持查找会话");
+            const sessions = await adapter.listSessions({ limit: 1000 });
+            const candidates = [...new Map(sessions.filter(session => session.title?.trim() === name).map(session => [session.id, session])).values()]
+              .map(({ id, title, cwd, last_activity_at }) => ({ id, title, cwd, last_activity_at }));
+            value = { agent: selected, status: sessions.length >= 1000 ? "incomplete" : candidates.length === 1 ? "unique" : candidates.length ? "ambiguous" : "not_found", candidates };
             break;
           }
           case "sessions": {
@@ -448,12 +464,23 @@ export function createRelayService({
           }
           case "send": {
             const selected = agent(args.agent);
-            if (setup) await setup.requireReady(selected);
             const external = text(
               args.external_session_id,
               "external_session_id",
             );
             const content = messageContent(args.content);
+            const requestMessageId = args.request_id === undefined ? null : externalMessageId(args.request_id);
+            if (requestMessageId && (args.subscribe_after_send || args.subscription_id))
+              throw new TypeError("外部接力请求不能绑定关注");
+            // 重试先查落库记录，即使当前环境不可用，也不重复投递。
+            const previous = requestMessageId ? store.messages.get(requestMessageId) : null;
+            if (previous) {
+              if (previous.agent !== selected || previous.external_session_id !== external || previous.content !== content)
+                throw new TypeError("request_id 已用于不同目标或内容");
+              value = { message: previous, duplicate: true };
+              break;
+            }
+            if (setup) await setup.requireReady(selected);
             const subscribeAfterSend =
               args.subscribe_after_send === undefined
                 ? false
@@ -475,7 +502,7 @@ export function createRelayService({
                 throw new TypeError("接收通知的 DSH 会话不存在");
             }
 
-            let subscriptionId: string | null = bridge
+            let subscriptionId: string | null = bridge && !requestMessageId
               ? (store.bridge.live(
                   store.bridge.route(selected, external) ?? {
                     id: "",
@@ -501,11 +528,19 @@ export function createRelayService({
             }
 
             const route = JSON.stringify([selected, external]);
+            // requireReady 会让出执行权；在创建前再次检查，覆盖并发重试。
+            const concurrent = requestMessageId ? store.messages.get(requestMessageId) : null;
+            if (concurrent) {
+              if (concurrent.agent !== selected || concurrent.external_session_id !== external || concurrent.content !== content)
+                throw new TypeError("request_id 已用于不同目标或内容");
+              value = { message: concurrent, duplicate: true };
+              break;
+            }
             const ownsLock = !sending.has(route);
             if (ownsLock) sending.add(route);
             try {
               const message = store.messages.create({
-                id: randomUUID(),
+                id: requestMessageId ?? randomUUID(),
                 agent: selected,
                 external_session_id: external,
                 subscription_id: subscriptionId,
@@ -546,9 +581,13 @@ export function createRelayService({
                       status: "rejected",
                       reason: snapshot.check_error,
                     };
+                  } else if (args.visible_only === true && selected === "claude" && snapshot.held !== true) {
+                    sendResult = { status: "rejected", reason: "目标 Claude 未在终端中运行，请先在可见终端用 claude --resume <会话 ID> 打开并启用 channel；不使用后台 resume" };
                   } else {
                     baselineSnapshot = snapshot;
-                    sendResult = await adapter.sendMessage(external, content);
+                    sendResult = args.visible_only === true
+                      ? await adapter.sendMessage(external, content, { visibleOnly: true })
+                      : await adapter.sendMessage(external, content);
                   }
                 } catch (error) {
                   sendResult = { status: "failed", error: messageOf(error) };
@@ -580,7 +619,7 @@ export function createRelayService({
               let createdSubscription = null;
               let subscriptionError: string | null = null;
               if (saved.status === "sent" || saved.status === "queued") {
-                if (!bridge) subscriptions.touch(selected, external);
+                if (!bridge && !requestMessageId) subscriptions.touch(selected, external);
                 if (subscribeAfterSend) {
                   try {
                     const existingRoute = bridge
@@ -624,6 +663,25 @@ export function createRelayService({
             } finally {
               if (ownsLock) sending.delete(route);
             }
+            break;
+          }
+          case "message_progress": {
+            const message = store.messages.get(externalMessageId(args.request_id));
+            if (!message) { value = null; break; }
+            const adapter = adapters.get(message.agent);
+            if (!adapter.messageProgress) throw new TypeError("该 Agent 不支持消息进度查询");
+            // 直接只读 Adapter；不经 inspect 的订阅触碰和通知排空。
+            const progress = await adapter.messageProgress(message.external_session_id, {
+              message_id: message.id, content: message.content, external_ref: message.external_ref, created_at: message.created_at,
+            });
+            value = { agent: message.agent, external_session_id: message.external_session_id, message_id: message.id,
+              delivery_status: message.status, observed_at: Date.now(), progress,
+              acked_at: message.acked_at, ack_summary: message.ack_summary };
+            break;
+          }
+          case "message_status": {
+            const message = store.messages.get(externalMessageId(args.request_id));
+            value = { message };
             break;
           }
           case "messages": {

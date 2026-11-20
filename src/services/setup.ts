@@ -2,6 +2,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, w
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import type { Agent } from "../storage/types.js";
 import type { ClaudeRunner } from "../adapters/claude/runner.js";
 import type { ChannelCredentialService, NotificationCredentialService } from "./credentials.js";
@@ -9,11 +10,19 @@ import type { ClaudeChannelService, ListClaudeAgents } from "./claude-channel.js
 import { NOTIFICATION_SKILL } from "./skill-install.js";
 import { CHANNEL_NAME, INSTRUCTIONS } from "../channel/server.js";
 
-// 前置安装接入：按 Agent 安装和自检。Claude 包含通知 Skill 与 channel 配置，Codex 只有通知 Skill。
+// 前置安装接入：按 Agent 安装和自检，可选安装跨 Agent 接力 Skill。
 // 配置文件由插件直接写入；修改前备份，已正常的项不改动，内容被改过或重复的项不自动覆盖。
 
 // 规则、shell 函数的格式版本；内容变化时加一，已安装的旧版本会被识别为 outdated。
 export const SETUP_VERSION = 1;
+export const OPTIONAL_SKILLS = ["claude-notify", "codex-notify"] as const;
+function optionalSkills(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some(name => !OPTIONAL_SKILLS.includes(name)))
+    throw new TypeError("可选 Skill 仅支持 claude-notify、codex-notify");
+  return [...new Set(value)] as string[];
+}
+const digest = (content: string | null) => createHash("sha256").update(content ?? "").digest("hex");
 
 export type ItemStatus = "ok" | "missing" | "outdated" | "conflict" | "unavailable";
 export interface SetupItem {
@@ -159,8 +168,11 @@ export function createSetupService({
     if (shell === "bash") return join(homeDir, ".bashrc");
     return null;
   }
-  function packagedSkill() {
-    return read(join(skillsDir, NOTIFICATION_SKILL, "SKILL.md"));
+  function packagedSkill(name = NOTIFICATION_SKILL) {
+    return read(join(skillsDir, name, "SKILL.md"));
+  }
+  function targetSkill(agent: Agent, name: string) {
+    return join(dirname(dirname(skillTarget[agent])), name, "SKILL.md");
   }
 
   // ---- Claude 各检查项 ----
@@ -249,17 +261,49 @@ export function createSetupService({
     if (status.configured) return { key: "notification", status: "ok", message: "通知凭证已就绪" };
     return { key: "notification", status: "missing", message: "通知凭证未生成，安装时自动生成" };
   }
-  function skillItem(agent: Agent): SetupItem {
-    const packaged = packagedSkill();
-    const sender = read(join(skillsDir, NOTIFICATION_SKILL, "send.mjs"));
+  function skillItem(agent: Agent, name = NOTIFICATION_SKILL): SetupItem {
+    const key = name === NOTIFICATION_SKILL ? "skill" : name;
+    const packaged = packagedSkill(name);
+    const sender = read(join(skillsDir, name, "send.mjs"));
+    const launcher = name === "claude-notify" ? read(join(skillsDir, name, "open.mjs")) : null;
+    const directory = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "directory.mjs")) : null;
+    const starter = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "start.mjs")) : null;
+    if (name !== NOTIFICATION_SKILL && starter === null)
+      return { key, status: "unavailable", message: `插件缺少 ${name}/start.mjs，请重新安装插件` };
+    if (name !== NOTIFICATION_SKILL && directory === null)
+      return { key, status: "unavailable", message: `插件缺少 ${name}/directory.mjs，请重新安装插件` };
+    if (name === "claude-notify" && launcher === null)
+      return { key, status: "unavailable", message: "插件缺少 claude-notify/open.mjs，请重新安装插件" };
     if (packaged === null || sender === null)
-      return { key: "skill", status: "unavailable", message: `插件缺少 ${NOTIFICATION_SKILL} 的 ${packaged === null ? "SKILL.md" : "send.mjs"}，请重新安装插件；本地源码接入请重新构建并重启 DSH 宿主` };
-    const installed = read(skillTarget[agent]);
-    if (installed === null) return { key: "skill", status: "missing", message: `未安装 ${NOTIFICATION_SKILL}，点击「安装 / 修复」安装到 ${dirname(skillTarget[agent])}` };
-    if (installed.trim() !== packaged.trim()) return { key: "skill", status: "outdated", message: `${NOTIFICATION_SKILL} 与当前插件版本不一致，请点击「安装 / 修复」更新` };
-    if (read(join(dirname(skillTarget[agent]), "send.mjs")) !== sender)
-      return { key: "skill", status: "outdated", message: "通知发送脚本缺失或需更新，请重新安装通知 Skill" };
-    return { key: "skill", status: "ok", message: `${NOTIFICATION_SKILL} 已安装，说明与发送脚本均匹配当前插件` };
+      return { key, status: "unavailable", message: `插件缺少 ${name} 的 ${packaged === null ? "SKILL.md" : "send.mjs"}，请重新安装插件；本地源码接入请重新构建并重启 DSH 宿主` };
+    const target = targetSkill(agent, name);
+    const installed = read(target);
+    const installedSender = read(join(dirname(target), "send.mjs"));
+    const installedLauncher = name === "claude-notify" ? read(join(dirname(target), "open.mjs")) : null;
+    const installedDirectory = name !== NOTIFICATION_SKILL ? read(join(dirname(target), "directory.mjs")) : null;
+    const installedStarter = name !== NOTIFICATION_SKILL ? read(join(dirname(target), "start.mjs")) : null;
+    if (name !== NOTIFICATION_SKILL && (installedStarter !== null || installed !== null || installedSender !== null || installedLauncher !== null || installedDirectory !== null)
+      && (installed?.trim() !== packaged.trim() || installedSender !== sender || installedLauncher !== launcher || installedDirectory !== directory || installedStarter !== starter)) {
+      let record: Record<string, string> = {};
+      try { record = JSON.parse(read(join(dirname(target), ".agent-relay-skill.json")) ?? "{}"); } catch { /* 交给冲突提示 */ }
+      if (!record || (installed !== null && record.skill !== digest(installed))
+        || (installedSender !== null && record.sender !== digest(installedSender))
+        || (installedLauncher !== null && record.launcher !== digest(installedLauncher))
+        || (installedDirectory !== null && record.directory !== digest(installedDirectory))
+        || (installedStarter !== null && record.starter !== digest(installedStarter)))
+        return { key, status: "conflict", message: `${name} 已存在且内容不属于本次安装管理或被修改，请人工核对；不会自动覆盖` };
+    }
+    if (installed === null) return { key, status: "missing", message: `未安装 ${name}，点击「安装 / 修复」安装到 ${dirname(target)}` };
+    if (installed.trim() !== packaged.trim()) return { key, status: "outdated", message: `${name} 与当前插件版本不一致，请点击「安装 / 修复」更新` };
+    if (installedSender !== sender)
+      return { key, status: "outdated", message: "通知发送脚本缺失或需更新，请重新安装通知 Skill" };
+    if (installedLauncher !== launcher)
+      return { key, status: "outdated", message: "可见终端启动脚本缺失或需更新，请重新安装接力 Skill" };
+    if (installedStarter !== starter)
+      return { key, status: "outdated", message: "后台启动脚本缺失或需更新，请重新安装接力 Skill" };
+    if (installedDirectory !== directory)
+      return { key, status: "outdated", message: "目录查找脚本缺失或需更新，请重新安装接力 Skill" };
+    return { key, status: "ok", message: `${name} 已安装，说明与发送脚本均匹配当前插件` };
   }
   async function sessions() {
     const online = channel.registrations();
@@ -314,21 +358,33 @@ export function createSetupService({
   }
   // 通知 Skill 直接写入 SKILL.md 与 send.mjs，与 channel 配置的写入方式一致；
   // 不再开 Agent 会话执行提示词（Claude 会产生费用）或让用户复制提示词（Codex）。
-  function fixSkill(agent: Agent, item: SetupItem): SetupItem {
-    const target = skillTarget[agent];
+  function fixSkill(agent: Agent, item: SetupItem, name = NOTIFICATION_SKILL): SetupItem {
+    const target = targetSkill(agent, name);
     const dir = dirname(target);
     const senderTarget = join(dir, "send.mjs");
-    const content = packagedSkill();
-    const sender = read(join(skillsDir, NOTIFICATION_SKILL, "send.mjs"));
-    if (content === null || sender === null)
-      return { ...skillItem(agent), action: "none" };
-    const backupPath = existsSync(target) ? backup(target) : existsSync(senderTarget) ? backup(senderTarget) : undefined;
+    const content = packagedSkill(name);
+    const sender = read(join(skillsDir, name, "send.mjs"));
+    const launcher = name === "claude-notify" ? read(join(skillsDir, name, "open.mjs")) : null;
+    const directory = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "directory.mjs")) : null;
+    const starter = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "start.mjs")) : null;
+    if (content === null || sender === null || (name === "claude-notify" && launcher === null) || (name !== NOTIFICATION_SKILL && (directory === null || starter === null)))
+      return { ...skillItem(agent, name), action: "none" };
+    const skillBackup = backup(target);
+    const senderBackup = backup(senderTarget);
+    if (launcher !== null) backup(join(dir, "open.mjs"));
+    if (directory !== null) backup(join(dir, "directory.mjs"));
+    if (starter !== null) backup(join(dir, "start.mjs"));
     write(target, content);
     write(senderTarget, sender);
-    return { ...skillItem(agent), action: item.status === "missing" ? "installed" : "updated", backup: backupPath };
+    if (launcher !== null) write(join(dir, "open.mjs"), launcher);
+    if (directory !== null) write(join(dir, "directory.mjs"), directory);
+    if (starter !== null) write(join(dir, "start.mjs"), starter);
+    if (name !== NOTIFICATION_SKILL)
+      write(join(dir, ".agent-relay-skill.json"), JSON.stringify({ skill: digest(content), sender: digest(sender), ...(launcher !== null ? { launcher: digest(launcher) } : {}), ...(directory !== null ? { directory: digest(directory) } : {}), ...(starter !== null ? { starter: digest(starter) } : {}) }) + "\n");
+    return { ...skillItem(agent, name), action: item.status === "missing" ? "installed" : "updated", backup: skillBackup ?? senderBackup };
   }
 
-  async function checkClaude(): Promise<{ report: SetupReport; blocking: boolean }> {
+  async function checkClaude(selected: string[] = []): Promise<{ report: SetupReport; blocking: boolean }> {
     const { item: claude, version } = await claudeVersion();
     const items: SetupItem[] = [claude];
     if (claude.status === "ok") items.push(await channelFlag(version));
@@ -336,18 +392,20 @@ export function createSetupService({
     const blocking = items.some((i) => i.status === "unavailable");
     // 通知凭证是纯文件检查，与 claude 命令是否可用无关，始终展示。
     items.push(notificationItem(), skillItem("claude"));
+    items.push(...selected.map(name => skillItem("claude", name)));
     if (!blocking) items.push(mcpItem(), tokenItem(), ruleItem(), includeItem(), shellItem());
     return {
       blocking,
       report: { agent: "claude", overall: "ok", version, items, sessions: await sessions(), next_steps: [] },
     };
   }
-  async function checkCodex(): Promise<{ report: SetupReport; blocking: boolean }> {
+  async function checkCodex(selected: string[] = []): Promise<{ report: SetupReport; blocking: boolean }> {
     const { item: codex, version } = await codexVersion();
     const items: SetupItem[] = [codex];
     const blocking = codex.status === "unavailable";
     // 通知 Skill 与通知凭证都是文件级检查，不依赖 codex 命令，始终展示。
     items.push(notificationItem(), skillItem("codex"));
+    items.push(...selected.map(name => skillItem("codex", name)));
     return { blocking, report: { agent: "codex", overall: "ok", version, items, next_steps: [] } };
   }
   function finish(report: SetupReport, blocking: boolean): SetupReport {
@@ -366,12 +424,13 @@ export function createSetupService({
     return report;
   }
 
-  async function check(agent: Agent): Promise<SetupReport> {
+  async function check(agent: Agent, selection?: unknown): Promise<SetupReport> {
+    const selected = optionalSkills(selection);
     if (agent === "codex") {
-      const { report, blocking } = await checkCodex();
+      const { report, blocking } = await checkCodex(selected);
       return finish(report, blocking);
     }
-    const { report, blocking } = await checkClaude();
+    const { report, blocking } = await checkClaude(selected);
     return finish(report, blocking);
   }
   async function requireReady(agent: Agent): Promise<void> {
@@ -389,7 +448,8 @@ export function createSetupService({
 
   return {
     check,
-    async install(agent: Agent): Promise<SetupReport> {
+    async install(agent: Agent, selection?: unknown): Promise<SetupReport> {
+      const selected = optionalSkills(selection);
       if (agent === "codex") {
         const { item: codex, version } = await codexVersion();
         const skill = skillItem("codex");
@@ -404,9 +464,15 @@ export function createSetupService({
         if (blocking || skill.status === "ok") items.push({ ...skill, action: blocking ? "none" as const : "skipped" as const });
         else if (skill.status === "conflict" || skill.status === "unavailable") items.push({ ...skill, action: "none" as const });
         else items.push(fixSkill("codex", skill));
+        for (const name of selected) {
+          const item = skillItem("codex", name);
+          items.push(blocking || item.status === "unavailable" || item.status === "conflict"
+            ? { ...item, action: "none" } : item.status === "ok"
+              ? { ...item, action: "skipped" } : fixSkill("codex", item, name));
+        }
         return finish({ agent, overall: "ok", version, items, next_steps: [] }, blocking);
       }
-      const { report, blocking } = await checkClaude();
+      const { report, blocking } = await checkClaude(selected);
       if (blocking) {
         // 通知凭证是纯文件操作，即使 claude 命令不可用也自动生成。
         report.items = report.items.map((i) =>
@@ -425,6 +491,7 @@ export function createSetupService({
         else if (item.key === "claude_md") fixed.push(fixInclude());
         else if (item.key === "shell") fixed.push(fixShell(item));
         else if (item.key === "skill") fixed.push(fixSkill("claude", item));
+        else if (selected.includes(item.key)) fixed.push(fixSkill("claude", item, item.key));
         else fixed.push({ ...item, action: "none" });
       }
       report.items = fixed;

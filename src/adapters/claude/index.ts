@@ -131,7 +131,7 @@ export function createClaudeAdapter(
     return all.get(sessionId) ?? { runtime: "idle", held: false, error: null };
   }
 
-  async function send(sessionId: string, text: string): Promise<SendResult> {
+  async function send(sessionId: string, text: string, visibleOnly = false): Promise<SendResult> {
     const file = await findFile(sessionId);
     if (!file) return { status: "rejected", reason: "会话不存在" };
     // 发送前扫描一次，取得文件身份与读至的字节偏移；之后轮询只读新增字节。
@@ -151,6 +151,7 @@ export function createClaudeAdapter(
       return options.channel.accept(sessionId);
     const refusal = refuse(state);
     if (refusal) return { status: "rejected", reason: refusal };
+    if (visibleOnly) return { status: "rejected", reason: "目标 Claude 未在终端中运行，请打开原会话并启用 channel；不使用后台 resume" };
     const child = run(
       [
         "-p",
@@ -361,12 +362,42 @@ export function createClaudeAdapter(
         last_reply: transcript.last_reply,
       };
     },
-    async sendMessage(sessionId, text) {
+    async messageProgress(sessionId, message_) {
+      if (!SESSION_ID.test(sessionId)) throw new AdapterError("invalid_input", "Claude 会话 ID 格式无效");
+      const file = await findFile(sessionId);
+      if (!file) return { status: "unknown", turn_id: null, reply: null, truncated: false, note: "目标会话记录不存在或不可读取" };
+      const transcript = await readTranscript(file);
+      const channel = message_.external_ref?.startsWith("channel:") === true;
+      const matches = transcript.entries.map((entry, index) => ({ entry, index })).filter(({ entry }) => {
+        if (entry.record.type !== "user") return false;
+        const content = textOf(entry.record.message?.content);
+        return channel ? content?.startsWith(`<channel source="agent-relay" msg_id="${message_.message_id}">`)
+          : entry.uuid === message_.external_ref || (!entry.record.isMeta && entry.time >= message_.created_at && content?.trim() === message_.content.trim());
+      });
+      const note = "只读会话记录；轮次结束不等于业务完成，没有回复不证明任务未执行。";
+      if (matches.length !== 1) return { status: matches.length ? "unknown" : "not_observed", turn_id: null, reply: null, truncated: false,
+        note: matches.length ? "匹配多个用户消息，无法唯一关联本次任务" : note };
+      const match = matches[0]!;
+      let last: (typeof transcript.entries)[number] | undefined;
+      let reply: string | null = null;
+      for (const entry of transcript.entries.slice(match.index + 1)) {
+        const text = textOf(entry.record.message?.content);
+        // 工具结果不是新用户任务；新的 channel 或真实用户正文终止本次范围。
+        if (entry.record.type === "user" && text && (!entry.record.isMeta || text.startsWith('<channel '))) break;
+        if (entry.record.type !== "assistant") continue;
+        last = entry;
+        if (text) reply = text;
+        if (entry.record.isApiErrorMessage || entry.record.message?.stop_reason === "end_turn") break;
+      }
+      return { status: last?.record.isApiErrorMessage ? "failed" : last?.record.message?.stop_reason === "end_turn" ? "completed" : "observed",
+        turn_id: match.entry.uuid, reply: reply?.slice(0, 16000) ?? null, truncated: (reply?.length ?? 0) > 16000, note };
+    },
+    async sendMessage(sessionId, text, sendOptions) {
       checkId(sessionId);
       if (typeof text !== "string" || !text.trim())
         throw new AdapterError("invalid_input", "消息内容不能为空");
       const previous = sending.get(sessionId) ?? Promise.resolve();
-      const current = previous.then(() => send(sessionId, text));
+      const current = previous.then(() => send(sessionId, text, sendOptions?.visibleOnly));
       const settled = current.catch(() => undefined);
       sending.set(sessionId, settled);
       void settled.then(() => {

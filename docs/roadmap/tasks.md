@@ -142,6 +142,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | T3.1 | 工具 | 会话发现/查阅/发送；relay_subscribe、relay_list、relay_pause、relay_resume、relay_stop、relay_plan、relay_check、relay_batch、relay_decide、relay_mute，分别负责关注、规划、增量、恢复、语义确认与屏蔽 |
 | T3.2 | DSH 侧 Skill | 什么时候订阅；有多个候选会话时先让用户确认；发送前复述目标会话；区分“已发送”和“已完成” |
 | T3.3 | 外部 Agent 侧通知 Skill | Claude/Codex 共用通知 Skill，用真实来源与稳定事件 request_id push，不创建关注；首次建路由，后续复用原DSH，结束后push不自动重订阅 |
+| T3.4 | 外部 Agent 双向接力 Skill | `claude-notify` / `codex-notify` 按接收方命名，已有有效会话 ID 直接转发，可按完整会话名称查询；缺少目标时先定位真实工作目录，再通过官方 CLI 后台新建，不打开额外终端；查找不到或歧义时继续询问。用户要求可见会话时保留终端/桌面路径。共用通知客户端配置与 token，经本机薄 HTTP 入口复用发送服务，不经 DSH 模型、不新建关注。稳定 request_id 在消息记录保留期间防重，支持单请求投递状态与只读进度查询；回传仅由 Agent 按明确要求调用发送 Skill |
 
 工具与 T4 的 HTTP 接口共用 T2 的服务层，不重复实现业务逻辑。
 
@@ -158,6 +159,10 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | `POST /subscriptions/:id/check` | 立即检查一次 |
 | `POST /notifications` | 外部通知入口，见 T2.6；可直接 push，也可带预注册 `subscription_id` |
 | `POST /messages`、`GET /messages` | 转发消息，查看转发记录 |
+
+T3.4 的外部 Skill 使用实际本机 HTTP 路径 `POST /api/agent-relay/messages`（`agent`、`external_session_id`、`request_id`、`content`），以及 `POST /api/agent-relay/messages/status`（`request_id`）。另有 `POST /api/agent-relay/sessions/resolve`（`agent`、`session_name`）只查候选元数据。增加 `POST /api/agent-relay/messages/progress` 按原请求查询任务回复。入口共用 `dsh-notify` 的 Bearer token，不开放订阅或 HTTP 后台创建选项；正文上限 16000 字符，响应只含回执与状态。请求记录沿用消息的 30 天清理策略；未知或查询 404 不能推断未发送。详见发布与升级说明的 T2-T3-T4-T6-T7 接力小节。
+
+T3.4 后续方向探针（2026-11-20）：用户允许缺少目标时探索后台新建，要求结果返回发起 Agent。官方 `codex exec` 与 `claude -p` 均已在专用临时目录真实新建、返回会话 ID 和完整回复；不打开终端。现已增加 start.mjs 后台新建和本地状态/结果查询；用户要求回传时由执行 Agent 调用发送 Skill。启动器不自动回传或恢复执行，详见 T7.6 验证文档。
 
 路径只是示意，实际形式以 T0.5 确认的前后端通信方式为准。
 
@@ -178,7 +183,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | T6.2 | 新建订阅 | Agent、已有外部会话、可选接收DSH、可选关注主题、失败阈值默认3。取消所有时间输入，说明固定24h与频率由用户要求/DSH决定；冲突明确停止重新来或继续；重订阅默认复用原DSH，但接收会话已归档时须拒绝并提示恢复或另选，候选列表排除归档会话 |
 | T6.3 | 通知会话分组 | 在 DSH 会话列表里，把由 Relay 新建的通知会话归到一个分组；用户指定的已有会话保留原工作目录与分组，避免改变其后续执行环境。复用 T0.4/T0.5 确认的 workspace 机制。 |
 | T6.4 | 能力提示 | 按实时Adapter能力提示；Codex依当前连接/会话send_allowed决定，不将桌面聊天一律只读 |
-| T6.6 | 前置安装接入 | 两个Agent直接安装通知Skill并自检；Claude另配置channel/MCP/规则/shell及连通测试。修改前备份，冲突不自动覆盖，不开模型会话安装 |
+| T6.6 | 前置安装接入 | 两个Agent直接安装通知Skill并自检，可独立勾选 `claude-notify`、`codex-notify`（默认不选，不选不卸载、不阻塞基础就绪）；Claude另配置channel/MCP/规则/shell及连通测试。修改前备份，冲突不自动覆盖，不开模型会话安装 |
 
 会话内的对话、回复和后续处理都用 DSH 原生能力，插件不另做聊天界面。
 
@@ -200,6 +205,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | T7.3a | 用户消息提醒：外部 Agent 通知写入 DSH 会话后，已授权且保持打开的 DSH 浏览器前端显示消息通知；核验首条新通知、历史不补弹、重复请求和刷新防重、权限拒绝/不支持、断网恢复。步骤与判定见 `docs/superpowers/plans/T7.3a-external-notification-acceptance.md`；当前待真实浏览器验收 |
 | T7.4 | 转发：依Adapter能力核验拒绝或排队；Codex已有会话queue/add与专用turn/start分开验收；显式发送后关注复用路由，由DSH按主题规划/确认。Claude 终端持有的会话：空闲时经 channel 送达并收到 ack；忙碌时保持 `queued`，空闲后送达；未启用 channel 时被拒绝并提示重新进入；ack 超时记 `unknown` 不重发；重复安装返回自检结果 |
 | T7.5 | 异常：检查失败、外部会话不存在、投递失败重试、DSH 重启后订阅和定时任务恢复、检查重叠 |
+| T7.6 | 跨 Agent 接力：前置安装选择接力 Skill，在专用 Codex / Claude 会话发送并按明确授权回传；确认不新建 DSH 接收会话/关注、忙时排队、未知不重发、共享凭证轮换。314 项单测、安装包冒烟、两端可见/后台新建及只读结果查询已通过；真实 DSH 宿主升级、Claude Skill → Codex 投递、防重和进度查询已通过。后台 Claude 自主回传因 Bash 审批被拒绝，结果可回查，闭环未通过；未放宽权限。详见 `docs/research/T3.4-T6.6-T7.6-visible-handoff-validation.md` |
 
 ## 依赖与顺序
 
