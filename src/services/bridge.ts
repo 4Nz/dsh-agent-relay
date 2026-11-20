@@ -33,7 +33,11 @@ export function createBridgeService({
   store: RelayStore;
   adapters: AdapterRegistry;
   scheduler: Scheduler;
-  transport: DeliveryTransport & { idle(session: string): Promise<boolean> };
+  transport: DeliveryTransport & {
+    idle(session: string): Promise<boolean>;
+    // 仅来自宿主归档注册表；不能由 idle=false 或查询异常推断。
+    archived?(session: string): boolean;
+  };
   createSession: (context: {
     agent: Agent;
     externalSessionId: string;
@@ -245,7 +249,7 @@ export function createBridgeService({
     };
   }
   async function drainRun() {
-    for (const b of db.routes()) {
+    for (let b of db.routes()) {
       if (!b.dsh_session_id) continue;
       let batch = db.open(b.id);
       if (batch?.state === "unknown") {
@@ -265,8 +269,53 @@ export function createBridgeService({
         );
         batch = db.batch(batch.id);
       }
+      const standalonePush =
+        !db.live(b) && !b.muted && db.pending(b.id).some(
+          (event) => event.kind === "push" && event.batch_id === null,
+        );
+      // 新通知不能无限等待已结束关注的旧确认。保留原批次和事件，转人工核对，
+      // 不伪造 processed、不重放旧内容，也不改变 unknown 的先核对规则。
+      if (standalonePush && batch?.state === "delivered") {
+        if (!db.state(
+          batch.id, "needs_attention", now(),
+          "当前无活跃关注；旧批次已送达但未确认处理，保留待人工核对以允许新通知投递",
+          "delivered",
+        )) continue;
+        if (batch.recovery_schedule_id && batch.dsh_session_id) {
+          try {
+            await scheduler.delete({id: batch.recovery_schedule_id, sessionId: batch.dsh_session_id});
+          } catch { /* 对账继续清理旧恢复提醒。 */ }
+        }
+        batch = null;
+      }
       if (batch && !["pending", "exhausted"].includes(batch.state)) continue;
+      // 仅未绑定批次的新 push 可换接收者；已有批次始终保留原投递目标。
+      if (standalonePush && !batch && b.dsh_session_id && transport.archived) {
+        const previousSession = b.dsh_session_id;
+        try {
+          if (transport.archived(previousSession)) {
+            const replacement = await createSession({
+              agent: b.agent,
+              externalSessionId: b.external_session_id,
+              externalSessionTitle: null,
+              type: "push",
+            });
+            const latest = db.routeById(b.id);
+            // 创建期间可能显式重绑、重新关注、屏蔽或解除归档，不覆盖新的选择。
+            if (
+              !latest || latest.dsh_session_id !== previousSession || latest.muted ||
+              db.live(latest) || !transport.archived(previousSession)
+            ) continue;
+            db.bind(b.id, replacement);
+            b = db.routeById(b.id)!;
+          }
+        } catch {
+          // 查询或创建失败时保留事件，下轮重试，不推断归档。
+          continue;
+        }
+      }
       if (batch?.retry_at && batch.retry_at > now()) continue;
+      if (!b.dsh_session_id) continue;
       if (
         !(await transport
           .idle(batch?.dsh_session_id ?? b.dsh_session_id)
@@ -661,7 +710,7 @@ export function createBridgeService({
           accepted: true,
           duplicate: !created,
           subscription_id: sub?.id ?? null,
-          dsh_session_id: b.dsh_session_id,
+          dsh_session_id: db.routeById(b.id)?.dsh_session_id ?? b.dsh_session_id,
         };
       });
     },

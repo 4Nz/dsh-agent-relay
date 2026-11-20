@@ -102,12 +102,14 @@ test("归档接收会话即使 idle 也不唤醒，解除归档后正常投递",
     sessions: { flush: async () => true },
   });
   const n = { delivery_key: "plan", bridge_context: true, summary: "规划频率" };
+  assert.equal(transport.archived("s"), true);
   assert.equal(await transport.idle("s"), false);
   const result = await transport.deliver("s", n);
   assert.equal(result.status, "failed");
   assert.match(result.error, /已归档/);
   assert.equal(messages.length, 0);
   registry.archivedSessionIds = [];
+  assert.equal(transport.archived("s"), false);
   assert.equal(await transport.idle("s"), true);
   assert.equal((await transport.deliver("s", n)).status, "delivered");
   assert.equal(messages.length, 1);

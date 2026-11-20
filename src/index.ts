@@ -130,7 +130,7 @@ export function apply(ctx: Context): void {
   const checks = createCheckService({ store, adapters, scheduler });
   const notifications = createNotificationService({
     store,
-    transport: createDshDelivery(host),
+    transport: createDshDelivery(host, store.unread),
   });
   const skillInstall = createSkillInstallService({ adapters });
   const setup = createSetupService({
@@ -154,7 +154,7 @@ export function apply(ctx: Context): void {
     store,
     adapters,
     scheduler,
-    transport: createDshDelivery(host),
+    transport: createDshDelivery(host, store.unread),
     createSession: createReceiveSession,
   });
   const combinedNotifications = {
@@ -176,6 +176,7 @@ export function apply(ctx: Context): void {
     createDshSession: createReceiveSession,
     listDshSessions: () => dshSessions.list(),
     hasDshSession: (id) => dshSessions.has(id),
+    dshSessionStatus: (id) => dshSessions.status(id),
     onQueued: () => channel.tick(),
     setup,
   });

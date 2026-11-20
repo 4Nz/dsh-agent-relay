@@ -35,7 +35,17 @@ export async function sendNotification(input, { env = process.env, home } = {}) 
     ...(input.subscription_id ? {subscription_id:input.subscription_id} : {}), ...(input.external_ref ? {external_ref:input.external_ref} : {}) };
   let response;
   try { response = await fetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000), redirect: 'error' }); }
-  catch { throw new Error('通知连接失败或结果未知；确认 DSH 已启动，重试必须复用原 request_id'); }
+  catch (error) {
+    // fetch 会把系统错误放在 cause 中。只输出白名单诊断，不能打印原始错误或请求头。
+    const code = error?.cause?.code ?? error?.code;
+    if (code === 'EPERM' || code === 'EACCES')
+      throw new Error(`本机通知连接被权限或沙箱策略阻止（${code}）；不能据此判断 DSH 未启动。请通过执行工具申请本机回环网络访问权限，获准后使用原 request_id 和原摘要重试；不要在同一受限环境中反复重试`);
+    if (code === 'ECONNREFUSED')
+      throw new Error('本机通知连接被拒绝（ECONNREFUSED）；请核对 DSH 通知服务是否监听配置中的地址和端口，恢复后使用原 request_id 重试');
+    if (error?.name === 'TimeoutError' || ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(code))
+      throw new Error('通知请求超时，结果未知；先核对接收记录，重试必须复用原 request_id 和原摘要');
+    throw new Error('通知连接中断或结果未知；请核对网络权限及 DSH 通知服务，重试必须复用原 request_id 和原摘要');
+  }
   if (response.status === 401) throw new Error('通知凭证已失效，请核对 DSH_HOME 或重新生成凭证后使用原 request_id 重试');
   if (response.status !== 202) throw new Error(`通知未被接收（HTTP ${response.status}），请检查 DSH 前置安装与通知设置`);
   let result;

@@ -1,6 +1,7 @@
-import { createElement as h, useEffect, useState, useRef } from "react";
+import { createElement as h, useEffect, useState, useRef, useSyncExternalStore } from "react";
+import { createUnreadController, type UnreadController, type UnreadHost } from "./client/unread.js";
 
-export const inject = ["slots", "connection", "uiWorkspace"];
+export const inject = ["slots", "connection", "uiWorkspace", "sessions", "layout"];
 const PANEL_ID = "agent-relay";
 const labels: Record<string, string> = {
   active: "关注中",
@@ -262,6 +263,24 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     if (!response.ok) throw Object.assign(Error(response.error?.message ?? "操作失败"), response.error);
     return response.value;
   }
+  async function openReceiver(id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await call("dsh_session_status", { dsh_session_id: id });
+      if (result?.status === "archived")
+        throw new Error("该 DSH 接收会话已归档，请先在 DSH 中恢复该会话，再打开。历史接收目标保持不变。");
+      if (result?.status === "missing")
+        throw new Error("该 DSH 接收会话不存在或已删除，无法打开。不会自动新建会话或跳转到其他接收会话。");
+      if (result?.status !== "available" || result.id !== id)
+        throw new Error("无法确认 DSH 接收会话状态，请刷新页面后重试。");
+      openSession(id);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function refresh() {
     const version = ++revision.current;
     setLoading(true);
@@ -481,7 +500,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       else if (sub.muted) await call("mute", { agent: sub.agent, external_session_id: sub.external_session_id, muted: false });
       setNotice("已继续原关注；保留原主题、接收会话与截止时间。");
       setRefreshVersion((v) => v + 1); close();
-      if (sub.dsh_session_id) openSession(sub.dsh_session_id);
+      if (sub.dsh_session_id) await openReceiver(sub.dsh_session_id);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -655,16 +674,10 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           "button",
           {
             disabled: busy,
-            title: "打开接收本次通知的 DSH 会话",
-            onClick: () => {
-              try {
-                openSession(sub.dsh_session_id);
-              } catch (e) {
-                setError((e as Error).message);
-              }
-            },
+            title: "打开这条订阅原来绑定的 DSH 接收会话",
+            onClick: () => openReceiver(sub.dsh_session_id),
           },
-          "打开会话",
+          "打开 DSH 接收会话",
         ),
       !compact && sub.status === "active" &&
         sub.type === "poll" &&
@@ -925,7 +938,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           ...(recoveredBatch.events ?? []).map((event: any) => h("p", { key: event.id, style: { whiteSpace: "pre-wrap" } }, event.body)),
           h("p", { className: "muted small" }, "打开原接收会话，由 DSH 使用 relay_batch 读取，再以原 batch_id 与 decision_version 调用 relay_decide。屏蔽中的批次请先解除屏蔽；待核对状态不能视为已处理。")));
   const routeControls=(route:any)=>h("div",{className:"row"},
-    route.dsh_session_id&&h("button",{onClick:()=>openSession(route.dsh_session_id)},"打开原会话"),
+    route.dsh_session_id&&h("button",{disabled:busy,onClick:()=>openReceiver(route.dsh_session_id)},"打开 DSH 接收会话"),
     h("button",{disabled:busy,onClick:()=>void muteRoute(route)},route.muted?"恢复接收 Agent 消息":"暂停接收 Agent 消息"),
     !route.subscription&&h("button",{disabled:busy,onClick:()=>void resubscribe({...route,topic:"定期汇报新的进展或回复",max_consecutive_failures:3})},"开始关注"));
   const routeDrawer=(route:any)=>h(Drawer,{title:"会话路由",onClose:close},
@@ -1020,20 +1033,6 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       h(
         "footer",
         null,
-        sub.dsh_session_id &&
-          h(
-            "button",
-            {
-              onClick: () => {
-                try {
-                  openSession(sub.dsh_session_id);
-                } catch (e) {
-                  setError((e as Error).message);
-                }
-              },
-            },
-            "打开接收会话",
-          ),
         controls(sub),
       ),
     );
@@ -1496,6 +1495,24 @@ function AgentRelayIcon({ rpc,openSession }: { rpc: Rpc;openSession?:(id:string)
     ),
   );
 }
+function UnreadWatcher({ unread }: { unread: UnreadController }) {
+  useEffect(() => unread.start(), [unread]);
+  return null;
+}
+
+function RelayUnreadDot({ sessionId, unread }: { sessionId: string; unread: UnreadController }) {
+  const receipts = useSyncExternalStore(unread.subscribe, unread.getSnapshot);
+  if (!receipts.has(sessionId)) return null;
+  return h("span", { role: "img", "aria-label": "外部消息未读", title: "外部消息未读",
+    "data-dsh-part": "relay-unread",
+    style: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", backgroundColor: "#3b82f6" } });
+}
+
+function RelayUnreadHover({ sessionId, unread }: { sessionId: string; unread: UnreadController }) {
+  const receipts = useSyncExternalStore(unread.subscribe, unread.getSnapshot);
+  return receipts.has(sessionId) ? h("span", null, "有未读的外部 Agent 消息") : null;
+}
+
 interface RelayClientContext {
   slots: {
     inject(name: string, callback: () => () => void): () => void;
@@ -1503,8 +1520,36 @@ interface RelayClientContext {
   };
   connection: { rpc: Rpc };
   uiWorkspace: { openSession(id: string): void };
+  sessions: UnreadHost["sessions"];
+  layout: UnreadHost["layout"];
 }
 export function apply(ctx: RelayClientContext): void {
+  const unread = createUnreadController(ctx.connection.rpc, {
+    sessions: ctx.sessions,
+    layout: ctx.layout,
+    visible: () => document.visibilityState === "visible" && document.hasFocus(),
+    onVisibilityChange(listener) {
+      document.addEventListener("visibilitychange", listener);
+      window.addEventListener("focus", listener);
+      return () => {
+        document.removeEventListener("visibilitychange", listener);
+        window.removeEventListener("focus", listener);
+      };
+    },
+    every(listener) {
+      const timer = setInterval(listener, 5_000);
+      return () => clearInterval(timer);
+    },
+  });
+  for (const [name, component] of [
+    ["shell.overlay", UnreadWatcher],
+    ["sidebar.session.row.leading", RelayUnreadDot],
+    ["sidebar.session.row.hover", RelayUnreadHover],
+  ] as const) {
+    ctx.slots.inject(name, () => ctx.slots.register({
+      name, id: "agent-relay.unread", order: 10, inject: () => ({ unread }),
+    }, component));
+  }
   ctx.slots.inject("main", () =>
     ctx.slots.inject("sidebar.panellist", () => {
       const stopMain = ctx.slots.register(

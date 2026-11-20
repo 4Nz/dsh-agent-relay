@@ -35,7 +35,8 @@ export interface DshDeliveryContext {
 }
 export function createDshDelivery(
   ctx: DshDeliveryContext,
-): DeliveryTransport & { idle(session: string): Promise<boolean> } {
+  unread?: { record(sessionId: string, deliveryKey: string): void },
+): DeliveryTransport & { idle(session: string): Promise<boolean>; archived(session: string): boolean } {
   const archived = (id: string) => ctx.workspaceRegistry?.archivedSessionIds.includes(id) ?? false;
   async function contains(sessionId: string, key: string) {
     const log = await ctx.sessionQuery.readSession(sessionId);
@@ -54,14 +55,15 @@ export function createDshDelivery(
       if ("error" in resolved) return "unknown" as const;
       if (!(await contains(sessionId, notification.delivery_key)))
         return "not_delivered" as const;
-      return (await ctx.sessions.flush(resolved.agent.session))
-        ? ("delivered" as const)
-        : ("unknown" as const);
+      if (!(await ctx.sessions.flush(resolved.agent.session))) return "unknown" as const;
+      unread?.record(sessionId, notification.delivery_key);
+      return "delivered" as const;
     } catch {
       return "unknown" as const;
     }
   }
   return {
+    archived,
     async idle(sessionId) {
       if (archived(sessionId)) return false;
       const resolved = await ctx.sessionController.resolveAgent(sessionId);
@@ -104,9 +106,10 @@ export function createDshDelivery(
           return { status: "failed", error: "接收会话忙碌，稍后重试" };
         attempted = true;
         resolved.agent.followup(message);
-        return (await ctx.sessions.flush(resolved.agent.session))
-          ? { status: "delivered" }
-          : { status: "unknown", error: "通知已入队，但持久化未确认" };
+        if (!(await ctx.sessions.flush(resolved.agent.session)))
+          return { status: "unknown", error: "通知已入队，但持久化未确认" };
+        unread?.record(sessionId, notification.delivery_key);
+        return { status: "delivered" };
       } catch {
         return {
           status: attempted ? "unknown" : "failed",
