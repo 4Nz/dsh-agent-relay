@@ -159,6 +159,8 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 
 T3.4 的外部 Skill 使用实际本机 HTTP 路径 `POST /api/agent-relay/messages`（`agent`、`external_session_id`、`request_id`、`content`），以及 `POST /api/agent-relay/messages/status`（`request_id`）。另有 `POST /api/agent-relay/sessions/resolve`（`agent`、`session_name`）只查候选元数据。三个入口共用 `dsh-notify` 的 Bearer token，不开放订阅或后台创建选项；正文上限 16000 字符，响应只含回执与状态。请求记录沿用消息的 30 天清理策略；未知或查询 404 不能推断未发送。详见发布与升级说明的 T2-T3-T4-T6-T7 接力小节。
 
+T3.4 后续方向探针（2026-11-20）：用户允许缺少目标时探索后台新建，要求结果返回发起 Agent。官方 `codex exec` 与 `claude -p` 均已在专用临时目录真实新建、返回会话 ID 和完整回复；不打开终端。当前 Skill 行为未切换，异步结果回传和恢复仍待实现验收，详见 T7.6 验证文档的后台探针小节。
+
 路径只是示意，实际形式以 T0.5 确认的前后端通信方式为准。
 
 ## T5 Agent 接入
