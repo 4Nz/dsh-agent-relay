@@ -16,7 +16,8 @@ function fixture(t, options = {}) {
     busy = false,
     reads = 0,
     nextTask = 0;
-  const wakeups = [],
+  const createdSessions = [],
+    wakeups = [],
     tasks = new Map();
   let events = [];
   let deliverHook, confirmHook;
@@ -45,9 +46,13 @@ function fixture(t, options = {}) {
       create: async (x) => {
         const id = String(++nextTask);
         tasks.set(id, x);
+        options.afterSchedule?.();
         return id;
       },
-      delete: async ({ id }) => tasks.delete(id),
+      delete: async ({ id }) => {
+        if (options.beforeDelete) await options.beforeDelete(id);
+        return tasks.delete(id);
+      },
       catalog: async () =>
         [...tasks].map(([id, x]) => ({
           id,
@@ -57,7 +62,8 @@ function fixture(t, options = {}) {
         })),
     },
     transport: {
-      idle: async () => !busy,
+      idle: options.idle ?? (async () => !busy),
+      archived: options.archived,
       deliver: async (s, n) => {
         wakeups.push(n);
         if (deliverHook) return deliverHook(s, n);
@@ -66,7 +72,10 @@ function fixture(t, options = {}) {
       confirm: async (...args) =>
         confirmHook ? confirmHook(...args) : confirmation,
     },
-    createSession: async () => "dsh",
+    createSession: async (context) => {
+      createdSessions.push(context);
+      return options.createSession ? options.createSession(context) : "dsh";
+    },
     now: () => time,
   });
   return {
@@ -74,6 +83,7 @@ function fixture(t, options = {}) {
     adapter,
     bridge,
     wakeups,
+    createdSessions,
     tasks,
     setDeliverHook: (fn) => (deliverHook = fn),
     setConfirmHook: (fn) => (confirmHook = fn),
@@ -1086,4 +1096,267 @@ test("增量无事件仍观察标题；失败和关闭不触发标题同步", as
   f.adapter.incremental = async () => ({ title: "关闭", events: [], cursor: null, has_more: false, closed: true });
   assert.equal((await f.bridge.check(s.id)).status, "closed");
   assert.equal(observed.length, 1);
+});
+
+
+const directNotice = (id) => ({agent: "claude", external_session_id: "external", request_id: id, summary: "专用通知测试", result: "completed"});
+
+test("结束关注后的旧送达批次转待人工，新push可投递且不伪造处理确认", async t => {
+  const f = fixture(t);
+  const sub = (await f.bridge.subscribe({...input, check_interval_seconds: undefined})).subscription;
+  const route = f.store.bridge.route("claude", "external");
+  const old = f.store.bridge.open(route.id);
+  f.setTime(301001);
+  await f.bridge.reconcile();
+  assert.equal(f.tasks.size, 1);
+  await f.bridge.stop(sub.id);
+  await f.bridge.push(directNotice("after-stop"));
+  assert.equal(f.wakeups.length, 2);
+  assert.equal(f.store.bridge.batch(old.id).state, "needs_attention");
+  assert.ok(f.store.bridge.events(old.id).every(e => e.processed_at === null));
+  const fresh = f.store.bridge.open(route.id);
+  assert.equal(fresh.state, "delivered");
+  assert.equal(fresh.subscription_id, null);
+  assert.equal(f.store.bridge.event("push:after-stop").processed_at, null);
+  assert.equal(f.tasks.size, 0);
+  await f.bridge.decide({batch_id: fresh.id, decision_version: fresh.version, decision: "end"});
+  assert.equal(f.store.bridge.event("push:after-stop").processed_at, 301001);
+  assert.equal(f.store.subscriptions.get(sub.id).status, "ended");
+});
+
+test("明确归档且无关注时只为待投递push建立一个接收会话，重复请求复用", async t => {
+  const archived = new Set(["dsh"]);
+  const targets = [];
+  const f = fixture(t, {archived: id => archived.has(id), createSession: async () => "replacement"});
+  const sub = (await f.bridge.subscribe(input)).subscription;
+  await f.bridge.stop(sub.id);
+  f.setDeliverHook(async id => { targets.push(id); return {status: "delivered"}; });
+  const first = await f.bridge.push(directNotice("archived"));
+  assert.equal(first.dsh_session_id, "replacement");
+  assert.deepEqual(targets, ["replacement"]);
+  assert.equal(f.createdSessions.length, 1);
+  const event = f.store.bridge.event("push:archived");
+  assert.equal(event.processed_at, null);
+  const duplicate = await f.bridge.push(directNotice("archived"));
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.dsh_session_id, "replacement");
+  assert.equal(f.createdSessions.length, 1);
+  assert.deepEqual(targets, ["replacement"]);
+  assert.equal(f.store.bridge.event("push:archived").batch_id, event.batch_id);
+});
+
+for (const mode of ["busy", "query-error", "archive-error"]) test(`直接通知${mode}保持原路由等待，不创建新会话`, async t => {
+  const f = fixture(t, {
+    archived: () => { if (mode === "archive-error") throw Error("查询失败"); return false; },
+    idle: async () => { if (mode === "query-error") throw Error("查询失败"); return false; },
+  });
+  const sub = (await f.bridge.subscribe(input)).subscription;
+  await f.bridge.stop(sub.id);
+  await f.bridge.push(directNotice(mode));
+  await f.bridge.push(directNotice(mode));
+  assert.equal(f.createdSessions.length, 0);
+  assert.equal(f.wakeups.length, 0);
+  assert.equal(f.store.bridge.route("claude", "external").dsh_session_id, "dsh");
+  assert.equal(f.store.bridge.event(`push:${mode}`).processed_at, null);
+});
+
+test("投递未知阻止归档重绑和新消息投递，保留原批次核对", async t => {
+  let archived = false;
+  const f = fixture(t, {archived: () => archived});
+  f.setDelivery("unknown"); f.setConfirmation("unknown");
+  await f.bridge.push(directNotice("unknown-old"));
+  const route = f.store.bridge.route("claude", "external");
+  const old = f.store.bridge.open(route.id);
+  archived = true;
+  await f.bridge.push(directNotice("unknown-new"));
+  assert.equal(f.createdSessions.length, 1);
+  assert.equal(f.wakeups.length, 1);
+  assert.equal(f.store.bridge.open(route.id).id, old.id);
+  assert.equal(f.store.bridge.batch(old.id).state, "unknown");
+  assert.equal(f.store.bridge.event("push:unknown-new").batch_id, null);
+});
+
+for (const condition of ["active", "paused", "muted"]) test(`归档但${condition}不自动换接收会话`, async t => {
+  const f = fixture(t, {archived: () => true, idle: async () => false});
+  const sub = (await f.bridge.subscribe(input)).subscription;
+  if (condition === "paused") await f.bridge.pause(sub.id);
+  if (condition === "muted") { await f.bridge.stop(sub.id); await f.bridge.mute("claude", "external", true); }
+  await f.bridge.push(directNotice(condition));
+  assert.equal(f.createdSessions.length, 0);
+  assert.equal(f.wakeups.length, 0);
+  assert.equal(f.store.bridge.route("claude", "external").dsh_session_id, "dsh");
+});
+
+
+test("维护直接恢复已落库积压push，旧规划保持原目标和未处理事实", async t => {
+  let archived = false;
+  const targets = [];
+  const f = fixture(t, {archived: id => archived && id === "dsh", createSession: async () => "replacement"});
+  const sub = (await f.bridge.subscribe({...input, check_interval_seconds: undefined})).subscription;
+  const route = f.store.bridge.route("claude", "external");
+  const old = f.store.bridge.open(route.id);
+  await f.bridge.stop(sub.id);
+  archived = true;
+  f.store.bridge.append(route, {id: "push:persisted", kind: "push", body: "专用积压测试"}, 1000);
+  f.setDeliverHook(async id => { targets.push(id); return {status: "delivered"}; });
+  await f.bridge.drain();
+  await f.bridge.drain();
+  assert.deepEqual(targets, ["replacement"]);
+  assert.equal(f.createdSessions.length, 1);
+  assert.equal(f.store.bridge.batch(old.id).state, "needs_attention");
+  assert.equal(f.store.bridge.batch(old.id).dsh_session_id, "dsh");
+  assert.ok(f.store.bridge.events(old.id).every(e => e.processed_at === null));
+  const fresh = f.store.bridge.open(route.id);
+  assert.equal(fresh.dsh_session_id, "replacement");
+  assert.deepEqual(f.store.bridge.events(fresh.id).map(e => e.id), ["push:persisted"]);
+  assert.equal(f.store.bridge.event("push:persisted").processed_at, null);
+  assert.equal(f.reads, 0);
+});
+
+test("新的独立push不被旧未确认push阻塞，迟到确认只处理旧批次", async t => {
+  const f = fixture(t);
+  await f.bridge.push(directNotice("first-notice"));
+  const route = f.store.bridge.route("claude", "external");
+  const old = f.store.bridge.open(route.id);
+  await f.bridge.push(directNotice("second-notice"));
+  const fresh = f.store.bridge.open(route.id);
+  assert.notEqual(fresh.id, old.id);
+  assert.equal(f.wakeups.length, 2);
+  assert.equal(f.store.bridge.batch(old.id).state, "needs_attention");
+  assert.equal(f.store.bridge.event("push:first-notice").processed_at, null);
+  await f.bridge.decide({batch_id: old.id, decision_version: old.version, decision: "end"});
+  assert.equal(f.store.bridge.event("push:first-notice").processed_at, 1000);
+  assert.equal(f.store.bridge.event("push:second-notice").processed_at, null);
+  assert.equal(f.store.bridge.open(route.id).id, fresh.id);
+});
+
+test("新接收会话繁忙时复用已创建目标，空闲后合批投递", async t => {
+  let idle = false;
+  const f = fixture(t, {
+    archived: id => id === "dsh", idle: async () => idle,
+    createSession: async () => "replacement",
+  });
+  const sub = (await f.bridge.subscribe(input)).subscription;
+  await f.bridge.stop(sub.id);
+  await f.bridge.push(directNotice("busy-new-1"));
+  await f.bridge.push(directNotice("busy-new-2"));
+  await f.bridge.drain();
+  assert.equal(f.createdSessions.length, 1);
+  assert.equal(f.wakeups.length, 0);
+  idle = true;
+  await f.bridge.drain();
+  assert.equal(f.wakeups.length, 1);
+  const route = f.store.bridge.route("claude", "external");
+  assert.equal(f.store.bridge.events(f.store.bridge.open(route.id).id).length, 2);
+});
+
+test("创建接收会话失败保留事件和路由，维护可重试", async t => {
+  let failing = true;
+  const f = fixture(t, {
+    archived: id => id === "dsh",
+    createSession: async () => { if (failing) throw Error("创建失败"); return "replacement"; },
+  });
+  const sub = (await f.bridge.subscribe(input)).subscription;
+  await f.bridge.stop(sub.id);
+  const result = await f.bridge.push(directNotice("create-failure"));
+  assert.equal(result.dsh_session_id, "dsh");
+  assert.equal(f.store.bridge.event("push:create-failure").batch_id, null);
+  assert.equal(f.wakeups.length, 0);
+  failing = false;
+  await f.bridge.drain();
+  assert.equal(f.wakeups.length, 1);
+  assert.equal(f.store.bridge.route("claude", "external").dsh_session_id, "replacement");
+});
+
+for (const change of ["rebind", "unarchive", "mute", "subscribe"]) test(`创建接收会话期间${change}不覆盖用户新选择`, async t => {
+  let archived = true, release, entered, scheduled;
+  const started = new Promise(resolve => { entered = resolve; });
+  const creating = new Promise(resolve => { release = resolve; });
+  const f = fixture(t, {
+    archived: id => archived && id === "dsh",
+    createSession: async () => { entered(); return creating; },
+    afterSchedule: () => scheduled?.(),
+  });
+  const sub = (await f.bridge.subscribe(input)).subscription;
+  await f.bridge.stop(sub.id);
+  const route = f.store.bridge.route("claude", "external");
+  f.store.bridge.append(route, {id: `push:race-${change}`, kind: "push", body: "专用并发测试"}, 1000);
+  const draining = f.bridge.drain();
+  await started;
+  let subscribing;
+  if (change === "rebind") f.store.bridge.bind(route.id, "chosen");
+  if (change === "unarchive") archived = false;
+  if (change === "mute") await f.bridge.mute("claude", "external", true);
+  if (change === "subscribe") {
+    // subscribe 末尾等待同一个 drain；在存储建立关注后再允许创建结束。
+    const ready = new Promise(resolve => { scheduled = resolve; });
+    subscribing = f.bridge.subscribe(input);
+    await ready;
+    assert.ok(f.store.bridge.live(route));
+  }
+  release("replacement");
+  await draining;
+  if (subscribing) await subscribing;
+  assert.equal(f.store.bridge.route("claude", "external").dsh_session_id, change === "rebind" ? "chosen" : "dsh");
+  assert.equal(f.wakeups.length, 0);
+  assert.equal(f.store.bridge.event(`push:race-${change}`).batch_id, null);
+});
+
+test("旧恢复提醒删除失败由后续对账清理，不阻塞新push", async t => {
+  let failing = false;
+  const f = fixture(t, {beforeDelete: async () => { if (failing) throw Error("暂时失败"); }});
+  const sub = (await f.bridge.subscribe({...input, check_interval_seconds: undefined})).subscription;
+  f.setTime(301001);
+  await f.bridge.reconcile();
+  assert.equal(f.tasks.size, 1);
+  await f.bridge.stop(sub.id);
+  failing = true;
+  await f.bridge.push(directNotice("cleanup"));
+  assert.equal(f.wakeups.length, 2);
+  assert.equal(f.tasks.size, 1);
+  failing = false;
+  await f.bridge.reconcile();
+  assert.equal(f.tasks.size, 0);
+});
+
+
+test("unknown确认已送达后只释放旧批次，不重放旧事件", async t => {
+  let archived = false;
+  const f = fixture(t, {
+    archived: id => archived && id === "dsh",
+    createSession: async () => archived ? "replacement" : "dsh",
+  });
+  f.setDelivery("unknown"); f.setConfirmation("unknown");
+  await f.bridge.push(directNotice("confirmed-old"));
+  const route = f.store.bridge.route("claude", "external");
+  const old = f.store.bridge.open(route.id);
+  archived = true;
+  await f.bridge.push(directNotice("confirmed-new"));
+  f.setConfirmation("delivered"); f.setDelivery("delivered");
+  await f.bridge.drain();
+  assert.equal(f.wakeups.length, 2);
+  assert.equal(f.store.bridge.batch(old.id).state, "needs_attention");
+  assert.equal(f.store.bridge.batch(old.id).dsh_session_id, "dsh");
+  assert.equal(f.store.bridge.event("push:confirmed-old").processed_at, null);
+  const fresh = f.store.bridge.open(route.id);
+  assert.equal(fresh.dsh_session_id, "replacement");
+  assert.deepEqual(f.store.bridge.events(fresh.id).map(e => e.id), ["push:confirmed-new"]);
+});
+
+test("pending批次已绑定原接收者，即使归档也不自动迁移或重放", async t => {
+  let archived = false;
+  const f = fixture(t, {archived: () => archived, idle: async () => !archived});
+  f.setDelivery("failed");
+  await f.bridge.push(directNotice("pending-old"));
+  const route = f.store.bridge.route("claude", "external");
+  const old = f.store.bridge.open(route.id);
+  archived = true;
+  f.setTime(61001);
+  await f.bridge.push(directNotice("pending-new"));
+  await f.bridge.drain();
+  assert.equal(f.createdSessions.length, 1);
+  assert.equal(f.wakeups.length, 1);
+  assert.equal(f.store.bridge.open(route.id).id, old.id);
+  assert.equal(f.store.bridge.batch(old.id).state, "pending");
+  assert.equal(f.store.bridge.event("push:pending-new").batch_id, null);
 });
