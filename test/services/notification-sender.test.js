@@ -96,3 +96,32 @@ for (const [code, expected] of [
  });
  assert.equal(attempts,1);
 });
+
+
+test('CLI 定向发送传入名称和 ID，使用专用路径并展示重名候选', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'relay-target-cli-'));
+  t.after(() => rmSync(dir, {recursive: true, force: true}));
+  const received = [];
+  const server = createServer(async (req, res) => {
+    let data = ''; for await (const chunk of req) data += chunk;
+    received.push({url: req.url, body: JSON.parse(data)});
+    res.writeHead(409, {'Content-Type': 'application/json'});
+    res.end(JSON.stringify({error: {code: 'target_ambiguous', message: '存在重名 DSH 会话，请确认后使用会话 ID 发送', candidates: [{id: 'dsh-1', title: '测试会话'}, {id: 'dsh-2', title: '测试会话'}]}}));
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => server.close(r)));
+  const path = join(dir, 'config.json');
+  const credentials = createNotificationCredentialService({file: path, endpoint: `http://127.0.0.1:${server.address().port}/api/agent-relay/notifications`});
+  const token = credentials.ensure().token;
+  await assert.rejects(promisify(execFile)(process.execPath, [fileURLToPath(new URL('../../skills/dsh-notify/send.mjs', import.meta.url)),
+    '--agent', 'codex', '--external-session-id', 'test-source', '--request-id', 'test-request', '--summary', '测试消息', '--dsh-session-name', '测试会话'],
+    {env: {...process.env, DSH_AGENT_RELAY_CONFIG: path}}), error => {
+      assert.match(error.stderr, /dsh-1/); assert.match(error.stderr, /dsh-2/);
+      assert.ok(!error.stderr.includes(token)); return true;
+    });
+  assert.equal(received[0].url, '/api/agent-relay/notifications/targeted');
+  assert.equal(received[0].body.dsh_session_name, '测试会话');
+  const {sendNotification} = await import('../../skills/dsh-notify/send.mjs');
+  await assert.rejects(sendNotification({agent: 'codex', external_session_id: 's', request_id: 'r', summary: '消息', dsh_session_id: 'dsh-1'}, {env: {DSH_AGENT_RELAY_CONFIG: path}}), /dsh-1/);
+  assert.equal(received[1].body.dsh_session_id, 'dsh-1');
+});

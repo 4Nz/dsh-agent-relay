@@ -1,3 +1,5 @@
+import { createTargetedNotifications } from "./targeted-notifications.js";
+import { DshTargetError, type createDshSessions, type DshTarget } from "./dsh-sessions.js";
 import { randomUUID } from "node:crypto";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type {
@@ -28,8 +30,10 @@ export function createBridgeService({
   transport,
   createSession,
   observeTitle,
+  dshSessions,
   now = Date.now,
 }: {
+  dshSessions?: ReturnType<typeof createDshSessions>;
   store: RelayStore;
   adapters: AdapterRegistry;
   scheduler: Scheduler;
@@ -49,6 +53,7 @@ export function createBridgeService({
 }) {
   const db = store.bridge,
     subs = store.subscriptions;
+  const targeted = dshSessions ? createTargetedNotifications({store: store.targetedNotifications, sessions: dshSessions, transport, now}) : null;
   const locks = new Map<string, Promise<unknown>>();
   let draining: Promise<void> | undefined;
   function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -662,7 +667,7 @@ export function createBridgeService({
       await service.drain();
       return { ok: true as const };
     },
-    async push(input: {
+    async push(input: DshTarget & {
       agent: Agent;
       external_session_id: string;
       request_id: string;
@@ -670,7 +675,18 @@ export function createBridgeService({
       result: string;
       external_ref?: string | null;
     }) {
-      return serial(`${input.agent}/${input.external_session_id}`, async () => {
+      return serial(`push:${input.request_id}`, () => serial(`${input.agent}/${input.external_session_id}`, async () => {
+        const explicit = input.dsh_session_id !== undefined || input.dsh_session_name !== undefined;
+        if (explicit) {
+          if (db.event(`push:${input.request_id}`))
+            throw new DshTargetError("request_conflict", "request_id 已用于默认通知，请确认目标；新发送使用新 request_id");
+          if (!targeted) throw new DshTargetError("target_unavailable", "当前宿主不支持指定 DSH 会话");
+          const result = await targeted.accept(input);
+          await service.drain();
+          return {...result, delivery_status: store.targetedNotifications.get(input.request_id)!.state};
+        }
+        if (store.targetedNotifications.get(input.request_id))
+          throw new DshTargetError("request_conflict", "request_id 已用于定向消息，重试必须指定原目标");
         const previous = db.event(`push:${input.request_id}`);
         if (previous) {
           const route = db.routes().find((b) => b.id === previous.bridge_id);
@@ -712,7 +728,7 @@ export function createBridgeService({
           subscription_id: sub?.id ?? null,
           dsh_session_id: db.routeById(b.id)?.dsh_session_id ?? b.dsh_session_id,
         };
-      });
+      }));
     },
     async stop(id: string) {
       const s = subs.get(id);
@@ -797,13 +813,14 @@ export function createBridgeService({
     },
     drain() {
       if (!draining)
-        draining = drainRun().finally(() => {
+        draining = drainRun().then(() => targeted?.drain()).finally(() => {
           draining = undefined;
         });
       return draining;
     },
     recover() {
       db.recover();
+      store.targetedNotifications.recover();
     },
     async reconcile() {
       const report = { created: 0, deleted: 0, errors: [] as string[] };

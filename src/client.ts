@@ -1,5 +1,7 @@
 import { createElement as h, useEffect, useState, useRef, useSyncExternalStore } from "react";
 import { createUnreadController, type UnreadController, type UnreadHost } from "./client/unread.js";
+import { TeamRelaySettings, TEAM_RELAY_SETTINGS_TITLE } from "./client/team-settings.js";
+import { TeamTaskRow } from "./client/team-task-row.js";
 
 export const inject = ["slots", "connection", "uiWorkspace", "sessions", "layout"];
 const PANEL_ID = "agent-relay";
@@ -239,6 +241,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const [message, setMessage] = useState("");
   const [candidateRevision, setCandidateRevision] = useState(0);
   const [installAgent, setInstallAgent] = useState("claude");
+  const [notifyCatalog, setNotifyCatalog] = useState<any[]>([]);
   const [optionalSkills, setOptionalSkills] = useState<string[]>([]);
   const [installBusy, setInstallBusy] = useState(false);
   const [setupReport, setSetupReport] = useState<any>(null);
@@ -353,7 +356,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setSetupReport(null);
     void call("setup_check", { agent: installAgent, optional_skills: optionalSkills })
       .then((value) => {
-        if (live) setSetupReport(value);
+        if (live) { setSetupReport(value); setNotifyCatalog(value.optional_skills ?? []); }
       })
       .catch((e) => {
         if (live) setInstallError((e as Error).message);
@@ -569,6 +572,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     try {
       const report = await call(endpoint, { agent: installAgent, optional_skills: optionalSkills });
       setSetupReport(report);
+      setNotifyCatalog(report.optional_skills ?? []);
       const changed = report.items.filter((i: any) => i.action && i.action !== "skipped" && i.action !== "none").length;
       if (endpoint === "setup_check") setSetupMessage("检查完成。");
       else if (endpoint === "setup_uninstall") setSetupMessage("已卸载 channel 配置，通知 Skill 保留。");
@@ -1097,14 +1101,15 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     rule: "Relay 规则",
     claude_md: "CLAUDE.md 引用",
     shell: "claude 函数",
-    skill: "通知 Skill",
+    skill: "通知 Skill（必装）",
+    "create-agent-notify": "Agent 接入 Skill（必装）",
     "claude-notify": "向 Claude 接力",
     "codex-notify": "向 Codex 接力",
   };
   const installDrawer = () => h(Drawer, { title: "前置安装接入", onClose: close },
     h("p", { className: "muted" }, installAgent === "claude"
-      ? "为 Claude 一次配好接入：通知 Skill（任务完成后通知 DSH）与 channel（把消息送进开在终端里的会话）。已正常的项不会改动，修改前自动备份。"
-      : "为 Codex 一次配好接入：通知 Skill（任务完成后通知 DSH）。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。"),
+      ? "为 Claude 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装；另含 channel（把消息送进开在终端里的会话）。已正常的项不会改动，修改前自动备份。"
+      : "为 Codex 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。"),
     fieldSelect("Agent", installAgent, (v) => {
       setInstallAgent(v);
       setOptionalSkills([]);
@@ -1112,26 +1117,27 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       setInstallError("");
       setSetupMessage("");
     }, [["claude", "Claude"], ["codex", "Codex"]]),
+    h("p", { className: "muted small" }, "默认必装：dsh-notify（通知 DSH / 查询投递状态）、create-agent-notify（创建与安装 Agent 接力 Skill）。无需勾选，安装 / 修复时自动处理。"),
     h("fieldset", { disabled: installBusy },
       h("legend", null, "可选接力 Skill"),
-      ...[["claude-notify", "claude-notify：向指定 Claude 会话发送消息"], ["codex-notify", "codex-notify：向指定 Codex 会话发送消息"]].map(([name, label]) =>
+      ...notifyCatalog.map(({name, label, available, reason}) =>
         h("label", { key: name, style: { display: "block" } },
           h("input", {
-            type: "checkbox", checked: optionalSkills.includes(name),
+            type: "checkbox", disabled: !available, checked: optionalSkills.includes(name),
             onChange: (e: any) => {
               const checked = e.target.checked;
               setOptionalSkills(current => checked ? [...current, name] : current.filter(item => item !== name));
               setSetupReport(null);
               setSetupMessage("");
             },
-          }), " ", label)),
+          }), " ", `${name}：${label}${available ? "" : `（${reason}）`}`)),
       h("p", { className: "muted small" }, "安装到上方选中的 Agent，共用 dsh-notify 的本机凭证。DSH 插件需保持运行；消息直接投递，不经 DSH 模型处理。取消勾选不会卸载已有 Skill。")),
     !setupReport && !installError && h("p", { className: "muted" }, "正在检查安装状态…"),
     setupReport && h("div", { className: "notice small" },
       h("p", null, `${SETUP_OVERALL[setupReport.overall] ?? setupReport.overall}${setupReport.version ? ` · ${installAgent === "claude" ? "Claude Code" : "Codex"} ${setupReport.version}` : ""}`),
       h("ul", null, ...setupReport.items.map((item: any) =>
         h("li", { key: item.key, className: item.status === "ok" ? "" : item.status === "conflict" || item.status === "unavailable" ? "error" : "warn" },
-          `${SETUP_ITEM[item.key] ?? item.key}：${SETUP_LABEL[item.status] ?? item.status} · ${item.message}`,
+          `${SETUP_ITEM[item.key] ?? notifyCatalog.find(entry => entry.name === item.key)?.label ?? item.key}：${SETUP_LABEL[item.status] ?? item.status} · ${item.message}`,
           item.backup ? h("span", { className: "muted" }, `（备份：${item.backup}）`) : null))),
       setupReport.sessions && h("p", { className: "muted" }, `已启用 channel 的会话：${setupReport.sessions.online} 个`),
       setupReport.next_steps?.length > 0 && h("div", null, h("p", null, "下一步："),
@@ -1524,6 +1530,13 @@ interface RelayClientContext {
   layout: UnreadHost["layout"];
 }
 export function apply(ctx: RelayClientContext): void {
+  for (const key of ["relay_team_dispatch", "relay_team_status"]) {
+    ctx.slots.inject("tool.call.toolview", () => ctx.slots.register({ name: "tool.call.toolview", key }, TeamTaskRow));
+  }
+  ctx.slots.inject("settings.section", () => ctx.slots.register({
+    name: "settings.section", id: "agent-relay.team-relay", order: 80, label: () => TEAM_RELAY_SETTINGS_TITLE,
+    inject: () => ({ rpc: ctx.connection.rpc }),
+  }, TeamRelaySettings));
   const unread = createUnreadController(ctx.connection.rpc, {
     sessions: ctx.sessions,
     layout: ctx.layout,

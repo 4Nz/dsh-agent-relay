@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "name": "claude-notify",
+  "label": "向 Claude 会话发送消息",
+  "target_agent": "claude",
+  "status": "ready",
+  "files": [
+    "SKILL.md",
+    "send.mjs",
+    "directory.mjs",
+    "start.mjs",
+    "open.mjs"
+  ]
+}

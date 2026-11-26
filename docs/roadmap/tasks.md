@@ -1,5 +1,7 @@
 # T0-T1-T2-T3-T4-T5-T6-T7 第一版任务拆解
 
+T3/T6/T7 增量：`dsh-notify --status` 只读查询原通知投递；`create-agent-notify` 统一新 Agent 接力 Skill 开发与安装契约，详见 `docs/research/T3-T6-T7-notification-status-agent-skill.md`。
+
 交付补充（T0、T1、T3、T7）：安装包生成、Skill 链接更新与草稿上传流程见 `docs/operations/T0-T1-T3-T7-plugin-release.md`。`release:prepare` 的安装包冒烟不替代本文件的真实 T7 场景。
 
 依据：`docs/roadmap/goals.md` 和本轮讨论确定的范围。
@@ -34,6 +36,7 @@
 - 用户频率优先；未指定则 DSH 选择并告知。`pending` 待规划，`ready` 已选频率，`deciding` 待批次判断；实际频率未选为 null，不隐式每 60 秒。间隔至少 60 秒，不能超过剩余关注期。
 - 调度由宿主持久提醒维护，页面新建会发送规划事件，当前 DSH 工具调用创建由当前模型继续规划。插件 30 秒维护只收敛截止、对账宿主提醒、处理队列/未知投递，不默认轮询外部历史。
 - `push` 按稳定 request_id 幂等并进入相同路由；同一会话的不同 request_id 不新建重复会话。已有关注时取消下一次定时等待，忙或未知先落库，明确空闲后合批，原回答不被打断。结束后 push 默认仍进原接收会话，不自动重订阅。仅在无 active/paused 关注、未屏蔽、有尚未绑定批次的 push 且宿主明确标记原接收会话已归档时，自动为新通知创建并绑定接收会话；忙碌或查询失败不触发重绑。无关注的新 push 可将旧 delivered 批次转为 needs_attention，保留未确认事件以解除阻塞；unknown 仍须先核对，已绑定批次不迁移。详见 `docs/research/T2-T3-T7-notify-receiver-recovery.md`。
+- T1/T2.6/T3.3/T7 定向消息：`dsh-notify` 可指定 `dsh_session_id` 或完整 `dsh_session_name`，只影响本次，不新建/重绑默认路由或修改关注。唯一名称或明确 ID 直接发送；重名返回候选，名称/ID 冲突、目标缺失/归档、查询不完整均拒绝。独立 SQLite v9 队列固定目标、忙时等待、重启核对，默认 push 屏蔽不拦截用户明确授权的定向消息。与默认通知共享 request_id 冲突保护；重试不能换目标或内容。协议与验证见 `docs/research/T1-T2-T3-T7-targeted-dsh-notification.md`。
 - T2/T3/T6 标题同步：成功增量检查或手动查阅后，外部会话非空标题变化时异步调用宿主重命名，沿用 `<Agent>-<标题>-<通知|订阅>`。不额外轮询、不创建关注、不阻塞检测；失败保留基线，下次检测重试。多个来源共用的 DSH 接收会话跳过，避免相互覆盖。纯 push 路由可在手动查阅时同步；仅收到 push 不读取外部标题。
 - 停止关注与屏蔽 push 分离。屏蔽保留事件；明确订阅/恢复解除屏蔽。外部消息和轮次状态是数据，不能作为修改主题、扩大业务权限的授权。
 
@@ -141,7 +144,7 @@ DSH 模型通过**工具**完成实际操作，通过 **Skill** 学会何时用�
 | --- | --- | --- |
 | T3.1 | 工具 | 会话发现/查阅/发送；relay_subscribe、relay_list、relay_pause、relay_resume、relay_stop、relay_plan、relay_check、relay_batch、relay_decide、relay_mute，分别负责关注、规划、增量、恢复、语义确认与屏蔽 |
 | T3.2 | DSH 侧 Skill | 什么时候订阅；有多个候选会话时先让用户确认；发送前复述目标会话；区分“已发送”和“已完成” |
-| T3.3 | 外部 Agent 侧通知 Skill | Claude/Codex 共用通知 Skill，用真实来源与稳定事件 request_id push，不创建关注；首次建路由，后续复用原DSH，结束后push不自动重订阅 |
+| T3.3 | 外部 Agent 侧通知 Skill | Claude/Codex 共用通知 Skill，用真实来源与稳定事件 request_id push，不创建关注；未指定目标首次建路由、后续复用原DSH；显式名称/ID 只定向本次，结束后push不自动重订阅 |
 | T3.4 | 外部 Agent 双向接力 Skill | `claude-notify` / `codex-notify` 按接收方命名，已有有效会话 ID 直接转发，可按完整会话名称查询；缺少目标时先定位真实工作目录，再通过官方 CLI 后台新建，不打开额外终端；查找不到或歧义时继续询问。用户要求可见会话时保留终端/桌面路径。共用通知客户端配置与 token，经本机薄 HTTP 入口复用发送服务，不经 DSH 模型、不新建关注。稳定 request_id 在消息记录保留期间防重，支持单请求投递状态与只读进度查询；回传仅由 Agent 按明确要求调用发送 Skill |
 
 工具与 T4 的 HTTP 接口共用 T2 的服务层，不重复实现业务逻辑。
@@ -264,3 +267,26 @@ T7 真实端到端验收仍单独保留，不能以本轮单元测试代替。
 复用 `relay_send` 与消息状态，写入后回执丢失或内部错误保留 `unknown`。`subscribe_after_send` 创建的订阅保存目标 `turnId`，跨重启、同秒及后续轮次仍跟踪该目标。原历史游标保持兼容。数据库只追加第二版迁移 `relay_codex_session`，降级须恢复配套备份。
 
 已通过真实 DSH 宿主工具 → Codex 两轮上下文 → DSH 唯一通知、DSH 重启恢复和只读 `pwd`；具体版本、脚本和剩余项见专项验证记录。本结论不覆盖其余 T7 场景，也不证明桌面原实例转发可用。
+
+## T8 TeamRelay 框架（当前阶段）
+
+TeamRelay 在现有 Relay 之上增加任务编排边界，复用 Adapter、会话桥梁、投递队列和 SQLite 基础设施；原有订阅、主动通知和消息发送目录与语义保持不变。
+
+当前默认类型（2026-11-23 更新，预设版本 2）：
+
+- 网络搜索：DSH；
+- 内容处理与创作：DSH；
+- 开发与实现：DSH；
+- 其他：DSH。
+
+分析、规划和任务拆分固定由 DSH 负责，不暴露为可配置类型。用户可修改类型和 Agent 分配，也可新增类型；目标流程为 DSH 根据当前配置拆分任务并选择类型，不要求用户逐个分发。框架保留自定义预设注入能力；2026-11-24 已实现原生设置页、配置保存和 Agent 只读检测。配置通过版本检查避免旧窗口覆盖，DSH 工具实时读取保存后的配置。旧运行配置快照不随默认值更新而改写。
+
+豆包按 Provider 接入，不扩展旧订阅的 `Agent` 枚举，不创建 `relay_subscription` 或 `relay_bridge`。使用“豆包 快速”模型（`model_item_key=0`），关闭深度思考且不传工具；实际调用由插件内置 Provider 实现，不依赖第三方连接器。
+
+本阶段已建立 TeamRelay 预设、Provider Registry、独立运行/子任务/依赖存储、`relay_team_config` 工具和设置页。Claude 复用本机 CLI 配置，不要求 channel；Codex 在 macOS 上直连 daemon，无需另装 CLI；豆包提供内置浏览器登录、登录态检测及 HTTP/SSE Provider；WorkBuddy 暂未支持。已补齐原生 TeamRelay 模式、独立子任务提交/状态查询、固定四并发与持久防重。依赖拆分及结果汇总由 DSH 会话完成，专用任务面板、自动工作树隔离和未知任务人工核对入口仍待实现；内置豆包仍需用户完成登录后的真实请求验收。详细设计见 `docs/superpowers/specs/T8-team-relay-framework-design.md`，实施计划见 `docs/superpowers/plans/T8-team-relay-framework.md`。
+
+T8 本地宿主追加验收（2026-11-24）：独立 DSH_HOME、真实 DSH 0.2.1-rc.2 中的设置页、保存/刷新/重启恢复与 Agent 检测通过；修复浅色主题状态标签对比度。验证范围和豆包手动认证步骤见 docs/research/T8-local-dsh-validation.md。
+
+T8 业务部署（2026-11-24）：按用户授权，将现有定向通知和动态通知 Skill 功能与 TeamRelay 合并，保留 schema 9 并追加 schema 10，离线备份后安装到本机 web profile 并重启 3080。数据与凭据保留、实际设置页验证通过，详细回滚边界见 docs/research/T8-local-dsh-validation.md。
+
+T8 分工执行修复（2026-11-25）：已保存的分工随 TeamRelay 模型请求注入；网络搜索不分配给 DSH 时，在工具层拒绝直接调用 `web_search` 并引导按类型派发。隔离真实宿主覆盖重现、既有会话更新与普通模式隔离。

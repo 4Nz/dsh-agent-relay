@@ -154,4 +154,66 @@ CREATE TABLE relay_read_cursor (
  sequence INTEGER NOT NULL CHECK(sequence>0)
 ) STRICT;
 `,
+  `
+-- 定向消息逐条固定目标，与外部来源的默认路由和关注期独立。
+CREATE TABLE relay_targeted_notification (
+ request_id TEXT PRIMARY KEY NOT NULL,
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex')),
+ external_session_id TEXT NOT NULL,
+ dsh_session_id TEXT NOT NULL,
+ summary TEXT NOT NULL, result TEXT NOT NULL, external_ref TEXT,
+ delivery_key TEXT NOT NULL UNIQUE,
+ state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','delivering','delivered','unknown','failed')),
+ attempts INTEGER NOT NULL DEFAULT 0,
+ retry_at INTEGER, error TEXT, created_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX targeted_notification_due ON relay_targeted_notification(state,retry_at,created_at);
+`,
+  `
+CREATE TABLE relay_team_run (
+ id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0),
+ owner TEXT NOT NULL CHECK(length(trim(owner))>0),
+ preset_version INTEGER NOT NULL CHECK(preset_version>0),
+ preset TEXT NOT NULL CHECK(json_valid(preset)),
+ status TEXT NOT NULL CHECK(status IN ('planned','running','waiting_user','partially_completed','succeeded','failed','cancelled','unknown')),
+ max_parallel INTEGER NOT NULL CHECK(max_parallel BETWEEN 1 AND 16),
+ ${time("created_at")},${time("updated_at")},${time("hard_expires_at")}
+) STRICT;
+CREATE TABLE relay_team_task (
+ id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0),
+ run_id TEXT NOT NULL REFERENCES relay_team_run(id) ON DELETE CASCADE,
+ route_id TEXT NOT NULL CHECK(length(trim(route_id))>0),
+ target_kind TEXT NOT NULL CHECK(target_kind IN ('dsh','provider','session')),
+ target_id TEXT NOT NULL CHECK(length(trim(target_id))>0),
+ prompt TEXT NOT NULL CHECK(length(trim(prompt))>0),
+ status TEXT NOT NULL CHECK(status IN ('pending','runnable','queued','running','waiting_user','succeeded','failed','cancel_requested','cancelled','unknown')),
+ resource_key TEXT,
+ external_ref TEXT,
+ result TEXT,
+ error TEXT,
+ ${time("created_at")},${time("updated_at")}
+) STRICT;
+CREATE TABLE relay_team_dependency (
+ run_id TEXT NOT NULL REFERENCES relay_team_run(id) ON DELETE CASCADE,
+ task_id TEXT NOT NULL REFERENCES relay_team_task(id) ON DELETE CASCADE,
+ depends_on_task_id TEXT NOT NULL REFERENCES relay_team_task(id) ON DELETE CASCADE,
+ PRIMARY KEY(run_id,task_id,depends_on_task_id),
+ CHECK(task_id!=depends_on_task_id)
+) STRICT;
+CREATE TABLE relay_team_result (
+ id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0),
+ run_id TEXT NOT NULL REFERENCES relay_team_run(id) ON DELETE CASCADE,
+ task_id TEXT NOT NULL REFERENCES relay_team_task(id) ON DELETE CASCADE,
+ kind TEXT NOT NULL CHECK(length(trim(kind))>0),
+ summary TEXT NOT NULL,
+ body TEXT,
+ ${time("created_at")},
+ UNIQUE(task_id,kind)
+) STRICT;
+CREATE INDEX team_run_status ON relay_team_run(status,updated_at);
+CREATE INDEX team_task_run ON relay_team_task(run_id,created_at,id);
+CREATE INDEX team_task_dispatch ON relay_team_task(status,resource_key,created_at,id);
+CREATE INDEX team_dependency_task ON relay_team_dependency(run_id,task_id);
+CREATE INDEX team_result_run ON relay_team_result(run_id,created_at,id);
+`,
 ];

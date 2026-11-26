@@ -17,6 +17,11 @@ function fixture(t, { version = "2.1.311", flag = true, agents = [], registratio
   mkdirSync(join(skillsDir, "dsh-notify"), { recursive: true });
   writeFileSync(join(skillsDir, "dsh-notify", "SKILL.md"), SKILL);
   writeFileSync(join(skillsDir, "dsh-notify", "send.mjs"), "// sender v1\n");
+  for (const file of ['SKILL.md', 'references/contract.md', 'scripts/install.mjs', 'scripts/register.mjs']) {
+    const target = join(skillsDir, 'create-agent-notify', file);
+    mkdirSync(join(target, '..'), { recursive: true });
+    writeFileSync(target, `creator ${file} v1`);
+  }
   const channelEntry = join(root, "lib", "channel", "main.js");
   mkdirSync(join(root, "lib", "channel"), { recursive: true });
   writeFileSync(channelEntry, "");
@@ -86,6 +91,7 @@ for (const agent of ['claude', 'codex']) {
     const { service, home, skillsDir } = fixture(t);
     for (const name of ['claude-notify', 'codex-notify']) {
       mkdirSync(join(skillsDir, name));
+      writeFileSync(join(skillsDir, name, 'agent-notify.json'), JSON.stringify({format:1,name,label:name,target_agent:name.replace('-notify',''),status:'ready',files:['SKILL.md','send.mjs','directory.mjs','start.mjs',...(name==='claude-notify'?['open.mjs']:[])]}));
       writeFileSync(join(skillsDir, name, 'SKILL.md'), `---\nname: ${name}\n---\n接力`);
       writeFileSync(join(skillsDir, name, 'send.mjs'), '// sender');
       writeFileSync(join(skillsDir, name, 'directory.mjs'), '// directory');
@@ -105,7 +111,10 @@ for (const agent of ['claude', 'codex']) {
     // 旧版受管理安装缺少新脚本时可升级，不能误报为用户冲突。
     const manifestPath = join(target('claude-notify'), '.agent-relay-skill.json');
     const oldManifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    oldManifest.skill = oldManifest.files['SKILL.md']; oldManifest.sender = oldManifest.files['send.mjs']; oldManifest.starter = oldManifest.files['start.mjs'];
+    delete oldManifest.files;
     delete oldManifest.launcher; delete oldManifest.directory;
+    rmSync(join(target('claude-notify'), 'agent-notify.json'));
     writeFileSync(manifestPath, JSON.stringify(oldManifest));
     rmSync(join(target('claude-notify'), 'open.mjs'));
     rmSync(join(target('claude-notify'), 'directory.mjs'));
@@ -346,7 +355,7 @@ test("卸载只删除 Relay 写入的内容，保留用户内容", async (t) => 
 test("Codex 检查命令与通知 Skill，安装时直接写入 SKILL.md", async (t) => {
   const { service, calls, home, files } = fixture(t);
   const report = await service.check("codex");
-  assert.deepEqual(report.items.map((i) => i.key), ["codex", "notification", "skill"]);
+  assert.deepEqual(report.items.map((i) => i.key), ["codex", "notification", "skill", "create-agent-notify"]);
   assert.equal(byKey(report).codex.status, "ok");
   assert.equal(byKey(report).codex.message, "Codex 0.163.0");
   assert.equal(byKey(report).notification.status, "missing");
@@ -398,4 +407,51 @@ test("连通测试：未登记时失败并给出原因", async (t) => {
   for (let i = 0; i < 50 && service.probeStatus().status === "waiting"; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(service.probeStatus().status, "failed");
   assert.match(service.probeStatus().message, /没有新的 Claude 会话/);
+});
+
+for (const agent of ['claude', 'codex']) {
+  test(`${agent} 创建接入 Skill 默认必装，完整升级且不覆盖人工修改`, async t => {
+    const {service, home, skillsDir} = fixture(t);
+    const dir = join(home, `.${agent}`, 'skills', 'create-agent-notify');
+    assert.equal(byKey(await service.check(agent))['create-agent-notify'].status, 'missing');
+    await assert.rejects(service.requireReady(agent), /前置安装/);
+    const installed = await service.install(agent);
+    assert.equal(byKey(installed)['create-agent-notify'].action, 'installed');
+    for (const file of ['SKILL.md', 'references/contract.md', 'scripts/install.mjs', 'scripts/register.mjs'])
+      assert.equal(readFileSync(join(dir,file),'utf8'), readFileSync(join(skillsDir,'create-agent-notify',file),'utf8'));
+    assert.equal(byKey(await service.install(agent))['create-agent-notify'].action, 'skipped');
+    writeFileSync(join(skillsDir,'create-agent-notify','references/contract.md'), 'contract v2');
+    assert.equal(byKey(await service.check(agent))['create-agent-notify'].status, 'outdated');
+    const updated = byKey(await service.install(agent))['create-agent-notify'];
+    assert.equal(updated.action,'updated');assert.ok(updated.backup);
+    writeFileSync(join(dir,'scripts/install.mjs'),'用户修改');
+    assert.equal(byKey(await service.install(agent))['create-agent-notify'].status,'conflict');
+    assert.equal(readFileSync(join(dir,'scripts/install.mjs'),'utf8'),'用户修改');
+    rmSync(join(skillsDir,'create-agent-notify','SKILL.md'));
+    assert.equal(byKey(await service.check(agent))['create-agent-notify'].status,'unavailable');
+  });
+}
+
+test('选装项由登记动态发现，待接入不可安装，新增文件列表参与自检和升级', async t => {
+ const {service,home,skillsDir}=fixture(t);
+ const dir=join(skillsDir,'demo-notify');mkdirSync(dir);
+ const manifest={format:1,name:'demo-notify',label:'演示接力',target_agent:'future',status:'pending',files:['SKILL.md','send.mjs','extra.mjs']};
+ for(const file of manifest.files)writeFileSync(join(dir,file),'v1');
+ const register=()=>writeFileSync(join(dir,'agent-notify.json'),JSON.stringify(manifest));register();
+ let report=await service.check('codex');
+ assert.equal(report.optional_skills.find(x=>x.name==='demo-notify').available,false);
+ await assert.rejects(service.install('codex',['demo-notify']),/待接入/);
+ assert.equal(existsSync(join(home,'.codex','skills','demo-notify')),false);
+ manifest.status='ready';register();
+ await assert.rejects(service.install('codex',['demo-notify']),/待接入/);
+ manifest.target_agent='codex';register();
+ report=await service.install('codex',['demo-notify']);
+ assert.equal(byKey(report)['demo-notify'].status,'ok');
+ assert.equal(readFileSync(join(home,'.codex','skills','demo-notify','extra.mjs'),'utf8'),'v1');
+ writeFileSync(join(dir,'extra.mjs'),'v2');
+ assert.equal(byKey(await service.check('codex',['demo-notify']))['demo-notify'].status,'outdated');
+ await service.install('codex',['demo-notify']);
+ assert.equal(readFileSync(join(home,'.codex','skills','demo-notify','extra.mjs'),'utf8'),'v2');
+ manifest.files.push('../secret.json');register();
+ assert.equal((await service.check('codex')).optional_skills.find(x=>x.name==='demo-notify').available,false);
 });

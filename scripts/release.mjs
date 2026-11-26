@@ -1,3 +1,4 @@
+import { discoverNotifySkills } from "../lib/services/notify-skill-registry.js";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -13,8 +14,10 @@ export function validatePackage(pkg, files, tag) {
   const flatten = (value) => typeof value === "string" ? [value] : Object.values(value).flatMap(flatten);
   const required = ["package.json", "lib/index.js", "lib/client.js", "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/SKILL.md", "README.md", "CHANGELOG.md", guide,
     ...flatten(pkg.exports).map((path) => path.replace(/^\.\//, "")), pkg.dsh.bundle.patch.replace(/^\.\//, "")];
-  const senderFiles = ["dsh-notify", "claude-notify", "codex-notify"].flatMap(name => [`skills/${name}/SKILL.md`, `skills/${name}/send.mjs`]);
-  senderFiles.push("skills/claude-notify/open.mjs", "skills/claude-notify/directory.mjs", "skills/codex-notify/directory.mjs", "skills/claude-notify/start.mjs", "skills/codex-notify/start.mjs");
+  const registered = discoverNotifySkills(fileURLToPath(new URL("../skills", import.meta.url)), []);
+  if (registered.some(entry => entry.files.length === 0)) throw new Error("接力 Skill 登记文件无效");
+  const senderFiles = ["skills/dsh-notify/SKILL.md", "skills/dsh-notify/send.mjs", ...registered.flatMap(entry => entry.files.map(file => `skills/${entry.name}/${file}`))];
+  senderFiles.push("skills/create-agent-notify/SKILL.md", "skills/create-agent-notify/references/contract.md", "skills/create-agent-notify/scripts/install.mjs", "skills/create-agent-notify/scripts/register.mjs");
   required.push(...senderFiles, "README.en.md", ...showcaseFiles);
   for (const path of required) if (!files.includes(path)) throw new Error(`安装包缺少：${path}`);
   for (const path of files) {

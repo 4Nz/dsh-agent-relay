@@ -3,6 +3,7 @@ import type { RelayService } from "./services/relay.js";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { Context } from "@deepseek-ai/cordis";
 import type { openRelayStore } from "./storage/index.js";
+import type { TeamRelayService } from "./services/team-relay/index.js";
 
 type RelayStore = ReturnType<typeof openRelayStore>;
 
@@ -10,6 +11,7 @@ export function registerTools(
   ctx: Context,
   store: RelayStore,
   relay: RelayService,
+  teamRelay?: TeamRelayService,
 ): void {
   const agent = {
     type: "string",
@@ -216,4 +218,27 @@ export function registerTools(
       },
     }),
   );
+  if (teamRelay) {
+    ctx.tools.register(
+      defineTool({
+        name: "relay_team_config",
+        description:
+          "读取 TeamRelay 任务类型配置和已注册执行目标。DSH 负责分析、规划和拆分，再根据类型配置选择执行者；分析与规划不作为可配置类型。默认类型为网络搜索、内容处理与创作、开发与实现、其他，默认均由 DSH 执行；以返回的当前配置为准，不适合已有类型的任务选择其他。预设中优先顺序只代表路由偏好；未出现在可用目标列表中的 Agent 不能报告为已执行。",
+        parameters: {},
+        output: {
+          schema: { type: "object", additionalProperties: true },
+          render: (_args, value) => [
+            { type: "text", text: JSON.stringify(value) },
+          ],
+        },
+        async execute() {
+          return JSON.parse(JSON.stringify({
+            mode: "team-relay",
+            preset: teamRelay.preset(),
+            available_targets: teamRelay.availableTargetIds(),
+          }));
+        },
+      }),
+    );
+  }
 }

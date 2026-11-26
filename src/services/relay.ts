@@ -1,4 +1,6 @@
 import type { BridgeService } from "./bridge.js";
+import type { TeamRelayService } from "./team-relay/index.js";
+import type { DoubaoAccessAction } from "./team-relay/types.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type { Snapshot } from "../adapters/types.js";
@@ -23,6 +25,10 @@ export type RelayResponse =
   | { ok: true; value: unknown }
   | { ok: false; error: { code: string; message: string } };
 export const endpoints = [
+  "team_settings",
+  "team_settings_save",
+  "team_agents",
+  "team_doubao",
   "routes",
   "batch",
   "events",
@@ -112,7 +118,9 @@ export function createRelayService({
   setup,
   bridge,
   observeTitle,
+  teamRelay,
 }: {
+  teamRelay?: TeamRelayService;
   bridge?: BridgeService;
   observeTitle?: (agent: Agent, external: string, title: string | null) => void;
   store: RelayStore;
@@ -142,6 +150,28 @@ export function createRelayService({
         const args = object(payload);
         let value: unknown;
         switch (endpoint) {
+          case "team_settings": {
+            if (!teamRelay) throw new Error("TeamRelay 未就绪");
+            value = teamRelay.settings();
+            break;
+          }
+          case "team_settings_save": {
+            if (!teamRelay) throw new Error("TeamRelay 未就绪");
+            value = teamRelay.saveSettings(args.preset, integer(args.revision, "revision", 0, Number.MAX_SAFE_INTEGER));
+            break;
+          }
+          case "team_agents": {
+            if (!teamRelay) throw new Error("TeamRelay 未就绪");
+            value = await teamRelay.inspectAgents();
+            break;
+          }
+          case "team_doubao": {
+            if (!teamRelay) throw new Error("TeamRelay 未就绪");
+            if (typeof args.action !== "string" || !["status", "login", "check", "cancel", "logout"].includes(args.action))
+              throw new TypeError("豆包操作无效");
+            value = await teamRelay.doubao(args.action as DoubaoAccessAction);
+            break;
+          }
           case "routes": {
             if (!bridge) throw new Error("桥梁未就绪");
             value = bridge.routes(

@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "name": "codex-notify",
+  "label": "向 Codex 会话发送消息",
+  "target_agent": "codex",
+  "status": "ready",
+  "files": [
+    "SKILL.md",
+    "send.mjs",
+    "directory.mjs",
+    "start.mjs"
+  ]
+}
