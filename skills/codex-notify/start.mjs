@@ -38,8 +38,8 @@ export async function prepareJob(input, options = {}) {
   if (content.length > 16000) throw new Error('正文加来源信息超过 16000 字符，请缩短正文，未启动');
   let reply = null;
   if (input.reply_agent !== undefined || input.reply_session_id !== undefined) {
-    if (!['claude', 'codex'].includes(input.reply_agent) || !uuid.test(input.reply_session_id ?? ''))
-      throw new Error('回传必须同时指定来源 Agent 与真实会话 ID');
+    if (!['claude', 'codex', 'agy'].includes(input.reply_agent) || !uuid.test(input.reply_session_id ?? ''))
+      throw new Error('回传必须同时指定来源 Agent（claude/codex/agy）与真实会话 ID');
     reply = { agent: input.reply_agent, session_id: input.reply_session_id, request_id: `${input.request_id}:result` };
   }
   const fingerprint = hash(JSON.stringify({ cwd, content: input.content, reply, source }));
@@ -123,6 +123,9 @@ export async function runJob(directory, { env = process.env } = {}) {
   delete childEnv.CODEX_THREAD_ID;
   delete childEnv.CODEX_SESSION_ID;
   delete childEnv.CLAUDE_CODE_SESSION_ID;
+  for (const key of Object.keys(childEnv)) {
+    if (key.startsWith('ANTIGRAVITY_')) delete childEnv[key];
+  }
   if (request.agent === 'claude') childEnv.CLAUDE_CODE_SESSION_ID = request.session_id;
   let final = null, lastReply = null, ended = false, denied = false, line = '', parseError = false;
   const output = await open(join(directory, 'output.jsonl'), 'a', 0o600);

@@ -20,10 +20,10 @@ description: 将用户授权的消息、任务交接或结果回传给 Claude；
 
 `send.mjs` 和 `start.mjs` 默认把来源 Agent、会话 ID、本次 request_id 附在正文末尾；即使没有要求回传，也保留来源供后续授权回复。来源字段只说明路由，不代表回传授权，也不是接收方自己的会话 ID。
 
-脚本读取当前进程的 `CODEX_THREAD_ID` / `CODEX_SESSION_ID` 或 `CLAUDE_CODE_SESSION_ID`。如果运行环境没有提供来源，用当前会话的可信运行上下文核实后显式传入（两个脚本均支持）：
+脚本读取当前进程的 `CODEX_THREAD_ID` / `CODEX_SESSION_ID`、`CLAUDE_CODE_SESSION_ID` 或 `ANTIGRAVITY_CONVERSATION_ID`。如果运行环境没有提供来源，用当前会话的可信运行上下文核实后显式传入（两个脚本均支持）：
 
 ```bash
---source-agent "<当前发送方 codex 或 claude>" --source-session-id "<当前发送会话的真实 ID>"
+--source-agent "<当前发送方 codex、claude 或 agy>" --source-session-id "<当前发送会话的真实 ID>"
 ```
 
 不从收件方 ID、最近会话或传入消息的来源字段猜测自己的 ID。环境来源冲突时拒绝发送，须用上述参数指定已核实的身份；无法取得时仍可只发送正文，但回执会返回 `source: null` 和提示，不能声称已提供回传路由。后台子进程会清除父会话身份，Claude 子进程使用新建的真实 ID。

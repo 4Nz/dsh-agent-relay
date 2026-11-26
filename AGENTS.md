@@ -4,9 +4,9 @@
 
 DSH Agent Relay 是 DSH 的外部 Agent 任务订阅、通知与消息转发插件，目标是在 DSH 中关注指定外部会话，并向原会话补充消息。
 
-当前已实现 T1 SQLite、T2/T3/T4 会话桥梁、Claude/Codex Adapter 和 T6 看板/前置安装接入。2026-11-16 的会话桥梁替代旧一次性通知：`(agent,external_session_id)` 唯一路由，固定最长 24 小时的主题关注，DSH 规划/判断，宿主定时，push 忙时持久排队与稳定批次恢复。页面提供主题、失败阈值、实际规划状态/频率、冲突选择、事件分页、结束关注和独立 push 屏蔽。设计见 `docs/superpowers/specs/T1-T2-T3-T4-T6-T7-session-bridge-design.md`，接口与验收范围见 `docs/roadmap/tasks.md`。
+当前已实现 T1 SQLite、T2/T3/T4 会话桥梁、Claude/Codex/Antigravity Adapter 和 T6 看板/前置安装接入。2026-11-16 的会话桥梁替代旧一次性通知：`(agent,external_session_id)` 唯一路由，固定最长 24 小时的主题关注，DSH 规划/判断，宿主定时，push 忙时持久排队与稳定批次恢复。页面提供主题、失败阈值、实际规划状态/频率、冲突选择、事件分页、结束关注和独立 push 屏蔽。设计见 `docs/superpowers/specs/T1-T2-T3-T4-T6-T7-session-bridge-design.md`，接口与验收范围见 `docs/roadmap/tasks.md`。
 
-Codex 本机 daemon 支持已有桌面/CLI 会话官方 `queue/add`；只有独立历史回退连接只读，旧“未登记/桌面均只读”说明已过时。Relay 登记专用会话使用 `turn/start`，不能同时交给其他执行实例。Claude 终端持有会话仍须 channel，未启用拒绝发送。前置安装接入为两个 Agent 直接安装通知 Skill，Claude 另含 channel 配置、自检、卸载和连通测试；凭证自动生成于本机私有配置，原独立设置页已移除。
+Codex 本机 daemon 支持已有桌面/CLI 会话官方 `queue/add`；只有独立历史回退连接只读，旧“未登记/桌面均只读”说明已过时。Relay 登记专用会话使用 `turn/start`，不能同时交给其他执行实例。Claude 终端持有会话仍须 channel，未启用拒绝发送。Antigravity（`agy`）只读解析 `conversation_summaries.db` 与 `transcript.jsonl` 实现发现和订阅，桌面/IDE 会话经 `dsh-agent-relay` Sidecar 调用官方 `agentapi send-message` 投递。前置安装接入为三个 Agent 直接安装通知与接力 Skill（Antigravity 写入全局 `.gemini/config/skills/` 与 Sidecar 配置，兼容 Windows 与 macOS），Claude 另含 channel 配置、自检、卸载和连通测试；凭证自动生成于本机私有配置，原独立设置页已移除。
 
 Node.js >=24，TypeScript ESM，运行依赖限 DSH 官方包和 Node 内置模块。先 `rtk npm ci --cache ./.npm-cache`；`rtk npm run typecheck` 与 `rtk npm test` 分别检查类型与全量单测。真实冒烟 `test/smoke/claude-smoke.js`、`m2-smoke.js`、`codex-smoke.js` 会创建专用会话并产生费用，且部分旧脚本语义需按新桥梁验收更新，不能以旧脚本通过冒充新验收。历史 Codex 专项记录见 `docs/research/T2.7-T5.2-T6-T7-codex-daemon-send-validation.md`；本轮完整真实 T7 仍未完成，单测与打包冒烟不能替代。
 

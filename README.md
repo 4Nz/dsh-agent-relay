@@ -2,10 +2,10 @@
 
 简体中文 | [English](README.en.md)
 
-在 DSH 对话里连接 Claude、Codex，让 Agent 继续工作，你也能在其他 DSH 客户端查看进度、接收结果。
+在 DSH 对话里连接 Claude、Codex 与 Antigravity，让 Agent 继续工作，你也能在其他 DSH 客户端查看进度、接收结果。
 
 1. **订阅外部会话**：用自然语言告诉 DSH 要关注哪个会话、什么进展、多久检查一次，有相关变化时再汇报。
-2. **发送消息给外部会话**：直接在 DSH 对话中补充要求，把消息转发给指定的 Claude 或 Codex 会话。
+2. **发送消息给外部会话**：直接在 DSH 对话中补充要求，把消息转发给指定的 Claude、Codex 或 Antigravity 会话。
 3. **主动接收外部通知**：外部 Agent 通过 `dsh-notify` Skill 主动把进展或结果发回 DSH，无需等待下一次定时检查。
 
 ## 什么时候用
@@ -59,13 +59,13 @@ Codex 展示通知接收回执，并继续处理从 DSH 回传的要求。回执
 
 ### 1. 安装与接入
 
-需要 Node.js 24 或更高版本，DSH 与 Claude/Codex 在同一台机器、同一用户下运行。DSH 声明兼容范围为 `>=0.2.0 <0.3.0`，当前依赖版本为 `0.2.1-rc.2`；完整真实宿主验收尚未完成，其他版本需单独验证。
+需要 Node.js 24 或更高版本，DSH 与 Claude/Codex/Antigravity 在同一台机器、同一用户下运行。DSH 声明兼容范围为 `>=0.2.0 <0.3.0`，当前依赖版本为 `0.2.1-rc.2`；完整真实宿主验收尚未完成，其他版本需单独验证。
 
-通过 DSH 插件管理入口安装并启用 `.tgz` 包，重启后打开「任务跟踪 → 前置安装接入」，按页面提示安装所需 Agent 的通知 Skill。Claude 终端会话转发还需启用 channel 并重新打开会话；Codex 消息发送需要可用的本机 daemon。
+通过 DSH 插件管理入口安装并启用 `.tgz` 包，重启后打开「任务跟踪 → 前置安装接入」，按页面提示安装所需 Agent 的通知 Skill。Claude 终端会话转发还需启用 channel 并重新打开会话；Codex 消息发送需要可用的本机 daemon；Antigravity 桌面/IDE 会话转发需在 `Settings -> Customizations -> Sidecars` 启用 `DSH Agent Relay Bridge`。
 
 在 DSH 使用的项目中安装随包的 `dsh-agent-relay` Skill，让 DSH 按会话桥梁规则处理订阅和消息。具体步骤见[安装、Skill 配置与升级说明](docs/operations/T0-T1-T3-T7-plugin-release.md)。
 
-前置安装还可分别勾选 `claude-notify` 和 `codex-notify`，让当前 Agent 向指定的另一会话转发任务或结果，例如在 Codex 中说“用 claude-notify 把方案发给 Claude 会话 UUID 审查”。名称表示接收方，二者共用 `dsh-notify` 的本机凭证。DSH 插件需要保持运行，消息不经过 DSH 模型。 未指定已有会话时先确定目录，可后台新建并查询结果，无需额外终端；是否主动回传由用户任务决定。
+前置安装还可分别勾选 `claude-notify`、`codex-notify` 和 `agy-notify`，让当前 Agent 向指定的另一会话转发任务或结果，例如在 Codex 中说“用 claude-notify 把方案发给 Claude 会话 UUID 审查”，或在 Claude/Codex 中使用 `agy-notify` 发往 Antigravity 会话。名称表示接收方，三者共用 `dsh-notify` 的本机凭证。DSH 插件需要保持运行，消息不经过 DSH 模型。 未指定已有会话时先确定目录，可后台新建并查询结果，无需额外终端；是否主动回传由用户任务决定。
 
 有效会话 ID 可直接发送，也可按完整会话名查找。需要新建时，先按用户路径或项目名查找真实目录，找不到/重名时继续询问，不默用当前目录。Claude 在可见终端启动；Codex 使用桌面原生创建工具，在 Claude CLI 缺少该工具时只能打开所选目录的新会话界面，需用户提交首条消息。两端的目录、真实投递与防重验证见 [T7.6 验收记录](docs/research/T3.4-T6.6-T7.6-visible-handoff-validation.md)。
 
@@ -102,7 +102,7 @@ DSH 会查找候选会话，请你核对目标；有多个同名会话时，需�
 ## 使用须知
 
 - **一对一订阅、单一主题**：会话订阅按一对一方式使用，每个会话同时只订阅一个主题。如需改为关注其他主题或其他会话，请先取消当前订阅（「结束关注」），再新建订阅；暂停关注不等于取消订阅。
-- **适用场景**：本插件用于 Agent 之间的会话订阅与通知，不面向专业的 Agent Team 多智能体团队编排与协作场景。目前支持 Claude 和 Codex，欢迎提交 PR 适配更多 Agent。
+- **适用场景**：本插件用于 Agent 之间的会话订阅与通知，不面向专业的 Agent Team 多智能体团队编排与协作场景。目前支持 Claude、Codex 和 Antigravity，欢迎提交 PR 适配更多 Agent。
 - 每次关注最多持续 24 小时，暂停或重启不会延长；没有相关变化时保持静默，单轮完成不一定代表关注目标已达成。
 - “已发送”不等于任务完成。投递结果未知时先核对原会话，避免重复发送；Codex 能读取历史也不一定具备发送能力。
 - 插件按本机单用户设计。凭证只保存在本机私有目录，不要提交到仓库；卸载保留数据，升级前按[升级说明](docs/operations/T0-T1-T3-T7-plugin-release.md)备份。

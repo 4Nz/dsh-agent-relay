@@ -6,7 +6,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { randomUUID } from "node:crypto";
-import type { Subscription, Result } from "../storage/types.js";
+import type { Agent, Subscription, Result } from "../storage/types.js";
 
 const RESULTS = new Set<Result>([
   "completed",
@@ -50,7 +50,7 @@ export interface PushHandlerOptions {
   createSubscription: (input: {
     id: string;
     type: "push";
-    agent: "claude" | "codex";
+    agent: Agent;
     external_session_id: string;
     dsh_session_id: null;
   }) => Promise<
@@ -58,7 +58,7 @@ export interface PushHandlerOptions {
   >;
   createSession: (subscription: Subscription) => Promise<string>;
   drain: () => Promise<unknown>;
-  requireReady: (agent: "claude" | "codex") => Promise<void>;
+  requireReady: (agent: Agent) => Promise<void>;
   now?: () => number;
   newId?: () => string;
 }
@@ -157,7 +157,7 @@ export function createPushHandler({
       (typeof input.request_id !== "string" ||
         !input.request_id.trim() ||
         input.request_id.length > 500 ||
-        (input.agent !== "claude" && input.agent !== "codex") ||
+        (input.agent !== "claude" && input.agent !== "codex" && input.agent !== "agy") ||
         typeof input.external_session_id !== "string" ||
         !input.external_session_id.trim())
     )
@@ -177,7 +177,7 @@ export function createPushHandler({
       if (explicit && (typeof input.request_id !== "string" || !input.request_id.trim()))
         return new Response("定向消息需要稳定 request_id", {status: 400});
       const selected = direct
-        ? (input.agent as "claude" | "codex")
+        ? (input.agent as Agent)
         : source!.agent;
       try {
         await requireReady(selected);
@@ -232,7 +232,7 @@ export function createPushHandler({
         const created = await createSubscription({
           id: subscriptionId,
           type: "push",
-          agent: input.agent as "claude" | "codex",
+          agent: input.agent as Agent,
           external_session_id: input.external_session_id as string,
           dsh_session_id: null,
         });

@@ -216,4 +216,80 @@ CREATE INDEX team_task_dispatch ON relay_team_task(status,resource_key,created_a
 CREATE INDEX team_dependency_task ON relay_team_dependency(run_id,task_id);
 CREATE INDEX team_result_run ON relay_team_result(run_id,created_at,id);
 `,
+  `
+-- 扩展 Agent 枚举以支持 Antigravity（agy）。同一事务内延迟外键检查，按原表名重建以保持子表外键目标不变。
+PRAGMA defer_foreign_keys=ON;
+CREATE TEMP TABLE relay_subscription_v11_backup AS SELECT * FROM relay_subscription;
+CREATE TEMP TABLE relay_message_v11_backup AS SELECT * FROM relay_message;
+CREATE TEMP TABLE relay_targeted_notification_v11_backup AS SELECT * FROM relay_targeted_notification;
+DROP TABLE relay_message;
+DROP TABLE relay_targeted_notification;
+DROP TABLE relay_subscription;
+CREATE TABLE relay_subscription (
+ id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0), owner TEXT NOT NULL CHECK(length(trim(owner))>0),
+ type TEXT NOT NULL CHECK(type IN ('poll','push')), agent TEXT NOT NULL CHECK(agent IN ('claude','codex','agy')),
+ external_session_id TEXT NOT NULL CHECK(length(trim(external_session_id))>0), external_session_title TEXT, external_cwd TEXT,
+ dsh_session_id TEXT CHECK(dsh_session_id IS NULL OR length(trim(dsh_session_id))>0),
+ status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','ended')),
+ end_reason TEXT CHECK(end_reason IN ('completed','failed','idle_timeout','expired','session_closed','unreachable','delivered','user_stopped')),
+ check_interval_seconds INTEGER CHECK(check_interval_seconds IS NULL OR check_interval_seconds>=60),
+ idle_timeout_seconds INTEGER NOT NULL CHECK(idle_timeout_seconds>0),
+ max_lifetime_seconds INTEGER NOT NULL CHECK(max_lifetime_seconds>0),
+ max_consecutive_failures INTEGER NOT NULL CHECK(max_consecutive_failures>0),
+ schedule_task_id TEXT, cursor TEXT CHECK(cursor IS NULL OR json_valid(cursor)),
+ ${time("expires_at")}, ${time("hard_expires_at")},
+ ${time("last_activity_at", true)}, ${time("last_checked_at", true)},
+ last_check_status TEXT CHECK(last_check_status IN ('success','error')),last_check_error TEXT,
+ consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK(consecutive_failures>=0),
+ ${time("notification_recorded_at", true)}, ${time("created_at")},${time("updated_at")},${time("ended_at", true)},
+ topic TEXT NOT NULL DEFAULT '定期汇报新的进展或回复',
+ planning_state TEXT NOT NULL DEFAULT 'ready',
+ decision_version INTEGER NOT NULL DEFAULT 0,
+ selected_interval_seconds INTEGER,
+ CHECK((status='ended' AND end_reason IS NOT NULL AND ended_at IS NOT NULL) OR (status!='ended' AND end_reason IS NULL AND ended_at IS NULL)),
+ CHECK(hard_expires_at=created_at+max_lifetime_seconds*1000 AND expires_at<=hard_expires_at),
+ CHECK((type='poll' AND dsh_session_id IS NOT NULL AND check_interval_seconds IS NOT NULL) OR (type='push' AND check_interval_seconds IS NULL))
+) STRICT;
+CREATE TABLE relay_message (
+ id TEXT PRIMARY KEY NOT NULL CHECK(length(trim(id))>0),agent TEXT NOT NULL CHECK(agent IN ('claude','codex','agy')),
+ external_session_id TEXT NOT NULL CHECK(length(trim(external_session_id))>0),subscription_id TEXT REFERENCES relay_subscription(id),
+ content TEXT NOT NULL CHECK(length(trim(content))>0),status TEXT NOT NULL DEFAULT 'sending' CHECK(status IN ('queued','sending','sent','rejected','failed','unknown')),
+ error TEXT,external_ref TEXT,${time("created_at")},${time("sent_at", true)},${time("acked_at", true)},ack_summary TEXT,
+ CHECK((status='sent' AND sent_at IS NOT NULL) OR (status!='sent' AND sent_at IS NULL)),
+ CHECK(acked_at IS NULL OR status='sent')
+) STRICT;
+CREATE TABLE relay_targeted_notification (
+ request_id TEXT PRIMARY KEY NOT NULL,
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','agy')),
+ external_session_id TEXT NOT NULL,
+ dsh_session_id TEXT NOT NULL,
+ summary TEXT NOT NULL, result TEXT NOT NULL, external_ref TEXT,
+ delivery_key TEXT NOT NULL UNIQUE,
+ state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','delivering','delivered','unknown','failed')),
+ attempts INTEGER NOT NULL DEFAULT 0,
+ retry_at INTEGER, error TEXT, created_at INTEGER NOT NULL
+) STRICT;
+INSERT INTO relay_subscription SELECT * FROM relay_subscription_v11_backup;
+INSERT INTO relay_message SELECT * FROM relay_message_v11_backup;
+INSERT INTO relay_targeted_notification SELECT * FROM relay_targeted_notification_v11_backup;
+DROP TABLE relay_subscription_v11_backup;
+DROP TABLE relay_message_v11_backup;
+DROP TABLE relay_targeted_notification_v11_backup;
+DROP TRIGGER IF EXISTS notification_source;
+CREATE TRIGGER notification_source BEFORE INSERT ON relay_notification BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM relay_subscription WHERE id=NEW.subscription_id AND type=NEW.source) THEN RAISE(ABORT,'通知来源不匹配') END; END;
+CREATE TRIGGER notification_marker BEFORE UPDATE OF notification_recorded_at ON relay_subscription WHEN OLD.notification_recorded_at IS NOT NULL AND NEW.notification_recorded_at IS NOT OLD.notification_recorded_at BEGIN SELECT RAISE(ABORT,'通知标记不可清空或修改'); END;
+CREATE TRIGGER message_route_insert BEFORE INSERT ON relay_message WHEN NEW.subscription_id IS NOT NULL BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM relay_subscription WHERE id=NEW.subscription_id AND agent=NEW.agent AND external_session_id=NEW.external_session_id) THEN RAISE(ABORT,'消息路由不匹配') END; END;
+CREATE TRIGGER message_route_update BEFORE UPDATE ON relay_message WHEN NEW.subscription_id IS NOT NULL BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM relay_subscription WHERE id=NEW.subscription_id AND agent=NEW.agent AND external_session_id=NEW.external_session_id) THEN RAISE(ABORT,'消息路由不匹配') END; END;
+CREATE INDEX subscription_list ON relay_subscription(created_at DESC,id DESC);
+CREATE INDEX subscription_filter ON relay_subscription(owner,agent,type,status);
+CREATE INDEX subscription_expiry ON relay_subscription(status,expires_at);
+CREATE UNIQUE INDEX subscription_one_live_bridge ON relay_subscription(agent,external_session_id) WHERE status!='ended';
+CREATE INDEX message_list ON relay_message(created_at DESC,id DESC);
+CREATE INDEX message_route ON relay_message(agent,external_session_id,subscription_id);
+CREATE INDEX message_queue ON relay_message(status,agent,external_session_id,created_at);
+CREATE INDEX targeted_notification_due ON relay_targeted_notification(state,retry_at,created_at);
+`,
 ];

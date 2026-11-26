@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const targetAgent = { 'claude-notify': 'claude', 'codex-notify': 'codex' }[basename(dirname(fileURLToPath(import.meta.url)))];
+const targetAgent = { 'claude-notify': 'claude', 'codex-notify': 'codex', 'agy-notify': 'agy' }[basename(dirname(fileURLToPath(import.meta.url)))];
 const sessionId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function resolveSource(input = {}, env = process.env) {
@@ -20,14 +20,16 @@ export function resolveSource(input = {}, env = process.env) {
   } else {
     const thread = env.CODEX_THREAD_ID?.trim(), session = env.CODEX_SESSION_ID?.trim();
     const claude = env.CLAUDE_CODE_SESSION_ID?.trim();
-    if ((thread && session && thread.toLowerCase() !== session.toLowerCase()) || ((thread || session) && claude))
+    const agy = env.ANTIGRAVITY_CONVERSATION_ID?.trim();
+    const sources = [Boolean(thread || session), Boolean(claude), Boolean(agy)].filter(Boolean).length;
+    if ((thread && session && thread.toLowerCase() !== session.toLowerCase()) || sources > 1)
       throw new Error('来源会话环境冲突，请用 --source-agent 与 --source-session-id 指定已核实的当前会话');
-    id = thread || session || claude;
+    id = thread || session || claude || agy;
     if (!id) return null;
-    agent = thread || session ? 'codex' : 'claude';
+    agent = thread || session ? 'codex' : claude ? 'claude' : 'agy';
   }
-  if (!['codex', 'claude'].includes(agent) || typeof id !== 'string' || !sessionId.test(id))
-    throw new Error('来源必须同时提供 Agent（codex/claude）与真实会话 UUID');
+  if (!['codex', 'claude', 'agy'].includes(agent) || typeof id !== 'string' || !sessionId.test(id))
+    throw new Error('来源必须同时提供 Agent（codex/claude/agy）与真实会话 UUID');
   return { agent, session_id: id.toLowerCase() };
 }
 

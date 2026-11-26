@@ -5,9 +5,19 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import type { Agent } from "../storage/types.js";
-import type { ClaudeRunner } from "../adapters/claude/runner.js";
+import { createResolvedRunner, type ClaudeRunner } from "../adapters/claude/runner.js";
 import type { ChannelCredentialService, NotificationCredentialService } from "./credentials.js";
 import type { ClaudeChannelService, ListClaudeAgents } from "./claude-channel.js";
+import type { AgyBridgeService } from "./agy-bridge.js";
+import {
+  AGY_SIDECAR_DISPLAY_NAME,
+  detectAgyDesktopBinary,
+  resolveAgyBridgeTokenPath,
+  resolveAgyCommand,
+  resolveAgySidecarDir,
+  resolveAgySkillsDir,
+  resolveGeminiDir,
+} from "../adapters/agy/paths.js";
 import { NOTIFICATION_SKILL } from "./skill-install.js";
 import { CHANNEL_NAME, INSTRUCTIONS } from "../channel/server.js";
 
@@ -79,6 +89,33 @@ export function shellBlock() {
   ].join("\n");
 }
 
+export function agySidecarConfigText({
+  nodePath,
+  sidecarEntry,
+  port,
+}: {
+  nodePath: string;
+  sidecarEntry: string;
+  port: number;
+}): string {
+  return (
+    JSON.stringify(
+      {
+        command: nodePath,
+        args: [sidecarEntry],
+        restart_policy: "always",
+        display_name: AGY_SIDECAR_DISPLAY_NAME,
+        description: "连接本机 DSH Agent Relay，支持 Antigravity 会话状态同步与外部 Agent 消息投递。",
+        env: {
+          DSH_AGENT_RELAY_PORT: String(port),
+        },
+      },
+      null,
+      2,
+    ) + "\n"
+  );
+}
+
 export function createSetupService({
   run,
   channel,
@@ -86,11 +123,17 @@ export function createSetupService({
   channelCredentials,
   notificationCredentials,
   codexRunner,
-  supportedNotifyAgents = () => ["claude", "codex"],
+  agyRunner,
+  agyBridge,
+  agyBridgeCredentials,
+  supportedNotifyAgents = () => ["claude", "codex", "agy"],
   homeDir = homedir(),
   env = process.env,
+  platform = process.platform,
+  existsFile,
   nodePath = process.execPath,
   channelEntry = fileURLToPath(new URL("../channel/main.js", import.meta.url)),
+  agySidecarEntry = fileURLToPath(new URL("../agy-bridge/main.js", import.meta.url)),
   skillsDir = fileURLToPath(new URL("../../skills", import.meta.url)),
   now = Date.now,
   log = () => {},
@@ -101,11 +144,17 @@ export function createSetupService({
   channelCredentials: Pick<ChannelCredentialService, "reset" | "verify">;
   notificationCredentials: Pick<NotificationCredentialService, "ensure" | "status">;
   codexRunner: ClaudeRunner;
+  agyRunner?: ClaudeRunner;
+  agyBridge?: Pick<AgyBridgeService, "registrations">;
+  agyBridgeCredentials?: Pick<ChannelCredentialService, "reset" | "verify">;
   supportedNotifyAgents?: () => readonly string[];
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  existsFile?: (path: string) => boolean;
   nodePath?: string;
   channelEntry?: string;
+  agySidecarEntry?: string;
   skillsDir?: string;
   now?: () => number;
   // 检测命令、退出码和原始输出写入插件日志；不记录凭证与会话正文。
@@ -116,9 +165,23 @@ export function createSetupService({
   const ruleFile = join(claudeDir, "agent-relay.md");
   const claudeMd = join(claudeDir, "CLAUDE.md");
   const tokenPath = join(claudeDir, "agent-relay", "channel-token");
+  const agySkills = resolveAgySkillsDir({ env, homeDir, platform });
+  const agySidecarFile = join(resolveAgySidecarDir({ env, homeDir, platform }), "sidecar.json");
+  const agyTokenPath = resolveAgyBridgeTokenPath({ env, homeDir, platform });
+  const relayPort = Number(env.DSH_AGENT_RELAY_PORT ?? 37421);
+  // 未注入独立 agy 桥接凭证服务时回退复用 channelCredentials，保持旧单测零配置兼容。
+  const bridgeCreds = agyBridgeCredentials ?? channelCredentials;
+  const resolvedAgyRunner =
+    agyRunner ??
+    createResolvedRunner((args) => {
+      const cmd = resolveAgyCommand({ cliArgs: args, env, homeDir, platform, nodePath, existsFile });
+      return { command: cmd.command, args: cmd.args };
+    });
+
   const skillTarget: Record<Agent, string> = {
     claude: join(claudeDir, "skills", NOTIFICATION_SKILL, "SKILL.md"),
     codex: join(env.CODEX_HOME ?? join(homeDir, ".codex"), "skills", NOTIFICATION_SKILL, "SKILL.md"),
+    agy: join(agySkills, NOTIFICATION_SKILL, "SKILL.md"),
   };
   let probeState: ProbeState = { status: "idle" };
 
@@ -139,7 +202,7 @@ export function createSetupService({
   function write(file: string, content: string, mode?: number) {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     writeFileSync(file, content, mode === undefined ? undefined : { mode });
-    if (mode !== undefined) chmodSync(file, mode);
+    if (mode !== undefined && platform !== "win32") chmodSync(file, mode);
   }
   async function exec(args: string[], timeoutMs = 15_000) {
     try {
@@ -161,6 +224,16 @@ export function createSetupService({
       return null;
     }
   }
+  async function agyExec(args: string[], timeoutMs = 10_000) {
+    try {
+      const result = await resolvedAgyRunner(args, { timeoutMs });
+      log(`agy ${args.join(" ")} → 退出码 ${result.code}${result.timedOut ? "（超时）" : ""}\n${(result.stdout + result.stderr).trim().slice(0, 2000)}`);
+      return result;
+    } catch (error) {
+      log(`agy ${args.join(" ")} → 无法执行：${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
   function rcFile(): string | null {
     const shell = basename(env.SHELL ?? "");
     if (shell === "zsh") return join(env.ZDOTDIR ?? homeDir, ".zshrc");
@@ -174,7 +247,7 @@ export function createSetupService({
     return join(dirname(dirname(skillTarget[agent])), name, "SKILL.md");
   }
 
-  // ---- Claude 各检查项 ----
+  // ---- 各 Agent 版本与环境检查项 ----
   async function claudeVersion(): Promise<{ item: SetupItem; version: string | null }> {
     const result = await exec(["--version"], 10_000);
     const version = result?.code === 0 ? (result.stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? null) : null;
@@ -186,6 +259,78 @@ export function createSetupService({
     const version = result?.code === 0 ? (result.stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? null) : null;
     if (!version) return { version: null, item: { key: "codex", status: "unavailable", message: "未找到可用的 codex 命令，请先安装 Codex CLI" } };
     return { version, item: { key: "codex", status: "ok", message: `Codex ${version}` } };
+  }
+  async function agyVersion(): Promise<{ item: SetupItem; version: string | null }> {
+    const result = await agyExec(["--version"], 10_000);
+    const output = result ? `${result.stdout}\n${result.stderr}` : "";
+    const version = result?.code === 0 ? (output.match(/\d+\.\d+\.\d+/)?.[0] ?? null) : null;
+    if (version) {
+      return { version, item: { key: "agy", status: "ok", message: `Antigravity CLI ${version}` } };
+    }
+    const desktopBin = detectAgyDesktopBinary({ env, homeDir, platform, existsFile });
+    const gemini = resolveGeminiDir({ env, homeDir, platform });
+    const hasAppData =
+      existsFile ? existsFile(join(gemini, "antigravity", "installation_id")) : existsSync(join(gemini, "antigravity", "installation_id"));
+    if (desktopBin || hasAppData) {
+      return {
+        version: null,
+        item: {
+          key: "agy",
+          status: "ok",
+          message: "已检测到 Antigravity 桌面端（未安装 agy CLI；桌面订阅、通知与桥接可用，后台 CLI 新建需安装 agy CLI）",
+        },
+      };
+    }
+    return {
+      version: null,
+      item: {
+        key: "agy",
+        status: "unavailable",
+        message: "未检测到 Antigravity CLI（agy）或桌面端，请先安装 Google Antigravity",
+      },
+    };
+  }
+  function agySidecarServerItem(): SetupItem {
+    return existsSync(agySidecarEntry)
+      ? { key: "agy_sidecar_server", status: "ok", message: "桥接 Sidecar 程序已随插件安装" }
+      : { key: "agy_sidecar_server", status: "unavailable", message: "插件安装包缺少 agy-bridge 程序，请重新构建或安装插件" };
+  }
+  function agySidecarItem(): SetupItem {
+    const text = read(agySidecarFile);
+    if (text === null) {
+      return { key: "agy_sidecar", status: "missing", message: "未写入 Antigravity 桌面桥接 Sidecar 配置" };
+    }
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return { key: "agy_sidecar", status: "conflict", message: `${agySidecarFile} 无法解析，请人工核对后重试` };
+    }
+    const expected = agySidecarConfigText({ nodePath, sidecarEntry: agySidecarEntry, port: relayPort });
+    if (text === expected) {
+      return { key: "agy_sidecar", status: "ok", message: "Antigravity 桌面桥接 Sidecar 配置已就绪" };
+    }
+    const args = Array.isArray(parsed?.args) ? parsed.args : [];
+    if (
+      parsed?.display_name === AGY_SIDECAR_DISPLAY_NAME &&
+      typeof args[0] === "string" &&
+      /[\\/]agy-bridge[\\/]main\.js$/.test(args[0])
+    ) {
+      return { key: "agy_sidecar", status: "outdated", message: "桥接 Sidecar 配置指向旧路径或端口，需要更新" };
+    }
+    return {
+      key: "agy_sidecar",
+      status: "conflict",
+      message: `${agySidecarFile} 已存在且非当前插件标准格式，未自动覆盖`,
+    };
+  }
+  function agyTokenItem(): SetupItem {
+    const token = read(agyTokenPath)?.trim();
+    if (!token) return { key: "agy_credential", status: "missing", message: "未生成 Antigravity 桥接凭证" };
+    if (!bridgeCreds.verify(token)) {
+      return { key: "agy_credential", status: "outdated", message: "Antigravity 桥接凭证与当前宿主不一致，需要重新生成" };
+    }
+    return { key: "agy_credential", status: "ok", message: "Antigravity 桥接凭证已就绪" };
   }
   async function channelFlag(version: string | null): Promise<SetupItem> {
     // 参数存在但缺值时 CLI 报“argument missing”；不支持时报未知选项。
@@ -254,7 +399,7 @@ export function createSetupService({
     if (!channelCredentials.verify(token)) return { key: "credential", status: "outdated", message: "channel 凭证与 Relay 不一致，需要重新生成" };
     return { key: "credential", status: "ok", message: "channel 凭证已就绪" };
   }
-  // 通知凭证是 Claude/Codex 共用的明文客户端配置，安装时自动生成，供通知 Skill 直接读取。
+  // 通知凭证是 Claude/Codex/Antigravity 共用的明文客户端配置，安装时自动生成，供通知 Skill 直接读取。
   function notificationItem(): SetupItem {
     const status = notificationCredentials.status();
     if (status.configured) return { key: "notification", status: "ok", message: "通知凭证已就绪" };
@@ -364,7 +509,7 @@ export function createSetupService({
     };
   }
 
-  // ---- Claude 修复动作 ----
+  // ---- 修复动作 ----
   async function fixMcp(item: SetupItem): Promise<SetupItem> {
     const backupPath = backup(claudeJson);
     if (item.status === "outdated") await exec(["mcp", "remove", CHANNEL_NAME, "-s", "user"]);
@@ -398,6 +543,16 @@ export function createSetupService({
     const { token } = channelCredentials.reset();
     write(tokenPath, `${token}\n`, 0o600);
     return { ...tokenItem(), action: item.status === "missing" ? "installed" : "updated" };
+  }
+  function fixAgySidecar(item: SetupItem): SetupItem {
+    const backupPath = backup(agySidecarFile);
+    write(agySidecarFile, agySidecarConfigText({ nodePath, sidecarEntry: agySidecarEntry, port: relayPort }));
+    return { ...agySidecarItem(), action: item.status === "missing" ? "installed" : "updated", backup: backupPath };
+  }
+  function fixAgyToken(item: SetupItem): SetupItem {
+    const { token } = bridgeCreds.reset();
+    write(agyTokenPath, `${token}\n`, 0o600);
+    return { ...agyTokenItem(), action: item.status === "missing" ? "installed" : "updated" };
   }
   function fixNotification(item: SetupItem): SetupItem {
     const { created } = notificationCredentials.ensure();
@@ -440,6 +595,27 @@ export function createSetupService({
     items.push(...selected.map(name => skillItem("codex", name)));
     return { blocking, report: { agent: "codex", overall: "ok", version, items, next_steps: [] } };
   }
+  async function checkAgy(selected: string[] = []): Promise<{ report: SetupReport; blocking: boolean }> {
+    const { item: agy, version } = await agyVersion();
+    const sidecarServer = agySidecarServerItem();
+    const items: SetupItem[] = [agy, sidecarServer];
+    const blocking = items.some((i) => i.status === "unavailable");
+    items.push(notificationItem(), skillItem("agy"), creatorItem("agy"));
+    items.push(...selected.map((name) => skillItem("agy", name)));
+    if (!blocking) items.push(agySidecarItem(), agyTokenItem());
+    const online = agyBridge?.registrations().length ?? 0;
+    return {
+      blocking,
+      report: {
+        agent: "agy",
+        overall: "ok",
+        version,
+        items,
+        sessions: { online, need_restart: [] },
+        next_steps: [],
+      },
+    };
+  }
   function finish(report: SetupReport, blocking: boolean): SetupReport {
     const changed = report.items.some((i) => i.action && i.action !== "skipped" && i.action !== "none");
     const pending = report.items.some((i) => i.status !== "ok");
@@ -452,6 +628,11 @@ export function createSetupService({
     if (report.sessions?.need_restart.length)
       steps.push(`以下 ${report.sessions.need_restart.length} 个运行中的 Claude 会话未发现在线 channel 登记；请退出 Claude，新开终端或重新加载 shell 配置后，再用 claude --resume <会话 ID> 重新进入：${report.sessions.need_restart.join("、")}`);
     if (report.agent === "claude" && !blocking && changed) steps.push("建议运行一次连通测试，确认消息能送进会话");
+    if (report.agent === "agy" && !blocking && (report.sessions?.online ?? 0) === 0) {
+      steps.push(
+        `如需从外部 Agent 或 DSH 向 Antigravity 桌面已有会话发送消息，请在 Antigravity 的 Automations（Sidecars）面板中启用「${AGY_SIDECAR_DISPLAY_NAME}」（主动通知与历史订阅无需启用即可使用）`,
+      );
+    }
     report.next_steps = steps;
     report.optional_skills = catalog();
     return report;
@@ -461,6 +642,10 @@ export function createSetupService({
     const selected = optionalSkills(selection);
     if (agent === "codex") {
       const { report, blocking } = await checkCodex(selected);
+      return finish(report, blocking);
+    }
+    if (agent === "agy") {
+      const { report, blocking } = await checkAgy(selected);
       return finish(report, blocking);
     }
     const { report, blocking } = await checkClaude(selected);
@@ -473,8 +658,9 @@ export function createSetupService({
         .filter((i) => i.status !== "ok")
         .map((i) => i.message)
         .join("；");
+      const name = { claude: "Claude", codex: "Codex", agy: "Antigravity" }[agent];
       throw new TypeError(
-        `${agent === "claude" ? "Claude" : "Codex"} 前置安装未完成，请先在「前置安装接入」页完成安装：${missing}`,
+        `${name} 前置安装未完成，请先在「前置安装接入」页完成安装：${missing}`,
       );
     }
   }
@@ -504,6 +690,28 @@ export function createSetupService({
               ? { ...item, action: "skipped" } : fixSkill("codex", item, name));
         }
         return finish({ agent, overall: "ok", version, items, next_steps: [] }, blocking);
+      }
+      if (agent === "agy") {
+        const { report, blocking } = await checkAgy(selected);
+        if (blocking) {
+          report.items = report.items.map((i) =>
+            i.key === "notification" ? fixNotification(i) : { ...i, action: "none" },
+          );
+          return finish(report, true);
+        }
+        const fixed: SetupItem[] = [];
+        for (const item of report.items) {
+          if (item.status === "ok") fixed.push({ ...item, action: "skipped" });
+          else if (item.status === "conflict" || item.status === "unavailable") fixed.push({ ...item, action: "none" });
+          else if (item.key === "notification") fixed.push(fixNotification(item));
+          else if (item.key === "agy_sidecar") fixed.push(fixAgySidecar(item));
+          else if (item.key === "agy_credential") fixed.push(fixAgyToken(item));
+          else if (item.key === "skill") fixed.push(fixSkill("agy", item));
+          else if (item.key === CREATOR_SKILL || selected.includes(item.key)) fixed.push(fixSkill("agy", item, item.key));
+          else fixed.push({ ...item, action: "none" });
+        }
+        report.items = fixed;
+        return finish(report, false);
       }
       const { report, blocking } = await checkClaude(selected);
       if (blocking) {
