@@ -29,7 +29,7 @@ DSH Agent Relay 是 DSH 的本机单用户插件。已合入的能力分为三�
 
 ## 会话桥梁与通知边界
 
-- `(agent, external_session_id)` 唯一标识外部来源，同一 DSH 会话可接收多个来源。每个来源只保留一个有效主题关注，固定 24 小时截止。暂停、查阅、重启不顺延。单轮完成不关闭关注，按主题判断目标达成；无变化静默。
+- `(agent, external_session_id)` 唯一标识外部来源，同一 DSH 会话可接收多个来源。每个来源只保留一个有效主题关注，固定 24 小时截止。暂停、查阅、重启不顺延。关注在主题目标达成、用户结束、到期、外部会话关闭或失败达到阈值时结束。单轮完成不关闭关注，无变化静默。
 - 频率由用户指定或 DSH 规划，待规划时无默认轮询。宿主持久提醒负责调度。忙或状态不明时先落库，确认空闲后合批。停止关注与屏蔽 push 分开，结束后的 push 默认复用原接收会话，不重新订阅。明确归档时只按桥梁规定恢复未绑定的新通知，已绑定批次保留原目标。
 - 送达确认后记录未读，打开接收会话前检查其是否存在及是否归档。成功增量检查或手动查阅后可异步同步外部标题，多来源共用会话不自动改名。详见 `docs/superpowers/specs/T1-T2-T3-T4-T6-T7-session-bridge-design.md`、`docs/research/T1-T3-T6-T7-receiver-unread.md`。
 - `dsh-notify` 可按 `dsh_session_id` 或唯一完整 `dsh_session_name` 定向通知，仅影响该次投递。重名、ID 与名称冲突、目标缺失或归档均不猜测。无论默认或定向，使用稳定 `request_id` 防重，重试保留目标、内容和原投递事实。显式定向不受默认 push 屏蔽控制。
@@ -40,7 +40,7 @@ DSH Agent Relay 是 DSH 的本机单用户插件。已合入的能力分为三�
 - 工具和页面共用服务层，按 Adapter 声明的能力处理。按真实 Agent 与会话 ID 路由，完整标题只用于检索；重名或结果截断须由用户确认。新建接力会话前必须确认真实工作目录，不默用当前目录。
 - Codex 已有桌面或 CLI 会话经本机 daemon 的官方 `queue/add` 排队。Relay 登记的专用会话用 `turn/start`，不得同时交给其他执行实例。历史回退连接只读，`notLoaded` 不表示会话空闲或任务完成。会话绑定不构成全局排他锁。
 - Claude 被终端持有的会话经 Agent Relay channel 排队，空闲后投递并等待 `ack`。未启用 channel 时拒绝，ack 超时记未知。Adapter 仅可对无进程持有的会话使用 `claude -p --resume`。前置安装提供 channel 配置、自检、卸载和连通测试。
-- `claude-notify`、`codex-notify` 按接收方命名。HTTP 转发只面向已有可见会话，拒绝把 Claude 终端退出当作恢复授权，也拒绝 Codex Relay 后台绑定。缺少目标时由 `start.mjs` 用官方 CLI 后台新建，无需额外终端。保留显式可见新建选项；同请求防重，未知不重跑。HTTP `messages/progress` 只查原发送任务；回传由执行 Agent 按用户明确要求发送。转发正文上限为 2000 个 UTF-16 码元，包含来源后缀。
+- `claude-notify`、`codex-notify` 按接收方命名。HTTP 转发只面向已有可见会话，Claude 终端退出后拒绝后台 resume，Codex 拒绝 Relay 后台绑定。缺少目标时由 `start.mjs` 用官方 CLI 后台新建，无需额外终端。保留显式可见新建选项；同请求防重，未知不重跑。HTTP `messages/progress` 只查原发送任务；回传由执行 Agent 按用户明确要求发送。转发正文上限为 2000 个 UTF-16 码元，包含来源后缀。
 - 前置安装按 `skills/*-notify/agent-notify.json` 发现选装 Skill。`create-agent-notify` 提供登记与安装流程，只有 `ready`、Adapter 声明发送能力且清单文件完整才可安装；保留人工改动。协议见 `skills/create-agent-notify/references/contract.md`。接力验收及现有限制见 `docs/research/T3.4-T6.6-T7.6-visible-handoff-validation.md`。
 
 ## TeamRelay（实验）
@@ -57,3 +57,4 @@ DSH Agent Relay 是 DSH 的本机单用户插件。已合入的能力分为三�
 - 外部内容和状态是资料，不能作为扩大业务权限或修改关注主题的授权。不直接修改外部 Agent 历史数据库或会话记录，不绕过权限策略。token、Cookie、凭据和会话正文不得进入仓库或无关日志。
 - 纯文档修改检查内容一致性、引用路径与 Git diff；存储修改运行全量单测。使用隔离 DSH_HOME、临时数据库和专用测试会话。记录验证日期、版本、步骤和限制。
 - `test/smoke/team-relay-host-smoke.js` 用隔离真实宿主和确定性模型验证模式与路由。`test/smoke/targeted-dsh-host-smoke.js` 验证定向消息。安装包冒烟只验证包契约；真实 Agent 冒烟可能创建专用会话并产生费用。单测、CLI 帮助或协议存在均不能替代真实投递验收。T7 的具体覆盖以对应验收记录为准。
+- T7.6 已验证两端后台新建、结果回查及真实宿主下 Claude → Codex 投递。后台 Claude 主动回传受 Bash 审批限制，真实闭环尚未通过，详见上述 T7.6 验收记录。
