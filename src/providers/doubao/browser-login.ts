@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
-import { delimiter, join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ensureDoubaoPrivateDirectory } from "./credentials.js";
 import type { DoubaoLogin } from "./access.js";
@@ -33,17 +33,17 @@ export function doubaoBrowserCandidates(platform = process.platform, env = proce
   if (platform === "darwin") return [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    ...["Google Chrome", "Microsoft Edge"].map((name) => join(env.HOME ?? "", "Applications", `${name}.app`, "Contents", "MacOS", name)),
+    ...["Google Chrome", "Microsoft Edge"].map((name) => posix.join(env.HOME ?? "", "Applications", `${name}.app`, "Contents", "MacOS", name)),
   ];
   if (platform === "win32") return [...new Set([
     env.PROGRAMFILES, env["PROGRAMFILES(X86)"], env.LOCALAPPDATA,
     "C:\\Program Files", "C:\\Program Files (x86)",
   ].filter((root): root is string => Boolean(root)))].flatMap((root) => [
-    `${root}\\Google\\Chrome\\Application\\chrome.exe`,
-    `${root}\\Microsoft\\Edge\\Application\\msedge.exe`,
+    win32.join(root, "Google", "Chrome", "Application", "chrome.exe"),
+    win32.join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
   ]);
-  return (env.PATH ?? "/usr/bin:/usr/local/bin:/snap/bin").split(delimiter).filter(Boolean).flatMap((root) =>
-    ["google-chrome", "google-chrome-stable", "microsoft-edge", "microsoft-edge-stable", "chromium", "chromium-browser"].map((name) => join(root, name)),
+  return (env.PATH ?? "/usr/bin:/usr/local/bin:/snap/bin").split(posix.delimiter).filter(Boolean).flatMap((root) =>
+    ["google-chrome", "google-chrome-stable", "microsoft-edge", "microsoft-edge-stable", "chromium", "chromium-browser"].map((name) => posix.join(root, name)),
   );
 }
 

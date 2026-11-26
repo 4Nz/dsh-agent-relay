@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -52,7 +53,7 @@ test('dsh-notify --status 经 HTTP 只读查询，不接受发送参数或重复
  const server=createPushServer({port:0,handler:async()=>{sends++;return new Response('不应发送',{status:500})},routes:createNotificationStatusRoutes({store,credentials:{verify:t=>t===token}})});
  const {port}=await server.start();t.after(()=>server.stop());
  const config=join(dir,'config.json');writeFileSync(config,JSON.stringify({token,endpoint:`http://127.0.0.1:${port}/api/agent-relay/notifications`}));
- const script=new URL('../../skills/dsh-notify/send.mjs',import.meta.url).pathname;
+ const script=fileURLToPath(new URL('../../skills/dsh-notify/send.mjs',import.meta.url));
  const run=args=>promisify(execFile)(process.execPath,[script,...args],{env:{...process.env,DSH_AGENT_RELAY_CONFIG:config}});
  const args=['--status','--request-id','original'];
  const result=JSON.parse((await run(args)).stdout);assert.equal(result.delivery_status,'pending');assert.equal(result.request_id,'original');

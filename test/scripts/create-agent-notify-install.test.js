@@ -1,10 +1,11 @@
 import test from 'node:test';
+import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,readdirSync,rmSync,symlinkSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
-const script=new URL('../../skills/create-agent-notify/scripts/install.mjs',import.meta.url).pathname;
+const script=fileURLToPath(new URL('../../skills/create-agent-notify/scripts/install.mjs',import.meta.url));
 test('接入 Skill 安装支持预检、幂等、备份升级且保留人工改动',t=>{
  const root=mkdtempSync(join(tmpdir(),'安装 接力-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
  const source=join(root,'demo-notify'),dest=join(root,'skills');mkdirSync(source);
@@ -24,7 +25,7 @@ test('登记脚本生成待接入清单，明确升级才标记 ready 并保留�
  const root=mkdtempSync(join(tmpdir(),'notify-register-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
  const source=join(root,'demo-notify');mkdirSync(source);mkdirSync(join(source,'references'));
  writeFileSync(join(source,'SKILL.md'),'---\nname: demo-notify\ndescription: 示例\n---');writeFileSync(join(source,'send.mjs'),'// sender');writeFileSync(join(source,'references','api.md'),'接口契约');
- const register=new URL('../../skills/create-agent-notify/scripts/register.mjs',import.meta.url).pathname;
+ const register=fileURLToPath(new URL('../../skills/create-agent-notify/scripts/register.mjs',import.meta.url));
  const run=(...extra)=>execFileSync(process.execPath,[register,'--source',source,'--target-agent','demo','--label','示例接力',...extra],{encoding:'utf8',stdio:['ignore','pipe','pipe']});
  run();const file=join(source,'agent-notify.json');let data=JSON.parse(readFileSync(file,'utf8'));
  assert.equal(data.status,'pending');assert.deepEqual(data.files,['SKILL.md','references/api.md','send.mjs']);
