@@ -39,7 +39,11 @@
       "import": "./lib/storage/index.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./team-mode": {
+      "types": "./lib/team-mode.d.ts",
+      "import": "./lib/team-mode.js"
+    }
   },
   "dsh": {
     "bundle": {
@@ -49,6 +53,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-sidebar",
         "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-tool",
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-client-ui-workspace"

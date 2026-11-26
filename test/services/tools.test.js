@@ -19,6 +19,11 @@ test("工具把 DSH 执行会话传入共用服务，注册所有 M2 工具", as
         return { ok: true, value: {} };
       },
     },
+    {
+      preset: () => ({ version: 1, max_parallel: 4, routes: [] }),
+      availableTargetIds: () => ["dsh"],
+      resolve: () => ({ selected: [], unavailable: [] }),
+    },
   );
   assert.deepEqual([...tools.keys()].sort(), [
     "relay_batch",
@@ -38,6 +43,7 @@ test("工具把 DSH 执行会话传入共用服务，注册所有 M2 工具", as
     "relay_setup_install",
     "relay_stop",
     "relay_subscribe",
+    "relay_team_config",
   ]);
   const tool = tools.get("relay_subscribe");
   await tool.execute(
@@ -48,6 +54,11 @@ test("工具把 DSH 执行会话传入共用服务，注册所有 M2 工具", as
   assert.equal(received[2], "current-dsh");
   assert.equal(received[1].check_interval_seconds,300);
   assert.equal(received[1].topic,"等待测试完成");
+  assert.deepEqual(await tools.get("relay_team_config").execute({}), {
+    mode: "team-relay",
+    preset: { version: 1, max_parallel: 4, routes: [] },
+    available_targets: ["dsh"],
+  });
   for (const endpoint of ["pause", "resume"]) {
     await tools.get(`relay_${endpoint}`).execute({subscription_id:"sub"}, {agent:{session:{id:"current-dsh"}}});
     assert.equal(received[0],endpoint);

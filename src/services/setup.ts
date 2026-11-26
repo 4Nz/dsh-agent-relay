@@ -1,3 +1,4 @@
+import { discoverNotifySkills, safeSkillFile, type NotifySkillEntry } from "./notify-skill-registry.js";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -15,13 +16,8 @@ import { CHANNEL_NAME, INSTRUCTIONS } from "../channel/server.js";
 
 // 规则、shell 函数的格式版本；内容变化时加一，已安装的旧版本会被识别为 outdated。
 export const SETUP_VERSION = 1;
-export const OPTIONAL_SKILLS = ["claude-notify", "codex-notify"] as const;
-function optionalSkills(value: unknown): string[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.some(name => !OPTIONAL_SKILLS.includes(name)))
-    throw new TypeError("可选 Skill 仅支持 claude-notify、codex-notify");
-  return [...new Set(value)] as string[];
-}
+const CREATOR_SKILL = "create-agent-notify";
+const CREATOR_FILES = ["SKILL.md", "references/contract.md", "scripts/install.mjs", "scripts/register.mjs"];
 const digest = (content: string | null) => createHash("sha256").update(content ?? "").digest("hex");
 
 export type ItemStatus = "ok" | "missing" | "outdated" | "conflict" | "unavailable";
@@ -37,6 +33,7 @@ export interface SetupReport {
   overall: "ok" | "changed" | "needs_action" | "unavailable";
   version: string | null;
   items: SetupItem[];
+  optional_skills?: NotifySkillEntry[];
   sessions?: { online: number; need_restart: string[] };
   next_steps: string[];
 }
@@ -89,6 +86,7 @@ export function createSetupService({
   channelCredentials,
   notificationCredentials,
   codexRunner,
+  supportedNotifyAgents = () => ["claude", "codex"],
   homeDir = homedir(),
   env = process.env,
   nodePath = process.execPath,
@@ -103,6 +101,7 @@ export function createSetupService({
   channelCredentials: Pick<ChannelCredentialService, "reset" | "verify">;
   notificationCredentials: Pick<NotificationCredentialService, "ensure" | "status">;
   codexRunner: ClaudeRunner;
+  supportedNotifyAgents?: () => readonly string[];
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
   nodePath?: string;
@@ -261,49 +260,97 @@ export function createSetupService({
     if (status.configured) return { key: "notification", status: "ok", message: "通知凭证已就绪" };
     return { key: "notification", status: "missing", message: "通知凭证未生成，安装时自动生成" };
   }
-  function skillItem(agent: Agent, name = NOTIFICATION_SKILL): SetupItem {
-    const key = name === NOTIFICATION_SKILL ? "skill" : name;
-    const packaged = packagedSkill(name);
-    const sender = read(join(skillsDir, name, "send.mjs"));
-    const launcher = name === "claude-notify" ? read(join(skillsDir, name, "open.mjs")) : null;
-    const directory = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "directory.mjs")) : null;
-    const starter = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "start.mjs")) : null;
-    if (name !== NOTIFICATION_SKILL && starter === null)
-      return { key, status: "unavailable", message: `插件缺少 ${name}/start.mjs，请重新安装插件` };
-    if (name !== NOTIFICATION_SKILL && directory === null)
-      return { key, status: "unavailable", message: `插件缺少 ${name}/directory.mjs，请重新安装插件` };
-    if (name === "claude-notify" && launcher === null)
-      return { key, status: "unavailable", message: "插件缺少 claude-notify/open.mjs，请重新安装插件" };
-    if (packaged === null || sender === null)
-      return { key, status: "unavailable", message: `插件缺少 ${name} 的 ${packaged === null ? "SKILL.md" : "send.mjs"}，请重新安装插件；本地源码接入请重新构建并重启 DSH 宿主` };
-    const target = targetSkill(agent, name);
-    const installed = read(target);
-    const installedSender = read(join(dirname(target), "send.mjs"));
-    const installedLauncher = name === "claude-notify" ? read(join(dirname(target), "open.mjs")) : null;
-    const installedDirectory = name !== NOTIFICATION_SKILL ? read(join(dirname(target), "directory.mjs")) : null;
-    const installedStarter = name !== NOTIFICATION_SKILL ? read(join(dirname(target), "start.mjs")) : null;
-    if (name !== NOTIFICATION_SKILL && (installedStarter !== null || installed !== null || installedSender !== null || installedLauncher !== null || installedDirectory !== null)
-      && (installed?.trim() !== packaged.trim() || installedSender !== sender || installedLauncher !== launcher || installedDirectory !== directory || installedStarter !== starter)) {
-      let record: Record<string, string> = {};
-      try { record = JSON.parse(read(join(dirname(target), ".agent-relay-skill.json")) ?? "{}"); } catch { /* 交给冲突提示 */ }
-      if (!record || (installed !== null && record.skill !== digest(installed))
-        || (installedSender !== null && record.sender !== digest(installedSender))
-        || (installedLauncher !== null && record.launcher !== digest(installedLauncher))
-        || (installedDirectory !== null && record.directory !== digest(installedDirectory))
-        || (installedStarter !== null && record.starter !== digest(installedStarter)))
-        return { key, status: "conflict", message: `${name} 已存在且内容不属于本次安装管理或被修改，请人工核对；不会自动覆盖` };
+  const catalog = () => discoverNotifySkills(skillsDir, supportedNotifyAgents());
+  function optionalSkills(value: unknown): string[] {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.some(name => typeof name !== "string")) throw new TypeError("可选 Skill 参数无效");
+    const entries = catalog();
+    for (const name of value) {
+      const entry = entries.find(item => item.name === name);
+      if (!entry) throw new TypeError(`未登记的可选 Skill：${name}`);
+      if (!entry.available) throw new TypeError(`${name} ${entry.reason}`);
     }
-    if (installed === null) return { key, status: "missing", message: `未安装 ${name}，点击「安装 / 修复」安装到 ${dirname(target)}` };
-    if (installed.trim() !== packaged.trim()) return { key, status: "outdated", message: `${name} 与当前插件版本不一致，请点击「安装 / 修复」更新` };
-    if (installedSender !== sender)
-      return { key, status: "outdated", message: "通知发送脚本缺失或需更新，请重新安装通知 Skill" };
-    if (installedLauncher !== launcher)
-      return { key, status: "outdated", message: "可见终端启动脚本缺失或需更新，请重新安装接力 Skill" };
-    if (installedStarter !== starter)
-      return { key, status: "outdated", message: "后台启动脚本缺失或需更新，请重新安装接力 Skill" };
-    if (installedDirectory !== directory)
-      return { key, status: "outdated", message: "目录查找脚本缺失或需更新，请重新安装接力 Skill" };
-    return { key, status: "ok", message: `${name} 已安装，说明与发送脚本均匹配当前插件` };
+    return [...new Set(value)] as string[];
+  }
+  const legacyFileKeys: Record<string, string> = {"SKILL.md": "skill", "send.mjs": "sender", "open.mjs": "launcher", "directory.mjs": "directory", "start.mjs": "starter"};
+  function registeredItem(agent: Agent, name: string): SetupItem {
+    const entry = catalog().find(item => item.name === name);
+    if (!entry?.available) return {key: name, status: "unavailable", message: entry?.reason ?? "Skill 未登记"};
+    const dir = dirname(targetSkill(agent, name));
+    if (!existsSync(dir)) return {key: name, status: "missing", message: `${name} 未安装`};
+    if (entry.files.some(file => !safeSkillFile(dir, file))) return {key: name, status: "conflict", message: `${name} 安装路径包含符号链接，不自动覆盖`};
+    const installed = entry.files.map(file => read(join(dir, file)));
+    const source = entry.files.map(file => read(join(skillsDir, name, file)));
+    if (installed.every((value, i) => value === source[i])) return {key: name, status: "ok", message: `${name} 全部登记文件匹配当前插件`};
+    let record: Record<string, any> = {};
+    try { record = JSON.parse(read(join(dir, ".agent-relay-skill.json")) ?? "{}"); } catch { /* 冲突提示 */ }
+    if (!record || installed.some((value, i) => value !== null && digest(value) !== (record.files?.[entry.files[i]!] ?? record[legacyFileKeys[entry.files[i]!] ?? ""])))
+      return {key: name, status: "conflict", message: `${name} 文件被人工修改或未受安装管理，不自动覆盖`};
+    return {key: name, status: "outdated", message: `${name} 需要更新或补齐登记文件`};
+  }
+  function fixRegistered(agent: Agent, item: SetupItem, name: string): SetupItem {
+    const entry = catalog().find(value => value.name === name);
+    const before = registeredItem(agent, name);
+    if (!entry?.available || ["conflict", "unavailable"].includes(before.status)) return {...before, action: "none"};
+    const dir = dirname(targetSkill(agent, name)), files: Record<string, string> = {};
+    let backupPath: string | undefined;
+    for (const file of entry.files) {
+      const content = read(join(skillsDir, name, file));
+      if (content === null) return {key: name, status: "unavailable", action: "none", message: "安装源文件已变化，请重新检查"};
+      const saved = backup(join(dir, file)); backupPath ??= saved;
+      write(join(dir, file), content); files[file] = digest(content);
+    }
+    const manifest = join(dir, ".agent-relay-skill.json");
+    backup(manifest);
+    write(manifest, JSON.stringify({format: 2, files}) + "\n");
+    return {...registeredItem(agent, name), action: item.status === "missing" ? "installed" : "updated", backup: backupPath};
+  }
+
+  function creatorItem(agent: Agent): SetupItem {
+    const key = CREATOR_SKILL;
+    const dir = dirname(targetSkill(agent, key));
+    const source = CREATOR_FILES.map(file => read(join(skillsDir, key, file)));
+    if (source.some(value => value === null))
+      return { key, status: "unavailable", message: "插件缺少 create-agent-notify 的说明、接入契约或安装脚本，请更新插件" };
+    const installed = CREATOR_FILES.map(file => read(join(dir, file)));
+    if (installed.every(value => value === null))
+      return { key, status: "missing", message: "未安装 create-agent-notify；安装 / 修复时自动安装（必装）" };
+    if (installed.every((value, i) => value === source[i]))
+      return { key, status: "ok", message: "create-agent-notify 已安装，说明、接入契约与安装脚本均匹配当前插件" };
+    let record: { format?: number; files?: Record<string, string> } = {};
+    try { record = JSON.parse(read(join(dir, ".create-agent-notify-install.json")) ?? "{}"); } catch { /* 提示冲突 */ }
+    if (record?.format !== 1 || !record.files || installed.some((value, i) => value !== null && record.files![CREATOR_FILES[i]!] !== digest(value)))
+      return { key, status: "conflict", message: "create-agent-notify 已被人工修改或未纳管，请核对后处理；不会自动覆盖" };
+    return { key, status: "outdated", message: "create-agent-notify 需要更新或补齐文件，请点击安装 / 修复" };
+  }
+  function fixCreator(agent: Agent, item: SetupItem): SetupItem {
+    const dir = dirname(targetSkill(agent, CREATOR_SKILL));
+    const sources = CREATOR_FILES.map(file => read(join(skillsDir, CREATOR_SKILL, file)));
+    if (sources.some(value => value === null)) return { ...creatorItem(agent), action: "none" };
+    let backupPath: string | undefined;
+    const files: Record<string, string> = {};
+    for (const [i, file] of CREATOR_FILES.entries()) {
+      const saved = backup(join(dir, file));
+      backupPath ??= saved;
+      write(join(dir, file), sources[i]!);
+      files[file] = digest(sources[i]!);
+    }
+    const manifest = join(dir, ".create-agent-notify-install.json");
+    backup(manifest);
+    write(manifest, JSON.stringify({ format: 1, files }) + "\n");
+    return { ...creatorItem(agent), action: item.status === "missing" ? "installed" : "updated", backup: backupPath };
+  }
+
+  function skillItem(agent: Agent, name = NOTIFICATION_SKILL): SetupItem {
+    if (name === CREATOR_SKILL) return creatorItem(agent);
+    if (name !== NOTIFICATION_SKILL) return registeredItem(agent, name);
+    const packaged = packagedSkill(), sender = read(join(skillsDir, name, "send.mjs"));
+    if (packaged === null || sender === null) return {key: "skill", status: "unavailable", message: "插件缺少通知 Skill 文件，请重新构建并重启 DSH 宿主"};
+    const target = targetSkill(agent, name), installed = read(target);
+    if (installed === null) return {key: "skill", status: "missing", message: `未安装 ${name}`};
+    if (installed.trim() !== packaged.trim() || read(join(dirname(target), "send.mjs")) !== sender)
+      return {key: "skill", status: "outdated", message: `${name} 与当前插件不一致，请安装 / 修复`};
+    return {key: "skill", status: "ok", message: `${name} 已安装，说明与发送脚本均匹配当前插件`};
   }
   async function sessions() {
     const online = channel.registrations();
@@ -359,29 +406,14 @@ export function createSetupService({
   // 通知 Skill 直接写入 SKILL.md 与 send.mjs，与 channel 配置的写入方式一致；
   // 不再开 Agent 会话执行提示词（Claude 会产生费用）或让用户复制提示词（Codex）。
   function fixSkill(agent: Agent, item: SetupItem, name = NOTIFICATION_SKILL): SetupItem {
-    const target = targetSkill(agent, name);
-    const dir = dirname(target);
-    const senderTarget = join(dir, "send.mjs");
-    const content = packagedSkill(name);
-    const sender = read(join(skillsDir, name, "send.mjs"));
-    const launcher = name === "claude-notify" ? read(join(skillsDir, name, "open.mjs")) : null;
-    const directory = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "directory.mjs")) : null;
-    const starter = name !== NOTIFICATION_SKILL ? read(join(skillsDir, name, "start.mjs")) : null;
-    if (content === null || sender === null || (name === "claude-notify" && launcher === null) || (name !== NOTIFICATION_SKILL && (directory === null || starter === null)))
-      return { ...skillItem(agent, name), action: "none" };
-    const skillBackup = backup(target);
-    const senderBackup = backup(senderTarget);
-    if (launcher !== null) backup(join(dir, "open.mjs"));
-    if (directory !== null) backup(join(dir, "directory.mjs"));
-    if (starter !== null) backup(join(dir, "start.mjs"));
-    write(target, content);
-    write(senderTarget, sender);
-    if (launcher !== null) write(join(dir, "open.mjs"), launcher);
-    if (directory !== null) write(join(dir, "directory.mjs"), directory);
-    if (starter !== null) write(join(dir, "start.mjs"), starter);
-    if (name !== NOTIFICATION_SKILL)
-      write(join(dir, ".agent-relay-skill.json"), JSON.stringify({ skill: digest(content), sender: digest(sender), ...(launcher !== null ? { launcher: digest(launcher) } : {}), ...(directory !== null ? { directory: digest(directory) } : {}), ...(starter !== null ? { starter: digest(starter) } : {}) }) + "\n");
-    return { ...skillItem(agent, name), action: item.status === "missing" ? "installed" : "updated", backup: skillBackup ?? senderBackup };
+    if (name === CREATOR_SKILL) return fixCreator(agent, item);
+    if (name !== NOTIFICATION_SKILL) return fixRegistered(agent, item, name);
+    const dir = dirname(targetSkill(agent, name));
+    const content = packagedSkill(), sender = read(join(skillsDir, name, "send.mjs"));
+    if (content === null || sender === null) return {...skillItem(agent), action: "none"};
+    const skillBackup = backup(join(dir, "SKILL.md")), senderBackup = backup(join(dir, "send.mjs"));
+    write(join(dir, "SKILL.md"), content); write(join(dir, "send.mjs"), sender);
+    return {...skillItem(agent), action: item.status === "missing" ? "installed" : "updated", backup: skillBackup ?? senderBackup};
   }
 
   async function checkClaude(selected: string[] = []): Promise<{ report: SetupReport; blocking: boolean }> {
@@ -391,7 +423,7 @@ export function createSetupService({
     items.push(channelServer());
     const blocking = items.some((i) => i.status === "unavailable");
     // 通知凭证是纯文件检查，与 claude 命令是否可用无关，始终展示。
-    items.push(notificationItem(), skillItem("claude"));
+    items.push(notificationItem(), skillItem("claude"), creatorItem("claude"));
     items.push(...selected.map(name => skillItem("claude", name)));
     if (!blocking) items.push(mcpItem(), tokenItem(), ruleItem(), includeItem(), shellItem());
     return {
@@ -404,7 +436,7 @@ export function createSetupService({
     const items: SetupItem[] = [codex];
     const blocking = codex.status === "unavailable";
     // 通知 Skill 与通知凭证都是文件级检查，不依赖 codex 命令，始终展示。
-    items.push(notificationItem(), skillItem("codex"));
+    items.push(notificationItem(), skillItem("codex"), creatorItem("codex"));
     items.push(...selected.map(name => skillItem("codex", name)));
     return { blocking, report: { agent: "codex", overall: "ok", version, items, next_steps: [] } };
   }
@@ -421,6 +453,7 @@ export function createSetupService({
       steps.push(`以下 ${report.sessions.need_restart.length} 个运行中的 Claude 会话未发现在线 channel 登记；请退出 Claude，新开终端或重新加载 shell 配置后，再用 claude --resume <会话 ID> 重新进入：${report.sessions.need_restart.join("、")}`);
     if (report.agent === "claude" && !blocking && changed) steps.push("建议运行一次连通测试，确认消息能送进会话");
     report.next_steps = steps;
+    report.optional_skills = catalog();
     return report;
   }
 
@@ -464,7 +497,7 @@ export function createSetupService({
         if (blocking || skill.status === "ok") items.push({ ...skill, action: blocking ? "none" as const : "skipped" as const });
         else if (skill.status === "conflict" || skill.status === "unavailable") items.push({ ...skill, action: "none" as const });
         else items.push(fixSkill("codex", skill));
-        for (const name of selected) {
+        for (const name of [CREATOR_SKILL, ...selected]) {
           const item = skillItem("codex", name);
           items.push(blocking || item.status === "unavailable" || item.status === "conflict"
             ? { ...item, action: "none" } : item.status === "ok"
@@ -491,7 +524,7 @@ export function createSetupService({
         else if (item.key === "claude_md") fixed.push(fixInclude());
         else if (item.key === "shell") fixed.push(fixShell(item));
         else if (item.key === "skill") fixed.push(fixSkill("claude", item));
-        else if (selected.includes(item.key)) fixed.push(fixSkill("claude", item, item.key));
+        else if (item.key === CREATOR_SKILL || selected.includes(item.key)) fixed.push(fixSkill("claude", item, item.key));
         else fixed.push({ ...item, action: "none" });
       }
       report.items = fixed;

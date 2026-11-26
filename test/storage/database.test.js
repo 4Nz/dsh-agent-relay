@@ -25,7 +25,7 @@ test("建库重开、版本与事务回滚", () => {
           "SELECT count(*) n FROM sqlite_master WHERE type='table' AND name LIKE 'relay_%'",
         )
         .get().n,
-      9,
+      14,
     );
     assert.throws(() =>
       transaction(db, () => {
@@ -170,4 +170,39 @@ test('版本 6 升级允许多个外部路由共用接收会话，保留批次�
     assert.equal(db.prepare("SELECT watch_context FROM relay_bridge_batch WHERE id='batch-a'").get().watch_context, '{"topic":"原主题"}');
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
   } finally { db.close(); rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+
+test('v8 升级保留原路由和未读事实，定向队列为空且失败迁移整批回滚', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    migrate(db, migrations.slice(0, 8));
+    db.exec("INSERT INTO relay_bridge(id,agent,external_session_id,dsh_session_id,muted) VALUES('bridge','codex','ext','receiver',1)");
+    db.exec("INSERT INTO relay_receipt(dsh_session_id,delivery_key) VALUES('receiver','original')");
+    assert.throws(() => migrate(db, [...migrations, 'INVALID SQL;']));
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
+    assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name='relay_targeted_notification'").get().n, 0);
+    migrate(db);
+    assert.equal(db.prepare('SELECT dsh_session_id FROM relay_bridge').get().dsh_session_id, 'receiver');
+    assert.equal(db.prepare('SELECT muted FROM relay_bridge').get().muted, 1);
+    assert.equal(db.prepare('SELECT delivery_key FROM relay_receipt').get().delivery_key, 'original');
+    assert.equal(db.prepare('SELECT count(*) n FROM relay_targeted_notification').get().n, 0);
+  } finally {db.close();}
+});
+
+test('版本 9 定向通知升级 TeamRelay 保留原投递记录与未知状态', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    migrate(db, migrations.slice(0, 9));
+    db.exec("INSERT INTO relay_targeted_notification(request_id,agent,external_session_id,dsh_session_id,summary,result,delivery_key,state,attempts,created_at) VALUES('sent','codex','external','receiver','原定向消息','completed','key-sent','delivered',1,100),('unknown','claude','external-2','receiver','未知投递','completed','key-unknown','unknown',1,101)");
+    const before = db.prepare('SELECT * FROM relay_targeted_notification ORDER BY request_id').all();
+    assert.throws(() => migrate(db, [...migrations, 'INVALID SQL;']));
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
+    assert.deepEqual(db.prepare('SELECT * FROM relay_targeted_notification ORDER BY request_id').all(), before);
+    migrate(db);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+    assert.deepEqual(db.prepare('SELECT * FROM relay_targeted_notification ORDER BY request_id').all(), before);
+    assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE type='table' AND name LIKE 'relay_team_%'").get().n, 4);
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+  } finally { db.close(); }
 });

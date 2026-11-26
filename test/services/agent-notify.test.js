@@ -50,9 +50,15 @@ for (const agent of ['claude', 'codex']) {
     const root = mkdtempSync(join(tmpdir(), '接力 skill-'));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const received = [];
+    let failure = null;
     const server = createServer(async (req, res) => {
       let content = ''; for await (const chunk of req) content += chunk;
       received.push({ path: req.url, token: req.headers.authorization, body: JSON.parse(content) });
+      if (failure !== null) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(typeof failure === 'string' ? failure : JSON.stringify(failure));
+        return;
+      }
       if (req.url.endsWith('/progress')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ agent, external_session_id: '11111111-1111-1111-1111-111111111111', message_id: 'm', delivery_status: 'sent', observed_at: 1,
@@ -109,10 +115,22 @@ for (const agent of ['claude', 'codex']) {
     const explicit = await run([...sendArgs, '--content', '来自Claude', '--source-agent', 'claude', '--source-session-id', '33333333-3333-4333-8333-333333333333']);
     assert.equal(JSON.parse(explicit.stdout).source.agent, 'claude');
     assert.ok(received[5].body.content.includes('33333333-3333-4333-8333-333333333333'));
-    await assert.rejects(run([...sendArgs, '--content', '长'.repeat(16000)]), /来源信息超过/);
+    await assert.rejects(run([...sendArgs, '--content', '长'.repeat(1975)]), /来源信息超过/);
+    assert.equal(received.length, 6, '超长内容不发 HTTP 请求');
+    await assert.rejects(run([...sendArgs, '--content', '长'.repeat(2001), '--omit-source']), /2000/);
+    await assert.rejects(run([...sendArgs, '--content', '😀'.repeat(1001), '--omit-source']), /2000/);
+    await run([...sendArgs, '--content', '长'.repeat(2000), '--omit-source']);
+    assert.equal(received.at(-1).body.content.length, 2000);
+    const suffixLength = received[5].body.content.length - '来自Claude'.length;
+    await run([...sendArgs, '--content', '长'.repeat(2000 - suffixLength), '--source-agent', 'claude', '--source-session-id', '33333333-3333-4333-8333-333333333333']);
+    assert.equal(received.at(-1).body.content.length, 2000);
+    failure = { error: '安装检查失败 ' + 'B'.repeat(43), secret: '不显示未知字段' };
+    await assert.rejects(run([...sendArgs, '--content', '测试']), e => /HTTP 400/.test(e.stderr) && /安装检查失败/.test(e.stderr) && /已隐藏/.test(e.stderr) && !e.stderr.includes('B'.repeat(43)) && !e.stderr.includes('不显示未知字段'));
+    failure = '<html>不要输出原始错误页</html>';
+    await assert.rejects(run([...sendArgs, '--content', '测试']), e => /HTTP 400/.test(e.stderr) && !e.stderr.includes('<html>'));
     writeFileSync(config, JSON.stringify({ endpoint: 'https://example.com', token: 'B'.repeat(43) }));
     await assert.rejects(run(['--status', '--request-id', 'stable']), e => /本机/.test(e.stderr) && !e.stderr.includes('B'.repeat(43)));
-    assert.equal(received.length, 6);
+    assert.equal(received.length, 10);
   });
 }
 

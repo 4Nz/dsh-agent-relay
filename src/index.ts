@@ -1,3 +1,4 @@
+import { createNotificationStatusRoutes } from "./services/notification-status.js";
 import { createSessionTitleSync } from "./services/session-title-sync.js";
 import { createBridgeService } from "./services/bridge.js";
 import type { Context } from "@deepseek-ai/cordis";
@@ -31,6 +32,19 @@ import {
 import { createSkillInstallService } from "./services/skill-install.js";
 import { createPushHandler, createPushServer } from "./services/push.js";
 import { createClaudeChannelService } from "./services/claude-channel.js";
+import { createProviderRegistry } from "./providers/registry.js";
+import { createDoubaoProvider } from "./providers/doubao/index.js";
+import { createDoubaoHttpTransport, probeDoubaoAccount } from "./providers/doubao/transport.js";
+import { createDoubaoCredentialStore } from "./providers/doubao/credentials.js";
+import { createDoubaoBrowserLogin } from "./providers/doubao/browser-login.js";
+import { createDoubaoAccess } from "./providers/doubao/access.js";
+import { createTeamRelayService } from "./services/team-relay/index.js";
+import { createTeamSettingsStore } from "./services/team-relay/settings.js";
+import { createTeamAgentInspector } from "./services/team-relay/agents.js";
+import { createTeamDispatcher } from "./services/team-relay/dispatch.js";
+import { createTeamExecutor } from "./services/team-relay/execute.js";
+import type {} from "./team-mode.js";
+import { connectCodexDaemon } from "./adapters/codex/reader.js";
 import { createChannelRoutes } from "./services/channel-http.js";
 import { createMessageRoutes } from "./services/message-http.js";
 import { createClaudeAgentList } from "./adapters/claude/agents.js";
@@ -121,6 +135,31 @@ export function apply(ctx: Context): void {
     createClaudeAdapter({ channel }),
     codex,
   ]);
+  const doubaoDirectory = join(dataDir, "doubao");
+  const doubaoCredentials = createDoubaoCredentialStore(doubaoDirectory);
+  const doubaoAccess = createDoubaoAccess({
+    store: doubaoCredentials,
+    login: createDoubaoBrowserLogin(doubaoDirectory),
+    probe: probeDoubaoAccount,
+  });
+  const providers = createProviderRegistry([createDoubaoProvider({
+      transport: createDoubaoHttpTransport({ credentials: doubaoCredentials }),
+    })]);
+  const teamRelay = createTeamRelayService({
+    providers,
+    doubao: doubaoAccess,
+    sessionTargets: adapters.list().map((item) => item.agent),
+    settingsStore: createTeamSettingsStore(join(dataDir, "team-relay-settings.json")),
+    inspectAgents: createTeamAgentInspector({
+      doubaoStatus: doubaoAccess.status,
+      runClaude: claudeRunner,
+      connectCodex: () => connectCodexDaemon({ timeoutMs: 5000 }),
+    }),
+  });
+  const teamExecutor = createTeamExecutor({ providers, codex, runClaude: claudeRunner });
+  const teamDispatcher = createTeamDispatcher({store:store.teamRelay,preset:teamRelay.preset,
+    available:teamRelay.availableTargetIds,execute:teamExecutor.execute});
+  ctx.provide('teamRelayRuntime', {config:teamRelay,dispatcher:teamDispatcher});
   const scheduler = createDshScheduler(host.schedule);
   const subscriptions = createSubscriptionService({
     store,
@@ -136,6 +175,7 @@ export function apply(ctx: Context): void {
   const setup = createSetupService({
     run: claudeRunner,
     codexRunner,
+    supportedNotifyAgents: () => adapters.list().filter(item => item.capabilities.sendMessage).map(item => item.agent),
     channel,
     listAgents: listClaudeAgents,
     channelCredentials,
@@ -149,7 +189,9 @@ export function apply(ctx: Context): void {
     rename: (request) => host.sessionController.rename(request),
     onError: (error) => ctx.logger.warn("[agent-relay] session title sync failed: %s", error),
   });
+  const dshSessions = createDshSessions(host.sessionQuery, host.workspaceRegistry);
   const bridge = createBridgeService({
+    dshSessions,
     observeTitle: titleSync.observe,
     store,
     adapters,
@@ -163,8 +205,8 @@ export function apply(ctx: Context): void {
       await bridge.drain();
     },
   };
-  const dshSessions = createDshSessions(host.sessionQuery, host.workspaceRegistry);
   const service = createRelayService({
+    teamRelay,
     observeTitle: titleSync.observe,
     bridge,
     store,
@@ -190,6 +232,8 @@ export function apply(ctx: Context): void {
     onError: (error) =>
       ctx.logger.warn("[agent-relay] reconciliation failed: %s", error),
     beforeClose: async () => {
+      teamDispatcher.stop();
+      teamExecutor.stop();
       await Promise.allSettled([...operations]);
       await titleSync.drain();
 
@@ -236,15 +280,19 @@ export function apply(ctx: Context): void {
     routes: {
       ...createChannelRoutes({ channel, credentials: channelCredentials }),
       ...createMessageRoutes({ relay, credentials: notificationCredentials }),
+      ...createNotificationStatusRoutes({ store, credentials: notificationCredentials }),
     },
   });
   const stopChannel = channel.start();
   ctx.effect(() => async () => {
     stopping = true;
+    teamDispatcher.stop();
+    teamExecutor.stop();
     stopApi();
     stopCleanup();
     stopChannel();
     channel.dispose();
+    doubaoAccess.dispose();
     try {
       await pushServer.stop().catch(() => {});
       await runtime.stop();
@@ -252,7 +300,7 @@ export function apply(ctx: Context): void {
       releaseLock();
     }
   });
-  registerTools(ctx, store, relay);
+  registerTools(ctx, store, relay, teamRelay);
   stopApi = registerRelayApi(host.connection, relay);
   stopCleanup = startHistoryCleanup({
     store,

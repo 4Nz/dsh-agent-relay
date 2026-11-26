@@ -57,13 +57,13 @@ export async function sendMessage(input, { env = process.env, home = homedir() }
   const progress = input.progress === true;
   const query = input.status === true || progress;
   if (!query && !resolving && (typeof input.external_session_id !== 'string' || !sessionId.test(input.external_session_id)
-    || typeof input.content !== 'string' || !input.content.trim() || input.content.length > 16000))
-    throw new Error('必须提供真实目标会话 UUID 和 1～16000 字符的正文');
+    || typeof input.content !== 'string' || !input.content.trim() || input.content.length > 2000))
+    throw new Error('必须提供真实目标会话 UUID 和 1～2000 字符的正文');
   if ((query || resolving) && (input.source_agent !== undefined || input.source_session_id !== undefined || input.omit_source !== undefined))
     throw new Error('查询不接受来源参数，不发送消息');
   const source = query || resolving ? null : resolveSource(input, env);
   const content = query || resolving ? null : withSource(input.content, source, input.request_id);
-  if (content?.length > 16000) throw new Error('正文加来源信息超过 16000 字符，请缩短正文，未发送');
+  if (content?.length > 2000) throw new Error(`正文加来源信息超过 2000 个 UTF-16 码元（当前 ${content.length}，正文 ${input.content.length}，来源 ${content.length - input.content.length}）；请缩短正文或发送摘要与文件路径，未发送`);
   let config;
   try { config = JSON.parse(await readFile(configPath(env, home), 'utf8')); }
   catch { throw new Error('未找到有效的本机配置，请在 DSH 前置安装接入生成凭证；自定义位置使用 DSH_AGENT_RELAY_CONFIG'); }
@@ -86,8 +86,15 @@ export async function sendMessage(input, { env = process.env, home = homedir() }
   } catch { throw new Error(resolving ? '会话查找失败；请确认 DSH 已启动，不代表没有匹配会话' : '连接失败或结果未知；确认 DSH 已启动，先用 --status 和原 request_id 查询，不要生成新 ID 重发'); }
   if (response.status === 401) throw new Error('凭证已失效，请核对 DSH_HOME 或重新生成凭证');
   if (response.status === 404) throw new Error('未找到请求记录或当前插件尚未提供接力入口；核对版本与原请求，不要盲目重发');
-  if (response.status !== (query || resolving ? 200 : 202))
-    throw new Error(`请求失败（HTTP ${response.status}）；检查安装状态与参数，发送结果不明时先查询原 request_id`);
+  if (response.status !== (query || resolving ? 200 : 202)) {
+    let detail = '';
+    try {
+      const failure = await response.json();
+      if (typeof failure?.error === 'string')
+        detail = failure.error.replaceAll(config.token, '[已隐藏]').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 1000);
+    } catch { /* 非 JSON 错误不回显原始响应。 */ }
+    throw new Error(`请求失败（HTTP ${response.status}）${detail ? `：${detail}` : '；检查安装状态与参数'}；发送结果不明时先查询原 request_id`);
+  }
   let result;
   try { result = await response.json(); } catch { throw new Error('响应无法解析，先用原 request_id 查询状态'); }
   if (progress) {

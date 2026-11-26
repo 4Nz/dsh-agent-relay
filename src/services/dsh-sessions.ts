@@ -30,9 +30,44 @@ export interface DshSessionArchiveRegistry {
 
 export const ARCHIVED_RECEIVER = "接收通知的 DSH 会话已归档，无法执行频率规划或处理通知；请先在 DSH 恢复该会话，或选择其他未归档的接收会话";
 
+export class DshTargetError extends TypeError {
+  constructor(public code: string, message: string, public candidates: DshSessionOption[] = []) {
+    super(message);
+  }
+}
+export interface DshTarget { dsh_session_id?: string; dsh_session_name?: string }
+
 export function createDshSessions(host: DshSessionHost, registry?: DshSessionArchiveRegistry) {
   const archived = (id: string) => registry?.archivedSessionIds.includes(id) ?? false;
   return {
+    // 发送解析不采用展示列表的标题降级：读取不全时不能证明名称唯一。
+    async resolve(target: DshTarget): Promise<string> {
+      const { dsh_session_id: id, dsh_session_name: name } = target;
+      for (const value of [id, name])
+        if (value !== undefined && (typeof value !== "string" || !value.trim()))
+          throw new DshTargetError("invalid_target", "目标会话 ID 或名称不能为空");
+      if (id === undefined && name === undefined)
+        throw new DshTargetError("invalid_target", "需要指定 DSH 会话 ID 或名称");
+      const all = await host.listSessions();
+      if (id !== undefined && !all.some(s => s.header.id === id))
+        throw new DshTargetError("target_missing", "指定的 DSH 会话不存在");
+      let chosen = id;
+      if (name !== undefined) {
+        const ids = id !== undefined ? [id] : all.map(s => s.header.id);
+        const observations = await host.readTitleSnapshots(ids);
+        if (ids.some(id => !observations.some(o => o.sessionId === id && o.status === "fulfilled")))
+          throw new DshTargetError("target_query_failed", "会话标题读取不完整，无法确定目标；请重试或明确指定会话 ID");
+        const matches = observations.filter(o => ids.includes(o.sessionId) && o.value.title?.title === name)
+          .map(o => ({id: o.sessionId, title: o.value.title!.title}));
+        if (matches.length === 0)
+          throw new DshTargetError(id ? "target_mismatch" : "target_missing", id ? "会话名称与 ID 不一致，请确认目标" : "没有找到完整名称匹配的 DSH 会话");
+        if (matches.length !== 1)
+          throw new DshTargetError("target_ambiguous", "存在重名 DSH 会话，请确认后使用会话 ID 发送", matches);
+        chosen = matches[0].id;
+      }
+      if (archived(chosen!)) throw new DshTargetError("target_archived", ARCHIVED_RECEIVER);
+      return chosen!;
+    },
     // 导航前核对当前状态；历史目标不存在时不回退到其他路由或创建新会话。
     async status(id: string): Promise<DshSessionStatus> {
       const sessions = await host.listSessions();

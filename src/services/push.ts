@@ -1,3 +1,4 @@
+import { DshTargetError } from "./dsh-sessions.js";
 import type { BridgeService } from "./bridge.js";
 import {
   createServer,
@@ -126,6 +127,13 @@ export function createPushHandler({
     if (!body || typeof body !== "object" || Array.isArray(body))
       return new Response("请求体无效", { status: 400 });
     const input = body as Record<string, unknown>;
+    const explicit = input.dsh_session_id !== undefined || input.dsh_session_name !== undefined;
+    if (new URL(request.url).pathname === TARGETED_NOTIFICATION_PATH && !explicit)
+      return Response.json({error: {code: "invalid_target", message: "定向消息需要明确指定目标"}}, {status: 400});
+    if ([input.dsh_session_id, input.dsh_session_name].some(v => v !== undefined && (typeof v !== "string" || !v.trim())))
+      return Response.json({error: {code: "invalid_target", message: "目标会话 ID 或名称不能为空"}}, {status: 400});
+    if (explicit && !bridge)
+      return Response.json({error: {code: "target_unavailable", message: "当前服务不支持定向消息，请升级插件"}}, {status: 409});
     const direct = input.subscription_id === undefined;
     if (
       (!direct &&
@@ -163,6 +171,11 @@ export function createPushHandler({
         : store.subscriptions.get(input.subscription_id as string);
       if (!direct && !source)
         return new Response("订阅不存在", { status: 404 });
+      if (source && ((input.agent !== undefined && input.agent !== source.agent) ||
+        (input.external_session_id !== undefined && input.external_session_id !== source.external_session_id)))
+        return new Response("关注与消息来源不一致", {status: 409});
+      if (explicit && (typeof input.request_id !== "string" || !input.request_id.trim()))
+        return new Response("定向消息需要稳定 request_id", {status: 400});
       const selected = direct
         ? (input.agent as "claude" | "codex")
         : source!.agent;
@@ -188,6 +201,8 @@ export function createPushHandler({
       try {
         return Response.json(
           await bridge.push({
+            dsh_session_id: input.dsh_session_id as string | undefined,
+            dsh_session_name: input.dsh_session_name as string | undefined,
             agent: selected,
             external_session_id: direct
               ? (input.external_session_id as string)
@@ -200,6 +215,8 @@ export function createPushHandler({
           { status: 202 },
         );
       } catch (error) {
+        if (error instanceof DshTargetError)
+          return Response.json({error: {code: error.code, message: error.message, candidates: error.candidates}}, {status: 409});
         return new Response(
           error instanceof Error ? error.message : "通知接收失败",
           { status: error instanceof TypeError ? 409 : 500 },
@@ -293,6 +310,8 @@ export function createPushHandler({
 
 export const NOTIFICATION_PATH = "/api/agent-relay/notifications";
 
+export const TARGETED_NOTIFICATION_PATH = "/api/agent-relay/notifications/targeted";
+
 export function createPushServer({
   handler,
   routes = {},
@@ -305,7 +324,7 @@ export function createPushServer({
   host?: string;
   port?: number;
 }) {
-  const table = { ...routes, [NOTIFICATION_PATH]: handler };
+  const table = { ...routes, [NOTIFICATION_PATH]: handler, [TARGETED_NOTIFICATION_PATH]: handler };
   const server = createServer((request, response) => {
     // serve 内部捕获全部异常；这里的 catch 仅作为最后兜底，避免任何 unhandled rejection。
     serve(request, response, table).catch(() => {

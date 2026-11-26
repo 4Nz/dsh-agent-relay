@@ -41,6 +41,10 @@ test("客户端面板注入 RPC 和会话跳转，卸载回收注册", () => {
   assert.ok(panel);
   assert.equal(typeof panel.options.inject().rpc.call, "function");
   assert.equal(typeof panel.options.inject().openSession, "function");
+  const settings = entries.find(e => e.options.name === "settings.section");
+  assert.equal(settings.options.id, "agent-relay.team-relay");
+  assert.equal(settings.options.label(), "TeamRelay（实验）");
+  assert.equal(typeof settings.options.inject().rpc.call, "function");
   const leading = entries.find(e => e.options.name === 'sidebar.session.row.leading');
   const hover = entries.find(e => e.options.name === 'sidebar.session.row.hover');
   const watcher = entries.find(e => e.options.name === 'shell.overlay');
@@ -52,8 +56,19 @@ test("客户端面板注入 RPC 和会话跳转，卸载回收注册", () => {
   assert.equal(leading.component({ sessionId: 'other', unread }), null);
   assert.equal(leading.component({ sessionId: 'receiver', unread }).props['aria-label'], '外部消息未读');
   assert.match(hover.component({ sessionId: 'receiver', unread }).children.join(''), /未读/);
+  const dispatchRow = entries.find(e => e.options.name === "tool.call.toolview" && e.options.key === "relay_team_dispatch");
+  const statusRow = entries.find(e => e.options.name === "tool.call.toolview" && e.options.key === "relay_team_status");
+  assert.ok(dispatchRow && statusRow, "浏览器工具插槽应展示 TeamRelay 状态");
+  const rowText = (entry, status) => entry.component({
+    phase: "result", toolName: entry.options.key,
+    block: { meta: { tasks: [{ target: "doubao", status }], self: false } },
+  }).children.at(-1);
+  assert.equal(rowText(dispatchRow, "running"), "已派发给豆包");
+  assert.equal(rowText(statusRow, "succeeded"), "豆包已返回结果");
+  assert.equal(rowText(statusRow, "unknown"), "豆包结果待确认");
+  assert.equal(rowText(statusRow, "failed"), "豆包执行失败");
   for (const cleanup of cleanups.reverse()) cleanup();
-  assert.equal(disposed, 5);
+  assert.equal(disposed, 8);
 });
 
 test("新建订阅选择已有 Codex 会话，不展示专用会话创建和过时发送限制",async()=>{
@@ -197,22 +212,24 @@ test('订阅列表：主动通知不显示立即检查与重新订阅，最近�
  assert.ok(rowButtons(rowOf('已结束的检查')).includes('重新订阅'));
 });
 
-test('前置安装两项接力 Skill 默认关闭，按选择提交，切换 Agent 清空选择', async () => {
+test('前置安装按服务端登记渲染新 Skill，待接入禁选，切换 Agent 清空选择', async () => {
  const calls = [];
  const rpc = { async call(_c, method, args) {
   const endpoint = method.split('/').at(-1); calls.push({ endpoint, args });
-  return { ok: true, value: endpoint === 'list' ? { items: [] } : endpoint === 'agents' ? [] : { overall: 'ok', items: [], next_steps: [] } };
+  return { ok: true, value: endpoint === 'list' ? { items: [] } : endpoint === 'agents' ? [] : { overall: 'ok', items: [], next_steps: [], optional_skills: [{name:'new-agent-notify',label:'新 Agent',available:true},{name:'pending-agent-notify',label:'待适配 Agent',available:false,reason:'待接入'}] } };
  } };
  const ui = clientHarness(rpc); let tree = ui.render(); await ui.flush(); tree = ui.render();
  ui.nodes(tree).find(n => n.type === 'button' && n.children.includes('前置安装接入')).props.onClick();
  tree = ui.render(); await ui.flush(); tree = ui.render();
  const boxes = () => ui.nodes(tree).filter(n => n.type === 'input' && n.props.type === 'checkbox');
  assert.equal(boxes().length, 2); assert.ok(boxes().every(n => n.props.checked === false));
+ assert.equal(boxes()[1].props.disabled, true);
+ assert.ok(ui.nodes(tree).some(n => n.children?.includes('pending-agent-notify：待适配 Agent（待接入）')));
  boxes()[0].props.onChange({ target: { checked: true } });
  tree = ui.render(); await ui.flush(); tree = ui.render();
  ui.nodes(tree).find(n => n.type === 'button' && n.children.includes('重新检查并修复')).props.onClick();
  await ui.flush(); tree = ui.render();
- assert.equal(calls.find(c => c.endpoint === 'setup_install').args.optional_skills.join(','), 'claude-notify');
+ assert.equal(calls.find(c => c.endpoint === 'setup_install').args.optional_skills.join(','), 'new-agent-notify');
  const label = ui.nodes(tree).find(n => n.type === 'label' && n.children.includes('Agent'));
  ui.nodes(label).find(n => n.type === 'select').props.onChange({ target: { value: 'codex' } });
  tree = ui.render(); await ui.flush(); tree = ui.render();

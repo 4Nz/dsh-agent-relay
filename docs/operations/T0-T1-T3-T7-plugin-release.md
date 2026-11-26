@@ -33,6 +33,14 @@ Codex 正常 unknown 的说明移至 runtime_note，runtime_error 为 null；新
 
 当前工作树中的 release:prepare 产物仅用于本地验证，包版本未提升；不得覆盖已分发的同版本包，正式分发前需按下文更新版本。
 
+## T1-T2-T3-T7 定向消息升级注意（2026-11-23）
+
+追加 SQLite v9 的独立定向消息队列。按既有步骤离线备份；旧插件不能读取升级后的数据库，回滚须恢复同一时点配套数据。插件和 `dsh-notify` Skill 需要一起更新，升级后在前置安装接入执行安装/修复。新脚本定向发送使用 `/api/agent-relay/notifications/targeted`，旧插件 404 时明确拒绝，不向默认会话回退。
+
+新增 `--dsh-session-name` 与 `--dsh-session-id`；仅影响本次，默认通知路由和订阅不变。目标名称重名返回候选，先确认再使用真实 ID。202 仅表示接收；定向回执额外给出 `delivery_status`，delivered 不等于 DSH 处理完成。定向消息目前不进入订阅看板/桥梁事件弹窗，送达后使用已有侧栏未读机制；投递状态可用相同来源、目标、内容与 request_id 重试请求核对，重复请求不会重新投递。
+
+本次产物用于本地预览，版本未提升，不覆盖已分发的同版本包；真实 DSH 宿主验收另行记录。
+
 ## 交付方式与兼容性
 
 第一阶段分发编译好的 npm `.tgz`，不发布到 npm registry，保留 `private:true`。npm 安装不运行编译，也不会自动安装 Skill。运行要求 Node.js >=24；服务端 ESM、浏览器入口为 DSH loader factory，不能用普通 ESM 文件替代。
