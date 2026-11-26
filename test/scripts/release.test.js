@@ -6,9 +6,9 @@ const pkg = { name: "dsh-agent-relay", version: "0.1.0", exports: { ".": { impor
 const files = ["package.json", "lib/index.js", "lib/index.d.ts", "lib/client.js", "cordis.patch.yml", "scripts/install-skills.mjs", "skills/dsh-agent-relay/SKILL.md", "skills/dsh-notify/SKILL.md", "README.md", "CHANGELOG.md", "docs/operations/T0-T1-T3-T7-plugin-release.md"];
 files.push("skills/dsh-notify/send.mjs");
 files.push("skills/create-agent-notify/SKILL.md", "skills/create-agent-notify/references/contract.md", "skills/create-agent-notify/scripts/install.mjs", "skills/create-agent-notify/scripts/register.mjs");
-files.push("skills/claude-notify/agent-notify.json", "skills/codex-notify/agent-notify.json");
-files.push('skills/claude-notify/SKILL.md', 'skills/claude-notify/send.mjs', 'skills/codex-notify/SKILL.md', 'skills/codex-notify/send.mjs');
-files.push('skills/claude-notify/open.mjs', 'skills/claude-notify/directory.mjs', 'skills/codex-notify/directory.mjs', 'skills/claude-notify/start.mjs', 'skills/codex-notify/start.mjs');
+files.push("skills/claude-notify/agent-notify.json", "skills/codex-notify/agent-notify.json", "skills/agy-notify/agent-notify.json");
+files.push('skills/claude-notify/SKILL.md', 'skills/claude-notify/send.mjs', 'skills/codex-notify/SKILL.md', 'skills/codex-notify/send.mjs', 'skills/agy-notify/SKILL.md', 'skills/agy-notify/send.mjs');
+files.push('skills/claude-notify/open.mjs', 'skills/claude-notify/directory.mjs', 'skills/codex-notify/directory.mjs', 'skills/agy-notify/directory.mjs', 'skills/claude-notify/start.mjs', 'skills/codex-notify/start.mjs', 'skills/agy-notify/start.mjs');
 const showcaseFiles = ["task-dashboard", "dsh-subscribe", "dsh-pause", "codex-notify-request", "dsh-send-to-codex", "codex-notify-and-reply", "claude-cli-notify"].map((name) => `docs/images/showcase/${name}.png`);
 files.push("README.en.md", ...showcaseFiles);
 test("发布检查包含双语说明和全部展示图片，拒绝额外图片", () => {

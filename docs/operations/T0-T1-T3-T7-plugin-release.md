@@ -41,6 +41,12 @@ Codex 正常 unknown 的说明移至 runtime_note，runtime_error 为 null；新
 
 本次产物用于本地预览，版本未提升，不覆盖已分发的同版本包；真实 DSH 宿主验收另行记录。
 
+## T1-T2-T3-T5-T6-T7 Antigravity 接入与接力升级注意（2026-11-26）
+
+追加 SQLite v11 迁移，扩展订阅、消息与定向通知表的 `agent` 约束以支持 `agy`（Google Antigravity），迁移在事务内保留全部历史数据、外键与索引；升级前仍须按下文离线备份，旧版插件不能读取 v11 数据库。
+
+前置安装接入新增 Antigravity（`agy`）选项，兼容 macOS 与 Windows：直接向全局 `.gemini/config/skills/`（Windows 为 `%USERPROFILE%\.gemini\config\skills\`）安装 `dsh-notify`、`create-agent-notify` 及勾选的 `claude-notify`、`codex-notify`、`agy-notify`，并写入 `.gemini/config/sidecars/dsh-agent-relay/sidecar.json` 与桥接凭证（不自动修改用户 `config.json`）。安装后需在 Antigravity `Settings -> Customizations -> Sidecars` 启用 `DSH Agent Relay Bridge` 以支持向桌面/IDE 活跃会话发送消息；`agy-notify` 支持向已有在线会话发送、查原请求进度，以及确认真实目录后通过 `agy` CLI 后台新建会话。架构与实测记录见 `docs/research/T1-T2-T3-T5-T6-T7-antigravity-adapter-relay.md`。
+
 ## 交付方式与兼容性
 
 第一阶段分发编译好的 npm `.tgz`，不发布到 npm registry，保留 `private:true`。npm 安装不运行编译，也不会自动安装 Skill。运行要求 Node.js >=24；服务端 ESM、浏览器入口为 DSH loader factory，不能用普通 ESM 文件替代。

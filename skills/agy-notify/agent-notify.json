@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "name": "agy-notify",
+  "label": "向 Antigravity 会话发送消息",
+  "target_agent": "agy",
+  "status": "ready",
+  "files": [
+    "SKILL.md",
+    "directory.mjs",
+    "send.mjs",
+    "start.mjs"
+  ]
+}

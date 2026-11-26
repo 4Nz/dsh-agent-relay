@@ -12,6 +12,7 @@ export const NOTIFICATION_SKILL = "dsh-notify";
 const AGENT_LABEL: Record<Agent, string> = {
   claude: "Claude Code",
   codex: "Codex",
+  agy: "Antigravity",
 };
 
 export interface InstallPreview {
@@ -47,6 +48,7 @@ export function createSkillInstallService({
   const skillDir: Record<Agent, string> = {
     claude: join(homeDir, ".claude", "skills"),
     codex: join(homeDir, ".codex", "skills"),
+    agy: join(homeDir, ".gemini", "config", "skills"),
   };
 
   async function readSkill(): Promise<string> {

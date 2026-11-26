@@ -9,7 +9,7 @@ import { createChannelCredentialService, createNotificationCredentialService } f
 
 const SKILL = "---\nname: dsh-notify\n---\n# 通知技能\n";
 
-function fixture(t, { version = "2.1.311", flag = true, agents = [], registrations = [], shell = "/bin/zsh", codexVersion = "0.163.0" } = {}) {
+function fixture(t, { version = "2.1.311", flag = true, agents = [], registrations = [], shell = "/bin/zsh", codexVersion = "0.163.0", agyVersion = "1.1.14", agyRegistrations = [], platform = process.platform, existsFile } = {}) {
   const root = mkdtempSync(join(tmpdir(), "relay-setup-"));
   const home = join(root, "home");
   mkdirSync(home);
@@ -25,10 +25,14 @@ function fixture(t, { version = "2.1.311", flag = true, agents = [], registratio
   const channelEntry = join(root, "lib", "channel", "main.js");
   mkdirSync(join(root, "lib", "channel"), { recursive: true });
   writeFileSync(channelEntry, "");
+  const agySidecarEntry = join(root, "lib", "agy-bridge", "main.js");
+  mkdirSync(join(root, "lib", "agy-bridge"), { recursive: true });
+  writeFileSync(agySidecarEntry, "");
   const dataDir = join(root, "data");
   const claudeJson = join(home, ".claude.json");
   const calls = [];
   const codexCalls = [];
+  const agyCalls = [];
   const logs = [];
   const run = async (args) => {
     calls.push(args);
@@ -55,9 +59,18 @@ function fixture(t, { version = "2.1.311", flag = true, agents = [], registratio
     if (args[0] === "--version") return { code: 0, stdout: `${codexVersion}\n`, stderr: "", timedOut: false };
     return { code: 0, stdout: "", stderr: "", timedOut: false };
   };
+  const agyRunner = async (args) => {
+    agyCalls.push(args);
+    if (agyVersion === null) throw new Error("spawn agy ENOENT");
+    if (args[0] === "--version") return { code: 0, stdout: `${agyVersion}\n`, stderr: "", timedOut: false };
+    return { code: 0, stdout: "", stderr: "", timedOut: false };
+  };
   const service = createSetupService({
     run,
     codexRunner,
+    agyRunner,
+    agyBridge: { registrations: () => agyRegistrations },
+    agyBridgeCredentials: createChannelCredentialService({ dataDir, name: "agy-bridge-credential.json" }),
     channel: { registrations: () => registrations, probe: async () => ({ status: "not_registered" }) },
     listAgents: async () => agents,
     channelCredentials: createChannelCredentialService({ dataDir }),
@@ -67,8 +80,11 @@ function fixture(t, { version = "2.1.311", flag = true, agents = [], registratio
     }),
     homeDir: home,
     env: { SHELL: shell },
+    platform,
+    existsFile,
     nodePath: "/usr/local/bin/node",
     channelEntry,
+    agySidecarEntry,
     skillsDir,
     now: (() => { let n = 1000; return () => ++n; })(),
     log: (x) => logs.push(x),
@@ -82,7 +98,7 @@ function fixture(t, { version = "2.1.311", flag = true, agents = [], registratio
     token: join(home, ".claude", "agent-relay", "channel-token"),
     notification: join(dataDir, "notification-client.json"),
   };
-  return { service, home, files, calls, codexCalls, logs, channelEntry, skillsDir };
+  return { service, home, files, calls, codexCalls, agyCalls, logs, channelEntry, agySidecarEntry, skillsDir };
 }
 const byKey = (report) => Object.fromEntries(report.items.map((i) => [i.key, i]));
 
@@ -455,3 +471,96 @@ test('选装项由登记动态发现，待接入不可安装，新增文件列�
  manifest.files.push('../secret.json');register();
  assert.equal((await service.check('codex')).optional_skills.find(x=>x.name==='demo-notify').available,false);
 });
+
+for (const platform of ['darwin', 'win32']) {
+  test(`Antigravity (${platform}) 前置安装写入全局 .gemini/config/skills 与 Sidecar 桥接，升级备份且不覆盖人工修改`, async t => {
+    const { service, home, skillsDir, agySidecarEntry } = fixture(t, { platform });
+    for (const name of ['claude-notify', 'codex-notify', 'agy-notify']) {
+      mkdirSync(join(skillsDir, name));
+      writeFileSync(join(skillsDir, name, 'agent-notify.json'), JSON.stringify({
+        format: 1,
+        name,
+        label: name,
+        target_agent: name.replace('-notify', ''),
+        status: 'ready',
+        files: ['SKILL.md', 'send.mjs', 'directory.mjs', 'start.mjs'],
+      }));
+      for (const f of ['SKILL.md', 'send.mjs', 'directory.mjs', 'start.mjs']) {
+        writeFileSync(join(skillsDir, name, f), `// ${name} ${f}`);
+      }
+    }
+
+    const checkBefore = await service.check('agy');
+    assert.equal(checkBefore.overall, 'needs_action');
+    assert.equal(byKey(checkBefore).agy.status, 'ok');
+    assert.equal(byKey(checkBefore).agy_sidecar_server.status, 'ok');
+    assert.equal(byKey(checkBefore).skill.status, 'missing');
+    assert.equal(byKey(checkBefore)['create-agent-notify'].status, 'missing');
+    assert.equal(byKey(checkBefore).agy_sidecar.status, 'missing');
+    assert.equal(byKey(checkBefore).agy_credential.status, 'missing');
+
+    await assert.rejects(service.requireReady('agy'), /前置安装/);
+
+    const installed = await service.install('agy', ['agy-notify', 'codex-notify']);
+    assert.equal(installed.overall, 'changed');
+    assert.equal(byKey(installed).skill.status, 'ok');
+    assert.equal(byKey(installed)['create-agent-notify'].status, 'ok');
+    assert.equal(byKey(installed).agy_sidecar.status, 'ok');
+    assert.equal(byKey(installed).agy_credential.status, 'ok');
+    assert.equal(byKey(installed)['agy-notify'].status, 'ok');
+    assert.equal(byKey(installed)['codex-notify'].status, 'ok');
+
+    const geminiSkills = join(home, '.gemini', 'config', 'skills');
+    assert.equal(existsSync(join(geminiSkills, 'dsh-notify', 'SKILL.md')), true);
+    assert.equal(existsSync(join(geminiSkills, 'create-agent-notify', 'SKILL.md')), true);
+    assert.equal(existsSync(join(geminiSkills, 'agy-notify', 'start.mjs')), true);
+    assert.equal(existsSync(join(geminiSkills, 'codex-notify', 'send.mjs')), true);
+    assert.equal(existsSync(join(geminiSkills, 'claude-notify')), false);
+
+    const sidecarPath = join(home, '.gemini', 'config', 'sidecars', 'dsh-agent-relay', 'sidecar.json');
+    const tokenPath = join(home, '.gemini', 'config', 'dsh-agent-relay', 'bridge-token');
+    const sidecarJson = JSON.parse(readFileSync(sidecarPath, 'utf8'));
+    assert.equal(sidecarJson.display_name, 'DSH Agent Relay Bridge');
+    assert.deepEqual(sidecarJson.args, [agySidecarEntry]);
+    assert.equal(existsSync(tokenPath), true);
+
+    await service.requireReady('agy');
+
+    // 插件入口变化时判为 outdated，自动备份并升级
+    sidecarJson.args = ['/old/agy-bridge/main.js'];
+    writeFileSync(sidecarPath, JSON.stringify(sidecarJson, null, 2));
+    assert.equal(byKey(await service.check('agy')).agy_sidecar.status, 'outdated');
+    const repaired = await service.install('agy');
+    assert.equal(byKey(repaired).agy_sidecar.action, 'updated');
+    assert.ok(byKey(repaired).agy_sidecar.backup);
+
+    // 用户自建同名非 Relay Sidecar 时判为 conflict，不覆盖
+    writeFileSync(sidecarPath, JSON.stringify({ display_name: 'custom-user-sidecar', command: 'python3', args: ['s.py'] }));
+    assert.equal(byKey(await service.check('agy')).agy_sidecar.status, 'conflict');
+    const conflictRun = await service.install('agy');
+    assert.equal(byKey(conflictRun).agy_sidecar.status, 'conflict');
+    assert.equal(JSON.parse(readFileSync(sidecarPath, 'utf8')).display_name, 'custom-user-sidecar');
+  });
+}
+
+test('Antigravity 未装 CLI 但存在桌面版 language_server 时可用，均缺失时阻断 Sidecar 写入', async t => {
+  const desktopOnly = fixture(t, {
+    agyVersion: null,
+    platform: 'win32',
+    existsFile: (p) => p.endsWith('language_server.exe'),
+  });
+  const okCheck = await desktopOnly.service.check('agy');
+  assert.equal(byKey(okCheck).agy.status, 'ok');
+  assert.equal(okCheck.version, null);
+  assert.match(byKey(okCheck).agy.message, /桌面端/);
+
+  const missingBoth = fixture(t, {
+    agyVersion: null,
+    platform: 'darwin',
+    existsFile: () => false,
+  });
+  const badCheck = await missingBoth.service.check('agy');
+  assert.equal(byKey(badCheck).agy.status, 'unavailable');
+  assert.equal('agy_sidecar' in byKey(badCheck), false);
+});
+

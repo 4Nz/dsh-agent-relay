@@ -50,6 +50,9 @@ test('发送器每次读新配置，支持空格中文路径和自定义 DSH_HOM
  symlinkSync(fileURLToPath(new URL('../../skills/dsh-notify',import.meta.url)),linked,process.platform==='win32'?'junction':'dir');
  const linkedCli=await promisify(execFile)(process.execPath,[join(linked,'send.mjs'),'--agent','codex','--external-session-id',input.external_session_id,'--request-id','stable','--summary','链接调用完成'],{env:{...process.env,DSH_AGENT_RELAY_CONFIG:path}});
  assert.equal(JSON.parse(linkedCli.stdout).accepted,true);
+ const agyCli=await promisify(execFile)(process.execPath,[fileURLToPath(new URL('../../skills/dsh-notify/send.mjs',import.meta.url)),'--agent','agy','--external-session-id','c46e2078-81c9-4e79-b6cd-98b6267ae3e4','--request-id','agy-req-1','--summary','Antigravity 完成'],{env:{...process.env,DSH_AGENT_RELAY_CONFIG:path}});
+ assert.equal(JSON.parse(agyCli.stdout).accepted,true);
+ assert.equal(received.at(-1).body.agent,'agy');
 });
 
 test('配置缺失或指向远程地址时拒绝发送，错误不包含 token', async(t)=>{

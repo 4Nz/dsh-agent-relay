@@ -33,7 +33,7 @@ export async function sendNotification(input, { env = process.env, home } = {}) 
     typeof input.request_id !== 'string' || !input.request_id.trim() || input.request_id.length > 1000))
     throw new Error('状态查询仅接受 --status 与原 --request-id，不接受发送参数');
   const results = ['completed','failed','idle_timeout','expired','session_closed','unreachable'];
-  if (!query && (!input || !['claude','codex'].includes(input.agent) || !input.external_session_id || !input.request_id || typeof input.summary !== 'string' || input.summary.length > 4000 || !results.includes(input.result ?? 'completed'))) throw new Error('通知参数无效，必须提供 Agent、真实会话 ID、稳定 request_id 和不超过 4000 字符的摘要');
+  if (!query && (!input || !['claude','codex','agy'].includes(input.agent) || !input.external_session_id || !input.request_id || typeof input.summary !== 'string' || input.summary.length > 4000 || !results.includes(input.result ?? 'completed'))) throw new Error('通知参数无效，必须提供 Agent（claude/codex/agy）、真实会话 ID、稳定 request_id 和不超过 4000 字符的摘要');
   const targeted = input.dsh_session_id !== undefined || input.dsh_session_name !== undefined;
   if ([input.dsh_session_id, input.dsh_session_name].some(value => value !== undefined && (typeof value !== 'string' || !value.trim())))
     throw new Error('目标会话 ID 或名称不能为空');

@@ -99,8 +99,8 @@ function integer(value: unknown, name: string, min: number, max: number) {
   return value;
 }
 function agent(value: unknown): Agent {
-  if (value !== "claude" && value !== "codex")
-    throw new TypeError("Agent 必须为 claude 或 codex");
+  if (value !== "claude" && value !== "codex" && value !== "agy")
+    throw new TypeError("Agent 必须为 claude、codex 或 agy");
   return value;
 }
 export function createRelayService({

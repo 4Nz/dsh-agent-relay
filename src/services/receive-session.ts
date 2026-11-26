@@ -22,7 +22,7 @@ export interface ReceiveSessionHost {
   };
 }
 
-const AGENT_LABELS: Record<Agent, string> = { claude: 'Claude', codex: 'Codex' };
+const AGENT_LABELS: Record<Agent, string> = { claude: 'Claude', codex: 'Codex', agy: 'Antigravity' };
 
 // 接收会话默认命名：<Agent名>-<外部会话标题或ID>-<通知|订阅>，便于在 DSH 会话列表里区分。
 export function receiveSessionTitle(context: ReceiveSessionContext): string {

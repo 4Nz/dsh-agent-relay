@@ -63,7 +63,8 @@ const relAgo = (value: number) => {
   if (hours < 24) return `${hours} 小时前`;
   return formatStart(value);
 };
-const agentName = (agent: string) => (agent === "claude" ? "Claude" : "Codex");
+const agentName = (agent: string) =>
+  ({ claude: "Claude", codex: "Codex", agy: "Antigravity" }[agent] ?? agent);
 const typeLabel = (type: string) => (type === "poll" ? "主动订阅" : "主动通知");
 const expiryText = (sub: any) => {
   if (sub.status === "ended") return "已结束";
@@ -374,7 +375,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     return () => clearInterval(timer);
   }, [drawer, probe?.status]);
   useEffect(() => {
-    if (drawer === "detail" && current?.agent === "codex") void inspect(current);
+    if (drawer === "detail" && (current?.agent === "codex" || current?.agent === "agy")) void inspect(current);
   }, [drawer, current?.id]);
   useEffect(() => {
     setEvents([]); setEventNext(null); setRecoveredBatch(null); setEventsError("");
@@ -401,11 +402,11 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     capabilities.find((a) => a.agent === agent)?.capabilities?.[key] === true;
   function sendAllowed(sub: any) {
     if (!capability(sub.agent, "sendMessage")) return false;
-    if (sub.agent !== "codex") return true;
+    if (sub.agent !== "codex" && sub.agent !== "agy") return true;
     return snapshot?.agent === sub.agent && snapshot?.external_session_id === sub.external_session_id && snapshot.value.send_allowed === true;
   }
   function sendReason(sub: any) {
-    if (sub.agent !== "codex") return "该 Agent 不支持发送消息或能力尚未加载";
+    if (sub.agent !== "codex" && sub.agent !== "agy") return "该 Agent 不支持发送消息或能力尚未加载";
     return snapshot?.external_session_id === sub.external_session_id ? snapshot.value.send_reason || "请查阅最新状态后发送" : "请先查阅会话，核对是否支持发送";
   }
   async function inspect(sub: any) {
@@ -854,6 +855,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           [
             ["claude", "Claude"],
             ["codex", "Codex"],
+            ["agy", "Antigravity"],
           ],
         ),
         agent === "codex" &&
@@ -861,6 +863,12 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             "div",
             { className: "notice muted small" },
             "选择已有的 Codex 桌面或 CLI 会话进行订阅，无需另建后台会话。订阅只查阅历史，不接管原会话。",
+          ),
+        agent === "agy" &&
+          h(
+            "div",
+            { className: "notice muted small" },
+            "选择已有的 Antigravity 桌面、IDE 或 CLI 会话进行订阅。订阅只查阅历史记录，不接管原会话；向桌面已有会话发消息需启用桥接 Sidecar。",
           ),
         fieldSelect(
           "外部会话",
@@ -1003,7 +1011,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         sub.status !== "ended" && h("button", { disabled: busy, onClick: () => {
           setFailures(String(sub.max_consecutive_failures)); setDrawer("edit");
         } }, "修改配置")),
-      sub.agent === "codex" && !sendAllowed(sub) && h("p", { className: "muted small" }, inspecting ? "正在核对会话状态…" : sendReason(sub)),
+      (sub.agent === "codex" || sub.agent === "agy") && !sendAllowed(sub) && h("p", { className: "muted small" }, inspecting ? "正在核对会话状态…" : sendReason(sub)),
       snapshot &&
         snapshot.agent === sub.agent &&
         snapshot.external_session_id === sub.external_session_id &&
@@ -1028,7 +1036,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         sub.planning_state === "ready" && !sub.schedule_task_id &&
         h("p", { className: "warn" }, "已选频率，宿主提醒尚未就绪，等待对账。"),
       eventSection(sub),
-      sub.agent === "codex" &&
+      (sub.agent === "codex" || sub.agent === "agy") &&
         h(
           "p",
           { className: "notice muted" },
@@ -1093,6 +1101,10 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const SETUP_ITEM: Record<string, string> = {
     claude: "Claude 命令",
     codex: "Codex 命令",
+    agy: "Antigravity 环境",
+    agy_sidecar_server: "桥接 Sidecar 程序",
+    agy_sidecar: "桥接 Sidecar 配置",
+    agy_credential: "桥接凭证",
     channel_flag: "channel 支持",
     channel_server: "channel server",
     mcp: "MCP 登记",
@@ -1105,18 +1117,21 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     "create-agent-notify": "Agent 接入 Skill（必装）",
     "claude-notify": "向 Claude 接力",
     "codex-notify": "向 Codex 接力",
+    "agy-notify": "向 Antigravity 接力",
   };
   const installDrawer = () => h(Drawer, { title: "前置安装接入", onClose: close },
     h("p", { className: "muted" }, installAgent === "claude"
       ? "为 Claude 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装；另含 channel（把消息送进开在终端里的会话）。已正常的项不会改动，修改前自动备份。"
-      : "为 Codex 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。"),
+      : installAgent === "agy"
+        ? "为 Antigravity 一次配好接入（兼容 macOS 与 Windows）：通知 Skill 与 create-agent-notify 默认必装，写入 ~/.gemini/config/skills；同时写入桌面桥接 Sidecar 配置。已正常的项不会改动，修改前自动备份。"
+        : "为 Codex 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。"),
     fieldSelect("Agent", installAgent, (v) => {
       setInstallAgent(v);
       setOptionalSkills([]);
       setSetupReport(null);
       setInstallError("");
       setSetupMessage("");
-    }, [["claude", "Claude"], ["codex", "Codex"]]),
+    }, [["claude", "Claude"], ["codex", "Codex"], ["agy", "Antigravity"]]),
     h("p", { className: "muted small" }, "默认必装：dsh-notify（通知 DSH / 查询投递状态）、create-agent-notify（创建与安装 Agent 接力 Skill）。无需勾选，安装 / 修复时自动处理。"),
     h("fieldset", { disabled: installBusy },
       h("legend", null, "可选接力 Skill"),
@@ -1134,12 +1149,12 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       h("p", { className: "muted small" }, "安装到上方选中的 Agent，共用 dsh-notify 的本机凭证。DSH 插件需保持运行；消息直接投递，不经 DSH 模型处理。取消勾选不会卸载已有 Skill。")),
     !setupReport && !installError && h("p", { className: "muted" }, "正在检查安装状态…"),
     setupReport && h("div", { className: "notice small" },
-      h("p", null, `${SETUP_OVERALL[setupReport.overall] ?? setupReport.overall}${setupReport.version ? ` · ${installAgent === "claude" ? "Claude Code" : "Codex"} ${setupReport.version}` : ""}`),
+      h("p", null, `${SETUP_OVERALL[setupReport.overall] ?? setupReport.overall}${setupReport.version ? ` · ${installAgent === "claude" ? "Claude Code" : installAgent === "agy" ? "Antigravity" : "Codex"} ${setupReport.version}` : ""}`),
       h("ul", null, ...setupReport.items.map((item: any) =>
         h("li", { key: item.key, className: item.status === "ok" ? "" : item.status === "conflict" || item.status === "unavailable" ? "error" : "warn" },
           `${SETUP_ITEM[item.key] ?? notifyCatalog.find(entry => entry.name === item.key)?.label ?? item.key}：${SETUP_LABEL[item.status] ?? item.status} · ${item.message}`,
           item.backup ? h("span", { className: "muted" }, `（备份：${item.backup}）`) : null))),
-      setupReport.sessions && h("p", { className: "muted" }, `已启用 channel 的会话：${setupReport.sessions.online} 个`),
+      setupReport.sessions && h("p", { className: "muted" }, installAgent === "agy" ? `在线桌面桥接 Sidecar：${setupReport.sessions.online} 个` : `已启用 channel 的会话：${setupReport.sessions.online} 个`),
       setupReport.next_steps?.length > 0 && h("div", null, h("p", null, "下一步："),
         h("ol", null, ...setupReport.next_steps.map((step: string, i: number) => h("li", { key: i }, step))))),
     installAgent === "claude" && probe && h("div", { className: "notice small" },
@@ -1233,6 +1248,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             ["", "全部 Agent"],
             ["claude", "Claude"],
             ["codex", "Codex"],
+            ["agy", "Antigravity"],
           ],
         ),
         filterSelect(
