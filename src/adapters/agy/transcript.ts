@@ -87,18 +87,29 @@ function parseJsonLines(text: string, strictMiddle = true): AgyRawStep[] {
   return records;
 }
 
-export function parseAgyTranscript(compactText: string, fullText?: string | null): AgyTranscript {
+export function parseAgyCompactSteps(compactText: string): {
+  records: AgyRawStep[];
+  truncatedSteps: Set<number>;
+} {
   const records = parseJsonLines(compactText, true);
-  let fullByStep: Map<number, AgyRawStep> | null = null;
-  if (fullText && records.some((r) => Array.isArray(r.truncated_fields) && r.truncated_fields.includes("content"))) {
-    fullByStep = new Map<number, AgyRawStep>();
-    for (const item of parseJsonLines(fullText, false)) {
-      if (typeof item.step_index === "number" && Number.isSafeInteger(item.step_index)) {
-        fullByStep.set(item.step_index, item);
-      }
+  const truncatedSteps = new Set<number>();
+  for (let i = 0; i < records.length; i++) {
+    const raw = records[i]!;
+    if (Array.isArray(raw.truncated_fields) && raw.truncated_fields.includes("content")) {
+      const stepIndex =
+        typeof raw.step_index === "number" && Number.isSafeInteger(raw.step_index) && raw.step_index >= 0
+          ? raw.step_index
+          : i;
+      truncatedSteps.add(stepIndex);
     }
   }
+  return { records, truncatedSteps };
+}
 
+export function buildAgyTranscript(
+  records: AgyRawStep[],
+  fullByStep: Map<number, AgyRawStep> | null = null,
+): AgyTranscript {
   const entries: AgyEntry[] = [];
   let maxStepIndex = -1;
   let lastTime: number | null = null;
@@ -192,6 +203,20 @@ export function parseAgyTranscript(compactText: string, fullText?: string | null
     last_reply: lastReply,
     entries,
   };
+}
+
+export function parseAgyTranscript(compactText: string, fullText?: string | null): AgyTranscript {
+  const { records, truncatedSteps } = parseAgyCompactSteps(compactText);
+  let fullByStep: Map<number, AgyRawStep> | null = null;
+  if (fullText && truncatedSteps.size > 0) {
+    fullByStep = new Map<number, AgyRawStep>();
+    for (const item of parseJsonLines(fullText, false)) {
+      if (typeof item.step_index === "number" && truncatedSteps.has(item.step_index)) {
+        fullByStep.set(item.step_index, item);
+      }
+    }
+  }
+  return buildAgyTranscript(records, fullByStep);
 }
 
 export function agyFinishedTurn(

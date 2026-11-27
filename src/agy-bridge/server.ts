@@ -57,11 +57,13 @@ export function startAgyBridgeClient({
   fetchImpl = fetch,
   runAgentApi = defaultRunAgentApi,
   log = (text: string) => process.stderr.write(`[dsh-agent-relay sidecar] ${text}\n`),
+  resultRetryDelaysMs = [500, 1500],
 }: {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   runAgentApi?: typeof defaultRunAgentApi;
   log?: (text: string) => void;
+  resultRetryDelaysMs?: number[];
 } = {}) {
   const relayBase = `http://127.0.0.1:${env.DSH_AGENT_RELAY_PORT ?? 37421}/api/agent-relay/agy-bridge`;
   const pid = Number(env.AGENT_RELAY_AGY_PID ?? process.pid);
@@ -88,9 +90,29 @@ export function startAgyBridgeClient({
       signal,
     });
     if (!response.ok) {
-      throw new Error(`DSH Relay 返回 ${response.status}：${(await response.text()).slice(0, 200)}`);
+      throw Object.assign(
+        new Error(`DSH Relay 返回 ${response.status}：${(await response.text()).slice(0, 200)}`),
+        { status: response.status },
+      );
     }
     return (await response.json()) as Record<string, unknown>;
+  }
+
+  async function reportResult(body: Record<string, unknown>) {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= resultRetryDelaysMs.length; attempt++) {
+      try {
+        return await callRelay("result", body, AbortSignal.timeout(10_000));
+      } catch (error) {
+        lastError = error;
+        const status = (error as { status?: number })?.status;
+        if (stopped || (typeof status === "number" && status >= 400 && status < 500) || attempt === resultRetryDelaysMs.length) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, resultRetryDelaysMs[attempt]!));
+      }
+    }
+    throw lastError;
   }
 
   async function callLs(method: string, body: Record<string, unknown>) {
@@ -195,16 +217,12 @@ export function startAgyBridgeClient({
         for (const cmd of commands) {
           if (!cmd || typeof cmd.request_id !== "string") continue;
           const outcome = await executeCommand(cmd);
-          await callRelay(
-            "result",
-            {
-              request_id: cmd.request_id,
-              ok: outcome.ok,
-              value: outcome.value,
-              error: outcome.error ?? null,
-            },
-            AbortSignal.timeout(10_000),
-          );
+          await reportResult({
+            request_id: cmd.request_id,
+            ok: outcome.ok,
+            value: outcome.value,
+            error: outcome.error ?? null,
+          });
         }
       } catch (error) {
         if (stopped) break;

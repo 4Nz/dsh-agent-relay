@@ -102,17 +102,24 @@ export function resolveAgyCommand({
   existsFile = defaultExistsFile,
 }: AgyPathOptions = {}): { command: string; args: string[]; found: boolean } {
   const paths = platform === "win32" ? win32 : posix;
-  const wrap = (command: string, found: boolean) =>
-    /\.[cm]?js$/i.test(command)
-      ? { command: nodePath, args: [command, ...cliArgs], found }
-      : { command, args: cliArgs, found };
+  const wrap = (command: string, found: boolean) => {
+    if (/\.[cm]?js$/i.test(command)) return { command: nodePath, args: [command, ...cliArgs], found };
+    // Windows 下 Node >=20.12 禁止不经 shell 直接 spawn .cmd/.bat（会抛出 EINVAL）；优先寻找同目录 agy.exe。
+    if (platform === "win32" && /\.(cmd|bat)$/i.test(command)) {
+      const siblingExe = paths.join(paths.dirname(command), "agy.exe");
+      if (existsFile(siblingExe)) return { command: siblingExe, args: cliArgs, found: true };
+      return { command, args: cliArgs, found: false };
+    }
+    return { command, args: cliArgs, found };
+  };
 
   const specified = cliPath ?? env.DSH_AGY_BIN?.trim();
   if (specified) return wrap(specified, existsFile(specified));
 
   const pathEntry = Object.entries(env).find(([key]) => key.toLowerCase() === "path")?.[1] ?? "";
   const separator = platform === "win32" ? ";" : ":";
-  const names = platform === "win32" ? ["agy.exe", "agy.cmd", "agy.bat"] : ["agy"];
+  // Windows 下仅匹配原生可执行文件 agy.exe，避免误选 .cmd/.bat 触发 spawn EINVAL。
+  const names = platform === "win32" ? ["agy.exe"] : ["agy"];
   for (const rawDir of pathEntry.split(separator).filter(Boolean)) {
     const dir = rawDir.replace(/^"(.*)"$/, "$1");
     for (const name of names) {

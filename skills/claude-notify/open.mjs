@@ -25,7 +25,7 @@ export async function prepareLaunch(input, { home = homedir(), env = process.env
   const cwd = await realpath(input.cwd);
   if (!(await stat(cwd)).isDirectory()) throw new Error('工作目录不是目录');
   const root = env.DSH_HOME?.trim() || join(home, '.dsh');
-  const expanded = root === '~' ? home : root.startsWith('~/') ? join(home, root.slice(2)) : resolve(root);
+  const expanded = root === '~' ? home : root.startsWith('~/') || root.startsWith('~\\') ? join(home, root.slice(2)) : resolve(root);
   const parent = join(expanded, 'agent-relay', 'visible-launches');
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const directory = join(parent, hash(input.request_id));
@@ -80,19 +80,56 @@ export async function openLaunch(record, { run = promisify(execFile) } = {}) {
   return opened;
 }
 
+async function readStdin(maxBytes = 128 * 1024, timeoutMs = 15000) {
+  if (process.stdin.isTTY) throw new Error('使用 --stdin 时必须通过管道或 heredoc 传入正文，当前标准输入是交互终端');
+  const raw = await new Promise((resolve_, reject) => {
+    const chunks = [];
+    let total = 0, settled = false;
+    const done = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.stdin.removeListener('data', onData);
+      process.stdin.removeListener('end', onEnd);
+      process.stdin.removeListener('error', onError);
+      fn(value);
+    };
+    const timer = setTimeout(() => { process.stdin.pause(); done(reject, new Error('读取标准输入超时，请确认已关闭输入流或改用 --content-file')); }, timeoutMs);
+    const onData = chunk => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buf.length;
+      if (total > maxBytes) { process.stdin.pause(); done(reject, new Error('标准输入正文超过大小上限')); return; }
+      chunks.push(buf);
+    };
+    const onEnd = () => done(resolve_, Buffer.concat(chunks).toString('utf8'));
+    const onError = () => done(reject, new Error('读取标准输入失败'));
+    process.stdin.on('data', onData);
+    process.stdin.once('end', onEnd);
+    process.stdin.once('error', onError);
+    process.stdin.resume();
+  });
+  return raw.replace(/\r\n/g, '\n').replace(/\n$/, '');
+}
+
 if (process.argv[1] && await realpath(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const input = {}, args = process.argv.slice(2);
-    const allowed = new Set(['request-id', 'cwd', 'content-file']);
-    let prepareOnly = false;
+    const allowed = new Set(['request-id', 'cwd', 'content-file', 'content']);
+    let prepareOnly = false, useStdin = false;
     for (let i = 0; i < args.length; i++) {
       if (args[i] === '--prepare-only') { prepareOnly = true; continue; }
+      if (args[i] === '--stdin') { if (useStdin) throw new Error('参数重复'); useStdin = true; continue; }
       const key = args[i].replace(/^--/, '');
       if (!args[i].startsWith('--') || !allowed.has(key) || args[i + 1] === undefined || key in input)
-        throw new Error('用法：node open.mjs --request-id <稳定 ID> --cwd <绝对目录> --content-file <正文文件> [--prepare-only]');
+        throw new Error('用法：node open.mjs --request-id <稳定 ID> --cwd <绝对目录> (--stdin | --content <正文> | --content-file <正文文件>) [--prepare-only]');
       input[key] = args[++i];
     }
-    const record = await prepareLaunch({ request_id: input['request-id'], cwd: input.cwd, content: await readFile(input['content-file'], 'utf8') });
+    const contentSources = [input['content-file'] !== undefined, input.content !== undefined, useStdin].filter(Boolean).length;
+    if (contentSources !== 1) throw new Error('必须且仅能提供一种正文来源：--stdin、--content 或 --content-file');
+    const content = input['content-file'] !== undefined
+      ? (await readFile(input['content-file'], 'utf8')).replace(/\r\n/g, '\n')
+      : useStdin ? await readStdin() : input.content;
+    const record = await prepareLaunch({ request_id: input['request-id'], cwd: input.cwd, content });
     const result = prepareOnly ? record : await openLaunch(record);
     console.log(JSON.stringify({ status: result.status, session_id: result.session_id, cwd: result.cwd, command_file: result.command_file, duplicate: result.duplicate,
       note: 'opened 仅表示终端已请求打开，不代表任务已处理；请在可见终端检查信任、channel 提示和权限交互。后续按此 session_id 发送，不重复投递首条任务。' }));

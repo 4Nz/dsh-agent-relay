@@ -219,6 +219,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState({ agent: "", status: "", type: "" }),
     [cursor, setCursor] = useState<any>(null),
+    [cursorStack, setCursorStack] = useState<any[]>([]),
     [next, setNext] = useState<any>(null);
   const [drawer, setDrawer] = useState(""),
     [selected, setSelected] = useState("");
@@ -305,7 +306,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       if (version === revision.current) setLoading(false);
     }
   }
-  useEffect(()=>{let live=true;void call("routes",{cursor:routeCursor,limit:20}).then(page=>{if(live){setRoutes(page?.items??[]);setRouteNext(page?.next_cursor??null);setRouteError("");}}).catch(e=>{if(live)setRouteError(e.message);});return()=>{live=false;};},[routeCursor,refreshVersion]);
+  useEffect(()=>{if(drawer!=="route")return;let live=true;void call("routes",{cursor:routeCursor,limit:20}).then(page=>{if(live){setRoutes(page?.items??[]);setRouteNext(page?.next_cursor??null);setRouteError("");}}).catch(e=>{if(live)setRouteError(e.message);});return()=>{live=false;};},[drawer,routeCursor,refreshVersion]);
   useEffect(() => {
     void refresh();
     return () => {
@@ -487,7 +488,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       }
       setDrawer(""); setConflict(null);
       setNotice(value.subscription?.planning_state === "pending" ? "关注已保存，等待 DSH 按主题规划频率；最长 24 小时。" : value.schedule_ready ? "关注已保存，宿主提醒已就绪。" : "关注已保存，等待 DSH 判断或宿主提醒对账。");
-      if (cursor) setCursor(null); else setRefreshVersion((v) => v + 1);
+      if (cursor) { setCursorStack([]); setCursor(null); } else setRefreshVersion((v) => v + 1);
     } catch (e) {
       if ((e as any).code !== "conflict") throw e;
       const current = await call("current", { agent: payload.agent, external_session_id: payload.external_session_id });
@@ -558,6 +559,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
       setNotice(
         `已清理：删除订阅 ${value.subscriptions} 条、通知 ${value.notifications} 条、消息 ${value.messages} 条。`,
       );
+      setCursorStack([]);
       setCursor(null);
       setRefreshVersion((version) => version + 1);
     } catch (e) {
@@ -610,6 +612,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   }
   const setFilterField = (key: "agent" | "status" | "type", value: string) => {
     setFilter({ ...filter, [key]: value });
+    setCursorStack([]);
     setCursor(null);
   };
   const fieldSelect = (
@@ -1107,6 +1110,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     agy_credential: "桥接凭证",
     channel_flag: "channel 支持",
     channel_server: "channel server",
+    push_server: "本机通知服务",
     mcp: "MCP 登记",
     credential: "channel 凭证",
     notification: "通知凭证",
@@ -1278,6 +1282,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             {
               onClick: () => {
                 setFilter({ agent: "", status: "", type: "" });
+                setCursorStack([]);
                 setCursor(null);
               },
             },
@@ -1350,20 +1355,33 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         { className: "muted small" },
         "暂停接收 Agent 消息只暂停这个外部会话的主动通知投递：已记录事件会保留，历史订阅检查继续进行；恢复后继续接收。",
       ),
-      (cursor || next) &&
+      (cursor || cursorStack.length > 0 || next) &&
         h(
           "div",
           { className: "row", style: { marginTop: 14 } },
-          cursor &&
+          (cursor || cursorStack.length > 0) &&
             h(
               "button",
-              { onClick: () => setCursor(null), disabled: loading },
+              {
+                onClick: () => {
+                  const prev = cursorStack.length > 0 ? cursorStack[cursorStack.length - 1] : null;
+                  setCursorStack((stack) => stack.slice(0, -1));
+                  setCursor(prev);
+                },
+                disabled: loading,
+              },
               "上一页",
             ),
           next &&
             h(
               "button",
-              { onClick: () => setCursor(next), disabled: loading },
+              {
+                onClick: () => {
+                  setCursorStack((stack) => [...stack, cursor]);
+                  setCursor(next);
+                },
+                disabled: loading,
+              },
               "下一页",
             ),
         ),
@@ -1418,9 +1436,27 @@ const browserNotifyChannel: NotifyChannel = {
 const NOTIFY_STORAGE_KEY = "dsh-agent-relay:notify:lastSeen";
 const NOTIFY_POLL_INTERVAL_MS = 30_000;
 
+function parseSummaryText(raw: unknown): string {
+  const text = String(raw ?? "").trim();
+  if (!text) return "";
+  if (text.startsWith("{") && text.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      for (const key of ["summary", "text", "message", "reply"]) {
+        if (typeof parsed[key] === "string" && parsed[key].trim()) {
+          return parsed[key].trim();
+        }
+      }
+    } catch {
+      /* 非 JSON 原样展示 */
+    }
+  }
+  return text;
+}
+
 function notifyText(item: any) {
   const status = `${label(item.result)} · ${label(item.delivery_status)}`;
-  const summary = String(item.summary ?? "").trim().slice(0, 200);
+  const summary = parseSummaryText(item.summary).slice(0, 200);
   return summary ? `${status}：${summary}` : status;
 }
 

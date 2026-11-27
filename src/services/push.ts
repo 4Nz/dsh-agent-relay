@@ -336,24 +336,46 @@ export function createPushServer({
       }
     });
   });
+  let state: { listening: boolean; host: string; port: number; error: string | null } = {
+    listening: false,
+    host,
+    port,
+    error: null,
+  };
   return {
     server,
+    status: () => ({ ...state }),
     start: () =>
       new Promise<{ host: string; port: number }>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(port, host, () => {
-          server.removeListener("error", reject);
-          const address = server.address();
-          resolve({
+        const onError = (error: Error) => {
+          state = {
+            listening: false,
             host,
-            port: typeof address === "object" && address ? address.port : port,
-          });
+            port,
+            error: error instanceof Error ? error.message : String(error),
+          };
+          reject(error);
+        };
+        server.once("error", onError);
+        server.listen(port, host, () => {
+          server.removeListener("error", onError);
+          const address = server.address();
+          const boundPort =
+            typeof address === "object" && address ? address.port : port;
+          state = { listening: true, host, port: boundPort, error: null };
+          resolve({ host, port: boundPort });
         });
       }),
     stop: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
+      new Promise<void>((resolve, reject) => {
+        state = { ...state, listening: false };
+        if (!server.listening) {
+          resolve();
+          return;
+        }
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections?.();
+      }),
   };
 }
 

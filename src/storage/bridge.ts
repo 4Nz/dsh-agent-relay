@@ -181,6 +181,13 @@ export function createBridgeStore(db: DatabaseSync) {
         .prepare("SELECT * FROM relay_bridge_batch WHERE bridge_id=?")
         .all(id) as unknown as BridgeBatch[];
     },
+    openBatchesForSubscription(subscriptionId: string) {
+      return db
+        .prepare(
+          "SELECT * FROM relay_bridge_batch WHERE subscription_id=? AND state IN ('pending','delivering','unknown','delivered','exhausted','muted')",
+        )
+        .all(subscriptionId) as unknown as BridgeBatch[];
+    },
     append(
       b: Bridge,
       event: {

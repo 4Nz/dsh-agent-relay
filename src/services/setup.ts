@@ -126,6 +126,7 @@ export function createSetupService({
   agyRunner,
   agyBridge,
   agyBridgeCredentials,
+  pushServerStatus,
   supportedNotifyAgents = () => ["claude", "codex", "agy"],
   homeDir = homedir(),
   env = process.env,
@@ -147,6 +148,7 @@ export function createSetupService({
   agyRunner?: ClaudeRunner;
   agyBridge?: Pick<AgyBridgeService, "registrations">;
   agyBridgeCredentials?: Pick<ChannelCredentialService, "reset" | "verify">;
+  pushServerStatus?: () => { listening: boolean; host: string; port: number; error: string | null };
   supportedNotifyAgents?: () => readonly string[];
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
@@ -405,6 +407,22 @@ export function createSetupService({
     if (status.configured) return { key: "notification", status: "ok", message: "通知凭证已就绪" };
     return { key: "notification", status: "missing", message: "通知凭证未生成，安装时自动生成" };
   }
+  function pushServerItem(): SetupItem | null {
+    if (!pushServerStatus) return null;
+    const state = pushServerStatus();
+    if (state.listening) {
+      return {
+        key: "push_server",
+        status: "ok",
+        message: `本机通知与桥接服务已监听 ${state.host}:${state.port}`,
+      };
+    }
+    return {
+      key: "push_server",
+      status: "unavailable",
+      message: `本机通知与桥接服务未监听（${state.host}:${state.port}）${state.error ? `：${state.error}` : "；请检查端口占用后重启 DSH"}`,
+    };
+  }
   const catalog = () => discoverNotifySkills(skillsDir, supportedNotifyAgents());
   function optionalSkills(value: unknown): string[] {
     if (value === undefined) return [];
@@ -577,6 +595,8 @@ export function createSetupService({
     if (claude.status === "ok") items.push(await channelFlag(version));
     items.push(channelServer());
     const blocking = items.some((i) => i.status === "unavailable");
+    const server = pushServerItem();
+    if (server) items.push(server);
     // 通知凭证是纯文件检查，与 claude 命令是否可用无关，始终展示。
     items.push(notificationItem(), skillItem("claude"), creatorItem("claude"));
     items.push(...selected.map(name => skillItem("claude", name)));
@@ -590,6 +610,8 @@ export function createSetupService({
     const { item: codex, version } = await codexVersion();
     const items: SetupItem[] = [codex];
     const blocking = codex.status === "unavailable";
+    const server = pushServerItem();
+    if (server) items.push(server);
     // 通知 Skill 与通知凭证都是文件级检查，不依赖 codex 命令，始终展示。
     items.push(notificationItem(), skillItem("codex"), creatorItem("codex"));
     items.push(...selected.map(name => skillItem("codex", name)));
@@ -600,6 +622,8 @@ export function createSetupService({
     const sidecarServer = agySidecarServerItem();
     const items: SetupItem[] = [agy, sidecarServer];
     const blocking = items.some((i) => i.status === "unavailable");
+    const server = pushServerItem();
+    if (server) items.push(server);
     items.push(notificationItem(), skillItem("agy"), creatorItem("agy"));
     items.push(...selected.map((name) => skillItem("agy", name)));
     if (!blocking) items.push(agySidecarItem(), agyTokenItem());
@@ -619,7 +643,8 @@ export function createSetupService({
   function finish(report: SetupReport, blocking: boolean): SetupReport {
     const changed = report.items.some((i) => i.action && i.action !== "skipped" && i.action !== "none");
     const pending = report.items.some((i) => i.status !== "ok");
-    report.overall = blocking ? "unavailable" : pending ? "needs_action" : changed ? "changed" : "ok";
+    const unavailable = blocking || report.items.some((i) => i.key === "push_server" && i.status === "unavailable");
+    report.overall = unavailable ? "unavailable" : pending ? "needs_action" : changed ? "changed" : "ok";
     const steps: string[] = [];
     if (report.items.some((i) => i.key === "shell" && i.status === "ok")) {
       const quotedRc = `'${rcFile()!.replaceAll("'", "'\\''")}'`;
@@ -678,6 +703,8 @@ export function createSetupService({
         const items: SetupItem[] = [
           codex.status === "ok" ? { ...codex, action: "skipped" as const } : { ...codex, action: "none" as const },
         ];
+        const server = pushServerItem();
+        if (server) items.push({ ...server, action: server.status === "ok" ? "skipped" : "none" });
         // 通知凭证是纯文件操作，与命令是否可用无关，始终确保生成。
         items.push(notification.status === "ok" ? { ...notification, action: "skipped" as const } : fixNotification(notification));
         if (blocking || skill.status === "ok") items.push({ ...skill, action: blocking ? "none" as const : "skipped" as const });

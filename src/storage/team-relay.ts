@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { transaction } from "./database.js";
 import { integer, json, text } from "./records.js";
 
 export type TeamRelayRunStatus =
@@ -65,9 +66,7 @@ function runFromRow(row: Record<string, unknown> | undefined): TeamRelayRun | nu
 export function createTeamRelayStore(db: DatabaseSync) {
   return {
     transaction<T>(work: () => T): T {
-      db.exec("BEGIN IMMEDIATE");
-      try { const value = work(); db.exec("COMMIT"); return value; }
-      catch (error) { db.exec("ROLLBACK"); throw error; }
+      return transaction(db, work);
     },
     recoverInterrupted(): void {
       db.prepare("UPDATE relay_team_task SET status='unknown',error='宿主中断，执行结果未确认；不得自动重发',updated_at=? WHERE status IN ('queued','running')").run(Date.now());

@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 import { AdapterError } from "../types.js";
@@ -26,8 +27,10 @@ import {
   agyFindPrompt,
   agyFinishedTurn,
   agyMessageProgress,
+  buildAgyTranscript,
+  parseAgyCompactSteps,
   parseAgyCursorStep,
-  parseAgyTranscript,
+  type AgyRawStep,
   type AgyTranscript,
 } from "./transcript.js";
 
@@ -115,7 +118,10 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): AgentAdapter 
 
   function parseDbTime(raw: unknown): number | null {
     if (typeof raw !== "string" || !raw.trim()) return null;
-    const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+    let normalized = raw.trim();
+    if (!normalized.includes("T")) normalized = normalized.replace(" ", "T");
+    // SQLite CURRENT_TIMESTAMP 与无偏移时间按 UTC 解释，避免跨时区产生偏移。
+    if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized)) normalized += "Z";
     const ms = Date.parse(normalized);
     return Number.isNaN(ms) ? null : ms;
   }
@@ -228,13 +234,46 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): AgentAdapter 
     }
   }
 
+  async function loadFullSteps(
+    fullPath: string,
+    neededSteps: Set<number>,
+  ): Promise<Map<number, AgyRawStep> | null> {
+    if (neededSteps.size === 0 || !existsSync(fullPath)) return null;
+    const fullByStep = new Map<number, AgyRawStep>();
+    const stream = createReadStream(fullPath, { encoding: "utf8" });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    try {
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        let item: AgyRawStep;
+        try {
+          item = JSON.parse(line) as AgyRawStep;
+        } catch {
+          continue;
+        }
+        if (typeof item.step_index === "number" && neededSteps.has(item.step_index)) {
+          fullByStep.set(item.step_index, item);
+          if (fullByStep.size === neededSteps.size) break;
+        }
+      }
+    } catch {
+      return fullByStep.size > 0 ? fullByStep : null;
+    } finally {
+      rl.close();
+      stream.destroy();
+    }
+    return fullByStep;
+  }
+
   async function loadTranscript(dataDir: string, sessionId: string): Promise<AgyTranscript | null> {
     const files = await findBrainTranscript(dataDir, sessionId);
     if (!files) return null;
     try {
       const compact = await readFile(files.compactPath, "utf8");
-      const full = await readFile(files.fullPath, "utf8").catch(() => null);
-      return parseAgyTranscript(compact, full);
+      const { records, truncatedSteps } = parseAgyCompactSteps(compact);
+      const fullByStep =
+        truncatedSteps.size > 0 ? await loadFullSteps(files.fullPath, truncatedSteps) : null;
+      return buildAgyTranscript(records, fullByStep);
     } catch (error) {
       if (error instanceof AdapterError) throw error;
       throw new AdapterError(
@@ -314,7 +353,9 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): AgentAdapter 
       if (!bridgeOnline || !options.bridge) {
         return { status: "rejected", reason: BRIDGE_OFFLINE_NOTE };
       }
-      const outcome = await options.bridge.sendMessage(sessionId, text);
+      const outcome = await options.bridge.sendMessage(sessionId, text, {
+        preferredAppDataDir: located.dataDir,
+      });
       if (outcome.status === "sent") {
         return { status: "sent", external_ref: `agy-after:${baselineStep}` };
       }
@@ -487,7 +528,9 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): AgentAdapter 
       const bridgeOnline = options.bridge?.isOnline() === true;
       const liveMeta =
         bridgeOnline && options.bridge && (!located || located.surface !== "antigravity-cli")
-          ? await options.bridge.getConversation(sessionId).catch(() => null)
+          ? await options.bridge
+              .getConversation(sessionId, { preferredAppDataDir: located?.dataDir })
+              .catch(() => null)
           : null;
 
       if (liveMeta?.found === false && !located) {
