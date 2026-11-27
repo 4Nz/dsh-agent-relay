@@ -18,8 +18,9 @@ import {
   resolveAgySkillsDir,
   resolveGeminiDir,
 } from "../adapters/agy/paths.js";
-import { NOTIFICATION_SKILL } from "./skill-install.js";
 import { CHANNEL_NAME, INSTRUCTIONS } from "../channel/server.js";
+
+export const NOTIFICATION_SKILL = "dsh-notify";
 
 // 前置安装接入：按 Agent 安装和自检，可选安装跨 Agent 接力 Skill。
 // 配置文件由插件直接写入；修改前备份，已正常的项不改动，内容被改过或重复的项不自动覆盖。

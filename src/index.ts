@@ -33,7 +33,6 @@ import {
   createChannelCredentialService,
   createNotificationCredentialService,
 } from "./services/credentials.js";
-import { createSkillInstallService } from "./services/skill-install.js";
 import { createPushHandler, createPushServer } from "./services/push.js";
 import { createClaudeChannelService } from "./services/claude-channel.js";
 import { createProviderRegistry } from "./providers/registry.js";
@@ -189,7 +188,6 @@ export function apply(ctx: Context): void {
     store,
     transport: createDshDelivery(host, store.unread),
   });
-  const skillInstall = createSkillInstallService({ adapters });
   let getPushStatus = () => ({
     listening: false,
     host: "127.0.0.1",
@@ -242,7 +240,6 @@ export function apply(ctx: Context): void {
     subscriptions,
     checks,
     notifications,
-    skillInstall,
     createDshSession: createReceiveSession,
     listDshSessions: () => dshSessions.list(),
     hasDshSession: (id) => dshSessions.has(id),

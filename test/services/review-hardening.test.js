@@ -345,14 +345,17 @@ test("R-03 & N-6 存储与后台目录定期清理：终态表按窗口清理，
   assert.equal(existsSync(recentCompleted), true);
 });
 
-test("R-05 & R-13 接力 Skill 脚本三端完全一致，且 --stdin 安全校验与指纹一致", async (t) => {
+test("R-05 & R-13 接力 Skill 脚本三端与单源模板完全一致，且 --stdin 安全校验与指纹一致", async (t) => {
   const skillsRoot = new URL("../../skills/", import.meta.url);
+  const templateRoot = new URL("../../scripts/skill-templates/agent-notify/", import.meta.url);
   for (const file of ["send.mjs", "start.mjs", "directory.mjs"]) {
+    const template = readFileSync(new URL(file, templateRoot), "utf8");
     const agy = readFileSync(new URL(`agy-notify/${file}`, skillsRoot), "utf8");
     const claude = readFileSync(new URL(`claude-notify/${file}`, skillsRoot), "utf8");
     const codex = readFileSync(new URL(`codex-notify/${file}`, skillsRoot), "utf8");
-    assert.equal(claude, agy, `claude-notify/${file} 必须与 agy-notify/${file} 字节一致`);
-    assert.equal(codex, agy, `codex-notify/${file} 必须与 agy-notify/${file} 字节一致`);
+    assert.equal(agy, template, `agy-notify/${file} 必须与单源模板字节一致`);
+    assert.equal(claude, template, `claude-notify/${file} 必须与单源模板字节一致`);
+    assert.equal(codex, template, `codex-notify/${file} 必须与单源模板字节一致`);
   }
 
   // TTY 立即拒绝

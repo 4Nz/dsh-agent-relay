@@ -13,7 +13,6 @@ import type {
 import type { SubscriptionService } from "./subscriptions.js";
 import type { CheckService } from "./checks.js";
 import type { NotificationService } from "./notifications.js";
-import type { SkillInstallService } from "./skill-install.js";
 import type { SetupService } from "./setup.js";
 import type { ReceiveSessionContext } from "./receive-session.js";
 import type { DshSessionStatus } from "./dsh-sessions.js";
@@ -48,8 +47,6 @@ export const endpoints = [
   "messages",
   "message_status",
   "update",
-  "install_skill",
-  "install_skill_preview",
   "setup_check",
   "setup_install",
   "setup_uninstall",
@@ -111,7 +108,6 @@ export function createRelayService({
   subscriptions,
   checks,
   notifications,
-  skillInstall,
   listDshSessions,
   hasDshSession,
   dshSessionStatus,
@@ -130,7 +126,6 @@ export function createRelayService({
   subscriptions: SubscriptionService;
   checks: CheckService;
   notifications: NotificationService;
-  skillInstall: SkillInstallService;
   listDshSessions: () => Promise<DshSessionOption[]>;
   // 验证接收会话存在且未归档，不读取标题/正文；归档抛明确错误，查询失败不当作不存在。
   hasDshSession?: (id: string) => Promise<boolean>;
@@ -320,12 +315,6 @@ export function createRelayService({
           }
           case "agents":
             value = adapters.list();
-            break;
-          case "install_skill_preview":
-            value = await skillInstall.preview(agent(args.agent));
-            break;
-          case "install_skill":
-            value = await skillInstall.install(agent(args.agent));
             break;
           case "setup_check":
           case "setup_install":

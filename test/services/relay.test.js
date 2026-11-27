@@ -363,15 +363,6 @@ test("消息 RPC 按 Agent 和外部会话分页查询", async (t) => {
   assert.equal(result.value.items[0].content, "查询我");
 });
 
-test("已注册的 Skill 预览和安装 RPC 必须实际分发到服务", async(t)=>{
-  const {relay}=setup(t);
-  const preview=await relay.call('install_skill_preview',{agent:'codex'});
-  assert.equal(preview.ok,true);assert.equal(preview.value.prompt,'请安装');
-  assert.equal(preview.value.agent,'codex');
-  const installed=await relay.call('install_skill',{agent:'claude'});
-  assert.equal(installed.ok,true);assert.equal(installed.value.result.status,'completed');
-});
-
 test('所有对外注册的 Relay 操作都有处理分支',async(t)=>{
   const {relay}=setup(t);
   for(const endpoint of endpoints){

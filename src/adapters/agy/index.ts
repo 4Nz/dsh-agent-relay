@@ -213,7 +213,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): AgentAdapter 
   async function findBrainTranscript(
     dataDir: string,
     sessionId: string,
-  ): Promise<{ compactPath: string; fullPath: string; mtimeMs: number } | null> {
+  ): Promise<{ compactPath: string; fullPath: string; mtimeMs: number; size: number } | null> {
     const logsDir = join(dataDir, "brain", sessionId, ".system_generated", "logs");
     const compactPath = join(logsDir, "transcript.jsonl");
     try {
@@ -223,6 +223,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): AgentAdapter 
         compactPath,
         fullPath: join(logsDir, "transcript_full.jsonl"),
         mtimeMs: info.mtimeMs,
+        size: info.size,
       };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -388,10 +389,16 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): AgentAdapter 
       state.exited = res;
     });
 
+    let lastStatKey = "";
     while (true) {
-      const latest = await loadTranscript(located.dataDir, sessionId).catch(() => null);
-      const ref = latest ? agyFindPrompt(latest, baselineStep, text) : null;
-      if (ref) return { status: "sent", external_ref: ref };
+      const files = await findBrainTranscript(located.dataDir, sessionId).catch(() => null);
+      const statKey = files ? `${files.mtimeMs}:${files.size}` : "";
+      if (statKey && statKey !== lastStatKey) {
+        lastStatKey = statKey;
+        const latest = await loadTranscript(located.dataDir, sessionId).catch(() => null);
+        const ref = latest ? agyFindPrompt(latest, baselineStep, text) : null;
+        if (ref) return { status: "sent", external_ref: ref };
+      }
       if (state.exited) {
         const afterExitTranscript = await loadTranscript(located.dataDir, sessionId).catch(() => null);
         const finalRef = afterExitTranscript ? agyFindPrompt(afterExitTranscript, baselineStep, text) : null;
