@@ -4,6 +4,11 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { Context } from "@deepseek-ai/cordis";
 import type { openRelayStore } from "./storage/index.js";
 import type { TeamRelayService } from "./services/team-relay/index.js";
+import {
+  defaultAgentAliasConfig,
+  formatAgentAliasSummary,
+  type AgentAliasStore,
+} from "./services/agent-aliases.js";
 
 type RelayStore = ReturnType<typeof openRelayStore>;
 
@@ -12,7 +17,13 @@ export function registerTools(
   store: RelayStore,
   relay: RelayService,
   teamRelay?: TeamRelayService,
+  agentAliases?: AgentAliasStore,
 ): void {
+  const aliasSummary =
+    agentAliases?.summary() || formatAgentAliasSummary(defaultAgentAliasConfig());
+  const aliasHint = aliasSummary
+    ? ` 本机默认/已配置 Agent 别名：${aliasSummary}（配置文件：$DSH_HOME/agent-relay/agent-aliases.json）；调用工具时仍传入规范 agent ID（claude/codex/agy）。`
+    : "";
   const agent = {
     type: "string",
     enum: ["claude", "codex", "agy"],
@@ -39,7 +50,7 @@ export function registerTools(
       name: "relay_list_sessions",
       endpoint: "sessions",
       description:
-        "列出指定 Agent 的候选会话；用会话 ID 路由，多个候选先让用户核对。",
+        `列出指定 Agent 的候选会话；用会话 ID 路由，多个候选先让用户核对。${aliasHint}`,
       parameters: { agent, limit: { type: "integer" } },
     },
     {
@@ -71,7 +82,7 @@ export function registerTools(
       name: "relay_send",
       endpoint: "send",
       description:
-        "向指定外部会话发送消息；content 最多 2000 个 UTF-16 码元（普通汉字计 1，部分 emoji 计 2）。超长请先整理汇总；调研等完整内容保存为接收方可访问的文档，发送摘要与路径，不建议分段。sent 不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递：先为 queued，会话空闲且前条已 ack 或超时后推送为 sent；sent 仅表示 Relay 已交给 channel 轮询，不保证 Claude 已收到，Claude 确认后记录 acked_at；未有在线 channel 登记时 rejected。Codex 桌面会话经队列排队投递，专用后台会话直接开始新轮。可显式选择发送成功后复用或创建持续关注，随后按主题规划；不无条件创建重复订阅。",
+        `向指定外部会话发送消息；content 最多 2000 个 UTF-16 码元（普通汉字计 1，部分 emoji 计 2）。超长请先整理汇总；调研等完整内容保存为接收方可访问的文档，发送摘要与路径，不建议分段。sent 不代表任务完成。Claude 会话开在终端里时经 Agent Relay channel 投递：先为 queued，会话空闲且前条已 ack 或超时后推送为 sent；sent 仅表示 Relay 已交给 channel 轮询，不保证 Claude 已收到，Claude 确认后记录 acked_at；未有在线 channel 登记时 rejected。Codex 桌面会话经队列排队投递，专用后台会话直接开始新轮。可显式选择发送成功后复用或创建持续关注，随后按主题规划；不无条件创建重复订阅。${aliasHint}`,
       parameters: {
         agent,
         external_session_id: { type: "string", required: true },

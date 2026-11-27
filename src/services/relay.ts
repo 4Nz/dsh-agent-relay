@@ -16,6 +16,12 @@ import type { NotificationService } from "./notifications.js";
 import type { SetupService } from "./setup.js";
 import type { ReceiveSessionContext } from "./receive-session.js";
 import type { DshSessionStatus } from "./dsh-sessions.js";
+import {
+  defaultAgentAliasConfig,
+  formatAgentAliasSummary,
+  resolveAgentAlias,
+  type AgentAliasStore,
+} from "./agent-aliases.js";
 export interface DshSessionOption {
   id: string;
   title: string;
@@ -36,6 +42,7 @@ export const endpoints = [
   "decide",
   "mute",
   "agents",
+  "agent_aliases",
   "sessions",
   "resolve_session",
   "create_session",
@@ -105,10 +112,14 @@ function integer(value: unknown, name: string, min: number, max: number) {
     throw new TypeError(`${name} 必须为 ${min}～${max} 的整数`);
   return value;
 }
-function agent(value: unknown): Agent {
-  if (value !== "claude" && value !== "codex" && value !== "agy")
-    throw new TypeError("Agent 必须为 claude、codex 或 agy");
-  return value;
+function parseAgent(value: unknown, agentAliases?: AgentAliasStore): Agent {
+  if (value === "claude" || value === "codex" || value === "agy") return value;
+  const resolved = agentAliases
+    ? agentAliases.resolve(value)
+    : resolveAgentAlias(value, defaultAgentAliasConfig());
+  if (resolved === "claude" || resolved === "codex" || resolved === "agy")
+    return resolved;
+  throw new TypeError("Agent 必须为 claude、codex 或 agy");
 }
 export function createRelayService({
   store,
@@ -125,8 +136,10 @@ export function createRelayService({
   bridge,
   observeTitle,
   teamRelay,
+  agentAliases,
 }: {
   teamRelay?: TeamRelayService;
+  agentAliases?: AgentAliasStore;
   bridge?: BridgeService;
   observeTitle?: (agent: Agent, external: string, title: string | null) => void;
   store: RelayStore;
@@ -144,6 +157,7 @@ export function createRelayService({
   // 前置安装接入：按 Agent 安装、自检、卸载与连通测试。
   setup?: SetupService;
 }) {
+  const agent = (value: unknown): Agent => parseAgent(value, agentAliases);
   const sending = new Set<string>();
   return {
     async call(
@@ -324,6 +338,17 @@ export function createRelayService({
           case "agents":
             value = adapters.list();
             break;
+          case "agent_aliases": {
+            const defaults = defaultAgentAliasConfig();
+            value = agentAliases
+              ? agentAliases.read()
+              : {
+                  ...defaults,
+                  file: null,
+                  summary: formatAgentAliasSummary(defaults),
+                };
+            break;
+          }
           case "setup_check":
           case "setup_install":
           case "setup_uninstall":

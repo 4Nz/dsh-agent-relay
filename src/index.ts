@@ -57,6 +57,7 @@ import {
 } from "./adapters/claude/runner.js";
 import { resolveCodexCommand } from "./adapters/codex/cli.js";
 import { createSetupService } from "./services/setup.js";
+import { createAgentAliasStore } from "./services/agent-aliases.js";
 import { randomUUID } from "node:crypto";
 import { PLUGIN_VERSION } from "./version.js";
 import {
@@ -107,6 +108,12 @@ export function apply(ctx: Context): void {
   const host = ctx as unknown as RelayHost;
   const dataDir = join(resolveDshHome(), "agent-relay");
   const relayDir = join(dataDir, "conversations");
+  const agentAliases = createAgentAliasStore(join(dataDir, "agent-aliases.json"));
+  try {
+    agentAliases.ensure();
+  } catch (error) {
+    ctx.logger.warn("[agent-relay] agent aliases init failed: %s", error);
+  }
   // 通知凭证：明文单文件，随前置安装接入自动生成；外部 Agent 发送脚本直接读取。
   const notificationCredentials = createNotificationCredentialService({
     file: join(dataDir, "notification-client.json"),
@@ -233,6 +240,7 @@ export function apply(ctx: Context): void {
   };
   const service = createRelayService({
     teamRelay,
+    agentAliases,
     observeTitle: titleSync.observe,
     bridge,
     store,
@@ -328,7 +336,7 @@ export function apply(ctx: Context): void {
       releaseLock();
     }
   });
-  registerTools(ctx, store, relay, teamRelay);
+  registerTools(ctx, store, relay, teamRelay, agentAliases);
   stopApi = registerRelayApi(host.connection, relay);
   stopCleanup = startHistoryCleanup({
     store,
