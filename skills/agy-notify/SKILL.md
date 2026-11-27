@@ -55,7 +55,9 @@ macOS 会用 Spotlight 查全机已索引目录，再递归补查用户主目录
 
 ## 后台新建与查询
 
-目录确定后，调用当前 Skill 中的启动器。它运行官方 `agy` CLI（`agy --output-format stream-json -p`），新建独立 CLI 会话并立即返回启动记录，不打开终端；首条任务已提交，不再重复 send。注意：Antigravity CLI 会话与桌面端会话目录默认隔离（分别位于 `~/.gemini/antigravity-cli/` 与 `~/.gemini/antigravity/`），不能将后台 CLI 新建宣称为已在桌面侧边栏打开的可见会话。
+如需主动创建后台会话并运行终端命令，建议在 DSH 前置安装页勾选「允许 agy CLI 在沙箱内自动执行终端命令」。该配置适用于当前用户的所有 agy CLI 会话。权限拒绝会记录为 `needs_attention`。
+
+目录确定后，调用当前 Skill 中的启动器。它运行官方 `agy` CLI（`agy --sandbox --output-format stream-json -p`），新建独立 CLI 会话并立即返回启动记录，不打开终端；首条任务已提交，不再重复 send。注意：Antigravity CLI 会话与桌面端会话目录默认隔离（分别位于 `~/.gemini/antigravity-cli/` 与 `~/.gemini/antigravity/`），不能将后台 CLI 新建宣称为已在桌面侧边栏打开的可见会话。
 
 ```bash
 node "<当前 Skill 绝对目录>/start.mjs" --cwd "<已验证绝对目录>" --request-id "<本次任务唯一 ID>" --content-file "<任务文件绝对路径>"

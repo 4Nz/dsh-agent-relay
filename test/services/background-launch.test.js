@@ -54,6 +54,7 @@ if('${agent}'==='codex') {
     assert.equal(result.result, '完整结果\n第二行');
     assert.equal(await readFile(join(f.cwd, '次数.txt'), 'utf8'), '1');
     const actual = JSON.parse(await readFile(join(f.cwd, '输入.json'), 'utf8'));
+    if (agent === 'agy') assert.ok(actual.args.includes('--sandbox'));
     const submitted = agent === 'agy' ? actual.args.join('\n') : actual.input;
     assert.ok(submitted.includes(input.content));
     assert.ok(submitted.includes('22222222-2222-4222-8222-222222222222'));
@@ -67,6 +68,40 @@ if('${agent}'==='codex') {
     await assert.rejects(f.prepareJob({ ...input, source_agent: 'claude', source_session_id: '33333333-3333-4333-8333-333333333333' }, { env: f.env }), /request_id/);
     await assert.rejects(f.prepareJob({ ...input, request_id: '缺目录', cwd: '/不存在目录' }, { env: f.env }));
   });
+
+  if (agent === 'agy') {
+    test('agy 辅助进程继承输出流时，CLI 退出后仍可完成轮次', async t => {
+      const f = await fixture(t, `
+        import { spawn } from 'node:child_process';
+        const helper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 6000)'], {
+          stdio: ['ignore', 'inherit', 'inherit'],
+        });
+        helper.unref();
+        console.log(JSON.stringify({event:'result',result:{conversation_id:'11111111-1111-4111-8111-111111111111',status:'SUCCESS',response:'OK'}}));
+      `);
+      const job = await f.prepareJob({ request_id: '辅助进程', cwd: f.cwd, content: '测试' }, { env: f.env });
+      await f.runJob(job.directory, { env: f.env });
+      const state = await f.inspectJob('辅助进程', { env: f.env });
+      assert.equal(state.status, 'completed');
+      assert.ok(state.finished_at - state.created_at < 5500);
+    });
+
+    for (const [error, expected] of [
+      ['permission check failed: user denied permission to run command', 'needs_attention'],
+      ['model unavailable', 'failed'],
+    ]) {
+      test(`agy 后台错误归类为 ${expected} 并保留会话 ID`, async t => {
+        const id = '11111111-1111-4111-8111-111111111111';
+        const result = { event: 'result', result: { conversation_id: id, status: 'ERROR', error } };
+        const f = await fixture(t, `console.log(JSON.stringify(${JSON.stringify(result)})); process.exitCode = 1;`);
+        const job = await f.prepareJob({ request_id: '错误', cwd: f.cwd, content: '测试' }, { env: f.env });
+        await f.runJob(job.directory, { env: f.env });
+        const state = await f.inspectJob('错误', { env: f.env });
+        assert.equal(state.status, expected);
+        assert.equal(state.session_id, id);
+      });
+    }
+  }
 
   test(`${agent} 旧启动记录保留原始任务，升级后不追加来源或再次启动`, async t => {
     const f = await fixture(t, 'process.exit(0);');

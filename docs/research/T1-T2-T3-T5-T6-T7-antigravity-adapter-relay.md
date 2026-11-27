@@ -20,7 +20,8 @@
   - 专用会话实测确认：调用 `ConversationService/GetConversation` 可查询实时 `run_state` 与归档标记；对已初始化的非归档会话执行 `$ANTIGRAVITY_AGENTAPI_EXE agentapi send-message <conversation_id> <content>` 返回退出码 `0` 后，会话自动从 `RUN_STATE_RUNNING` 运行至 `RUN_STATE_IDLE`，且 `transcript.jsonl` 写入 `SYSTEM_MESSAGE`（`[Message] ... content=...`）及后续 `PLANNER_RESPONSE`。
   - 未初始化的空会话（仅调用无 `prompt` 的 `CreateConversation`）会拒绝发送，需先完成首轮初始化或改用 CLI 后台新建。
 - **`agy` CLI 后台执行实测**：
-  - `-p` 为带参选项，正确调用方式为 `agy --output-format stream-json -p "<prompt>"`。
+  - 前置安装支持可选的「允许 agy CLI 在沙箱内自动执行终端命令」，适用于主动创建后台会话。选择 Antigravity 或发送方的 agy-notify 后可勾选。安装器备份并合并当前用户 CLI 设置中的 `enableTerminalSandbox: true` 和 `toolPermission: "proceed-in-sandbox"`。此设置适用于当前用户的其他 agy CLI 会话，可在 agy 的 `/config` 中调整。
+  - `-p` 为带参选项，后台启动器使用 `agy --sandbox --output-format stream-json -p "<prompt>"`。
   - 输出 NDJSON 事件流：`init`（含 `conversation_id`）、`step_update`、`result`（`status: "SUCCESS" | "ERROR"` 与最终 `response`）。不能传未识别的模型别名（如 `flash_lite`），默认沿用用户配置的模型。
 
 ## 架构与实现要点
@@ -61,3 +62,10 @@
 - **剩余未验证项（不以单测代替 T7）**：
   - 真实 DSH 宿主加载新包后的完整 T7 端到端链路（含重启对账、页面交互与 Sidecar 在线投递）需在独立 `DSH_HOME` 中另行验收。
   - Windows 真实机器上的 Antigravity 桌面端 Sidecar 连通、`agy.exe` 后台新建及文件权限继承需在 Windows 宿主实测确认。
+
+### 2026-11-27 后台主动新建会话沙箱验收
+
+- macOS，agy CLI 1.1.14。通过前置安装服务更新 Claude、Codex、Antigravity 已安装的 agy-notify，并启用用户级终端沙箱。比对备份后确认仅两个沙箱字段发生变化，配置权限保持 0600。
+- 从 Claude 已安装的启动器创建专用 CLI 会话，在临时 Git 仓库执行 `git status --short && git log -1 --oneline`。事件流记录了实际命令及成功终态，最终回复包含独立生成的测试提交，启动记录为 `completed`。
+- 另一专用会话尝试读取工作区外的目录，agy 返回明确的权限拒绝，启动器记录为 `needs_attention`。早期启动器在辅助进程持有输出管道时延迟写入完成时间；更新后增加该场景的回归测试。
+- 本次验证覆盖本机 CLI 和安装服务，Windows 实机及 DSH 页面点击安装仍待单独验证。

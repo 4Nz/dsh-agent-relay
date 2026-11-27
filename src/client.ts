@@ -133,6 +133,7 @@ const css = `
 .ar h1{font-size:20px;margin:0 0 4px;font-weight:600}.ar h2{font-size:18px;margin:0}.ar p{margin:6px 0}.ar .body{padding:20px 28px}.ar .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.ar .between{justify-content:space-between}.ar .notice{padding:10px 14px;border:1px solid var(--dsw-alias-border-l2,#393939);border-radius:8px;margin-bottom:20px;background:var(--dsw-alias-bg-layer-1,#202020)}
 .ar .filters{margin:18px 0}.ar .filters select{min-width:124px}.ar .table-wrap{overflow:auto;border:1px solid var(--dsw-alias-border-l2,#393939);border-radius:10px}.ar table{border-collapse:collapse;width:100%;min-width:1290px;text-align:left}.ar th{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary,#aaa);background:var(--dsw-alias-bg-layer-1,#202020);white-space:nowrap}.ar th,.ar td{padding:14px 16px;border-bottom:1px solid var(--dsw-alias-border-l2,#393939);vertical-align:middle}.ar tbody tr:last-child td{border-bottom:0}.ar tbody tr:hover{background:var(--dsw-alias-interactive-bg-hover,#292929)}
 .ar .link{background:transparent;border:0;padding:0;text-align:left;color:inherit}.ar .title{font-weight:500;max-width:270px;line-height:1.5}.ar .path{max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px}.ar .badge{display:inline-flex;padding:3px 8px;border-radius:5px;font-size:12px;font-weight:500;white-space:nowrap;border-color:transparent}.ar .good{color:var(--dsw-alias-state-business-primary,#a4b7ff)}.ar .bad{color:var(--dsw-alias-state-error-primary,#f28b82)}.ar .warn{color:var(--dsw-alias-state-warn-label,#e8bd75)}.ar .actions{display:flex;gap:8px;flex-wrap:nowrap;white-space:nowrap}.ar .actions button{font-size:12px;padding:4px 8px}.ar .empty{text-align:center;padding:60px 20px}.ar .empty strong{display:block;margin-bottom:8px}
+.ar .setup-details summary{cursor:pointer}.ar .setup-details:not([open]) .expanded,.ar .setup-details[open] .collapsed{display:none}.ar .drawer footer.setup-actions{position:sticky;bottom:0;background:var(--dsw-alias-bg-base,#181818);padding:10px 0;flex-wrap:wrap}
 .ar .overlay{position:fixed;inset:0;z-index:1000;background:#0007;display:flex;justify-content:flex-end}.ar .drawer{width:min(520px,100%);height:100%;overflow:auto;background:var(--dsw-alias-bg-base,#181818);box-shadow:var(--dsw-elevation-prominent,-8px 0 32px #0004);padding:24px;display:flex;flex-direction:column;gap:20px}.ar .drawer footer{display:flex;justify-content:flex-end;gap:10px;margin-top:auto;padding-top:20px;border-top:1px solid var(--dsw-alias-border-l2,#393939)}.ar label{display:flex;flex-direction:column;gap:7px}.ar .drawer .fields{display:grid;gap:14px}.ar .detail{display:grid;grid-template-columns:110px minmax(0,1fr);gap:14px}.ar .detail dt{color:var(--dsw-alias-label-secondary,#aaa)}.ar .detail dd{margin:0;overflow-wrap:anywhere;white-space:pre-wrap}.ar .error{color:var(--dsw-alias-state-error-primary,#f28b82)}
 .ar select{appearance:none;padding:8px 36px 8px 13px;background-image:linear-gradient(45deg,transparent 50%,var(--dsw-alias-label-secondary,#aaa) 50%),linear-gradient(135deg,var(--dsw-alias-label-secondary,#aaa) 50%,transparent 50%);background-position:calc(100% - 17px) 50%,calc(100% - 13px) 50%;background-size:4px 4px;background-repeat:no-repeat}
 .ar .agent-stack{display:flex;align-items:center;gap:8px;white-space:nowrap}.ar .agent-label{font-weight:600;font-size:13px;letter-spacing:.1px}.ar .type-label{font-size:11px;color:var(--dsw-alias-label-secondary,#aaa);padding:1px 6px;border:1px solid var(--dsw-alias-border-l2,#393939);border-radius:4px;white-space:nowrap}
@@ -243,6 +244,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const [candidateRevision, setCandidateRevision] = useState(0);
   const [installAgent, setInstallAgent] = useState("claude");
   const [notifyCatalog, setNotifyCatalog] = useState<any[]>([]);
+  const [enableAgySandbox, setEnableAgySandbox] = useState(false);
   const [optionalSkills, setOptionalSkills] = useState<string[]>([]);
   const [installBusy, setInstallBusy] = useState(false);
   const [setupReport, setSetupReport] = useState<any>(null);
@@ -571,14 +573,18 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setInstallError("");
     setSetupMessage("");
     try {
-      const report = await call(endpoint, { agent: installAgent, optional_skills: optionalSkills });
+      const applySandbox = endpoint === "setup_install" && enableAgySandbox && setupReport?.agy_sandbox?.status === "missing";
+      const report = await call(endpoint, { agent: installAgent, optional_skills: optionalSkills,
+        ...(applySandbox ? { enable_agy_sandbox: true, agy_sandbox_revision: setupReport.agy_sandbox.revision } : {}),
+      });
+      if (endpoint === "setup_install") setEnableAgySandbox(false);
       setSetupReport(report);
       setNotifyCatalog(report.optional_skills ?? []);
       const changed = report.items.filter((i: any) => i.action && i.action !== "skipped" && i.action !== "none").length;
       if (endpoint === "setup_check") setSetupMessage("检查完成。");
       else if (endpoint === "setup_uninstall") setSetupMessage("已卸载 channel 配置，通知 Skill 保留。");
       else if (report.overall === "needs_action" || report.overall === "unavailable" || report.items.some((i: any) => i.status !== "ok"))
-        setInstallError(`${changed > 0 ? `本次已处理 ${changed} 项，但` : ""}仍有安装项未就绪，请按下方检查结果处理后重试。`);
+        setInstallError(`${changed > 0 ? `本次已处理 ${changed} 项，但` : ""}仍有安装项未就绪，请展开安装详情查看原因。`);
       else setSetupMessage(changed > 0 ? `安装完成，本次处理 ${changed} 项。` : "无需改动，所有项已就绪。");
     } catch (e) {
       setInstallError((e as Error).message);
@@ -1118,21 +1124,17 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     "claude-notify": "向 Claude 接力",
     "codex-notify": "向 Codex 接力",
     "agy-notify": "向 Antigravity 接力",
+    agy_sandbox: "后台会话沙箱",
   };
   const installDrawer = () => h(Drawer, { title: "前置安装接入", onClose: close },
-    h("p", { className: "muted" }, installAgent === "claude"
-      ? "为 Claude 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装；另含 channel（把消息送进开在终端里的会话）。已正常的项不会改动，修改前自动备份。"
-      : installAgent === "agy"
-        ? "为 Antigravity 一次配好接入（兼容 macOS 与 Windows）：通知 Skill 与 create-agent-notify 默认必装，写入 ~/.gemini/config/skills；同时写入桌面桥接 Sidecar 配置。已正常的项不会改动，修改前自动备份。"
-        : "为 Codex 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。"),
     fieldSelect("Agent", installAgent, (v) => {
+      setEnableAgySandbox(false);
       setInstallAgent(v);
       setOptionalSkills([]);
       setSetupReport(null);
       setInstallError("");
       setSetupMessage("");
     }, [["claude", "Claude"], ["codex", "Codex"], ["agy", "Antigravity"]]),
-    h("p", { className: "muted small" }, "默认必装：dsh-notify（通知 DSH / 查询投递状态）、create-agent-notify（创建与安装 Agent 接力 Skill）。无需勾选，安装 / 修复时自动处理。"),
     h("fieldset", { disabled: installBusy },
       h("legend", null, "可选接力 Skill"),
       ...notifyCatalog.map(({name, label, available, reason}) =>
@@ -1141,21 +1143,38 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
             type: "checkbox", disabled: !available, checked: optionalSkills.includes(name),
             onChange: (e: any) => {
               const checked = e.target.checked;
+              if (name === "agy-notify") setEnableAgySandbox(false);
               setOptionalSkills(current => checked ? [...current, name] : current.filter(item => item !== name));
               setSetupReport(null);
               setSetupMessage("");
             },
-          }), " ", `${name}：${label}${available ? "" : `（${reason}）`}`)),
-      h("p", { className: "muted small" }, "安装到上方选中的 Agent，共用 dsh-notify 的本机凭证。DSH 插件需保持运行；消息直接投递，不经 DSH 模型处理。取消勾选不会卸载已有 Skill。")),
+          }), " ", `${name}：${label}${available ? "" : `（${reason}）`}`))),
+    setupReport?.agy_sandbox && h("div", null,
+      h("label", { style: { display: "block" } },
+        h("input", { type: "checkbox", checked: setupReport.agy_sandbox.status === "ok" || enableAgySandbox,
+          disabled: installBusy || setupReport.agy_sandbox.status !== "missing",
+          onChange: (e: any) => setEnableAgySandbox(e.target.checked) }), " 允许 agy CLI 在沙箱内自动执行终端命令"),
+      h("p", { className: "muted small" }, "建议在需要主动创建 agy 后台会话时启用。此设置影响当前用户的所有 agy CLI 会话。"),
+      setupReport.agy_sandbox.status !== "missing" && h("p", null, setupReport.agy_sandbox.message)),
     !setupReport && !installError && h("p", { className: "muted" }, "正在检查安装状态…"),
     setupReport && h("div", { className: "notice small" },
       h("p", null, `${SETUP_OVERALL[setupReport.overall] ?? setupReport.overall}${setupReport.version ? ` · ${installAgent === "claude" ? "Claude Code" : installAgent === "agy" ? "Antigravity" : "Codex"} ${setupReport.version}` : ""}`),
-      h("ul", null, ...setupReport.items.map((item: any) =>
+    ),
+    h("details", { key: installAgent, className: "setup-details" },
+      h("summary", null, h("span", { className: "collapsed" }, "展开安装详情"), h("span", { className: "expanded" }, "收起安装详情")),
+      h("p", { className: "muted" }, installAgent === "claude"
+        ? "为 Claude 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装；另含 channel（把消息送进开在终端里的会话）。已正常的项不会改动，修改前自动备份。"
+        : installAgent === "agy"
+          ? "为 Antigravity 一次配好接入（兼容 macOS 与 Windows）：通知 Skill 与 create-agent-notify 默认必装，写入 ~/.gemini/config/skills；同时写入桌面桥接 Sidecar 配置。已正常的项不会改动，修改前自动备份。"
+          : "为 Codex 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。"),
+      h("p", { className: "muted small" }, "安装到上方选中的 Agent，共用 dsh-notify 的本机凭证。DSH 插件需保持运行；消息直接投递，不经 DSH 模型处理。取消勾选不会卸载已有 Skill。"),
+      setupReport?.agy_sandbox && h("p", null, `${setupReport.agy_sandbox.message}。勾选后将更新 ${setupReport.agy_sandbox.path}，设置 enableTerminalSandbox=true 和 toolPermission=proceed-in-sandbox。`),
+      setupReport && h("ul", null, ...setupReport.items.map((item: any) =>
         h("li", { key: item.key, className: item.status === "ok" ? "" : item.status === "conflict" || item.status === "unavailable" ? "error" : "warn" },
           `${SETUP_ITEM[item.key] ?? notifyCatalog.find(entry => entry.name === item.key)?.label ?? item.key}：${SETUP_LABEL[item.status] ?? item.status} · ${item.message}`,
           item.backup ? h("span", { className: "muted" }, `（备份：${item.backup}）`) : null))),
-      setupReport.sessions && h("p", { className: "muted" }, installAgent === "agy" ? `在线桌面桥接 Sidecar：${setupReport.sessions.online} 个` : `已启用 channel 的会话：${setupReport.sessions.online} 个`),
-      setupReport.next_steps?.length > 0 && h("div", null, h("p", null, "下一步："),
+      setupReport?.sessions && h("p", { className: "muted" }, installAgent === "agy" ? `在线桌面桥接 Sidecar：${setupReport.sessions.online} 个` : `已启用 channel 的会话：${setupReport.sessions.online} 个`),
+      setupReport?.next_steps?.length > 0 && h("div", null, h("p", null, "下一步："),
         h("ol", null, ...setupReport.next_steps.map((step: string, i: number) => h("li", { key: i }, step))))),
     installAgent === "claude" && probe && h("div", { className: "notice small" },
       probe.status === "waiting"
@@ -1164,7 +1183,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         : h("p", { className: probe.status === "acked" ? "" : "error" }, probe.message)),
     setupMessage && h("p", { role: "status", className: "good" }, setupMessage),
     installError && h("p", { role: "alert", className: "error" }, installError),
-    h("footer", null,
+    h("footer", { className: "setup-actions" },
       h("button", { disabled: installBusy, onClick: () => void runSetup("setup_check") }, "检查安装状态"),
       installAgent === "claude" && h("button", {
         disabled: installBusy || probe?.status === "waiting" || setupReport?.overall === "unavailable",
@@ -1205,6 +1224,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           "button",
           {
             onClick: () => {
+              setEnableAgySandbox(false);
               setInstallAgent("claude");
               setInstallError("");
               setSetupMessage("");

@@ -1,3 +1,4 @@
+import { agySandboxItem, type AgySandboxItem } from "./agy-sandbox.js";
 import { discoverNotifySkills, safeSkillFile, type NotifySkillEntry } from "./notify-skill-registry.js";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -43,6 +44,7 @@ export interface SetupReport {
   overall: "ok" | "changed" | "needs_action" | "unavailable";
   version: string | null;
   items: SetupItem[];
+  agy_sandbox?: AgySandboxItem;
   optional_skills?: NotifySkillEntry[];
   sessions?: { online: number; need_restart: string[] };
   next_steps: string[];
@@ -638,8 +640,7 @@ export function createSetupService({
     return report;
   }
 
-  async function check(agent: Agent, selection?: unknown): Promise<SetupReport> {
-    const selected = optionalSkills(selection);
+  async function check(agent: Agent, selected: string[] = []): Promise<SetupReport> {
     if (agent === "codex") {
       const { report, blocking } = await checkCodex(selected);
       return finish(report, blocking);
@@ -665,57 +666,32 @@ export function createSetupService({
     }
   }
 
-  return {
-    check,
-    async install(agent: Agent, selection?: unknown): Promise<SetupReport> {
-      const selected = optionalSkills(selection);
-      if (agent === "codex") {
-        const { item: codex, version } = await codexVersion();
-        const skill = skillItem("codex");
-        const notification = notificationItem();
-        const blocking = codex.status === "unavailable";
-        // Codex 命令是环境探测，不可安装；通知 Skill 缺失或需更新时直接写文件，blocking 时不做改动。
-        const items: SetupItem[] = [
-          codex.status === "ok" ? { ...codex, action: "skipped" as const } : { ...codex, action: "none" as const },
-        ];
-        // 通知凭证是纯文件操作，与命令是否可用无关，始终确保生成。
-        items.push(notification.status === "ok" ? { ...notification, action: "skipped" as const } : fixNotification(notification));
-        if (blocking || skill.status === "ok") items.push({ ...skill, action: blocking ? "none" as const : "skipped" as const });
-        else if (skill.status === "conflict" || skill.status === "unavailable") items.push({ ...skill, action: "none" as const });
-        else items.push(fixSkill("codex", skill));
-        for (const name of [CREATOR_SKILL, ...selected]) {
-          const item = skillItem("codex", name);
-          items.push(blocking || item.status === "unavailable" || item.status === "conflict"
-            ? { ...item, action: "none" } : item.status === "ok"
-              ? { ...item, action: "skipped" } : fixSkill("codex", item, name));
-        }
-        return finish({ agent, overall: "ok", version, items, next_steps: [] }, blocking);
+  async function installBase(agent: Agent, selected: string[]): Promise<SetupReport> {
+    if (agent === "codex") {
+      const { item: codex, version } = await codexVersion();
+      const skill = skillItem("codex");
+      const notification = notificationItem();
+      const blocking = codex.status === "unavailable";
+      // Codex 命令是环境探测，不可安装；通知 Skill 缺失或需更新时直接写文件，blocking 时不做改动。
+      const items: SetupItem[] = [
+        codex.status === "ok" ? { ...codex, action: "skipped" as const } : { ...codex, action: "none" as const },
+      ];
+      // 通知凭证是纯文件操作，与命令是否可用无关，始终确保生成。
+      items.push(notification.status === "ok" ? { ...notification, action: "skipped" as const } : fixNotification(notification));
+      if (blocking || skill.status === "ok") items.push({ ...skill, action: blocking ? "none" as const : "skipped" as const });
+      else if (skill.status === "conflict" || skill.status === "unavailable") items.push({ ...skill, action: "none" as const });
+      else items.push(fixSkill("codex", skill));
+      for (const name of [CREATOR_SKILL, ...selected]) {
+        const item = skillItem("codex", name);
+        items.push(blocking || item.status === "unavailable" || item.status === "conflict"
+          ? { ...item, action: "none" } : item.status === "ok"
+            ? { ...item, action: "skipped" } : fixSkill("codex", item, name));
       }
-      if (agent === "agy") {
-        const { report, blocking } = await checkAgy(selected);
-        if (blocking) {
-          report.items = report.items.map((i) =>
-            i.key === "notification" ? fixNotification(i) : { ...i, action: "none" },
-          );
-          return finish(report, true);
-        }
-        const fixed: SetupItem[] = [];
-        for (const item of report.items) {
-          if (item.status === "ok") fixed.push({ ...item, action: "skipped" });
-          else if (item.status === "conflict" || item.status === "unavailable") fixed.push({ ...item, action: "none" });
-          else if (item.key === "notification") fixed.push(fixNotification(item));
-          else if (item.key === "agy_sidecar") fixed.push(fixAgySidecar(item));
-          else if (item.key === "agy_credential") fixed.push(fixAgyToken(item));
-          else if (item.key === "skill") fixed.push(fixSkill("agy", item));
-          else if (item.key === CREATOR_SKILL || selected.includes(item.key)) fixed.push(fixSkill("agy", item, item.key));
-          else fixed.push({ ...item, action: "none" });
-        }
-        report.items = fixed;
-        return finish(report, false);
-      }
-      const { report, blocking } = await checkClaude(selected);
+      return finish({ agent, overall: "ok", version, items, next_steps: [] }, blocking);
+    }
+    if (agent === "agy") {
+      const { report, blocking } = await checkAgy(selected);
       if (blocking) {
-        // 通知凭证是纯文件操作，即使 claude 命令不可用也自动生成。
         report.items = report.items.map((i) =>
           i.key === "notification" ? fixNotification(i) : { ...i, action: "none" },
         );
@@ -725,19 +701,70 @@ export function createSetupService({
       for (const item of report.items) {
         if (item.status === "ok") fixed.push({ ...item, action: "skipped" });
         else if (item.status === "conflict" || item.status === "unavailable") fixed.push({ ...item, action: "none" });
-        else if (item.key === "mcp") fixed.push(await fixMcp(item));
-        else if (item.key === "credential") fixed.push(fixToken(item));
         else if (item.key === "notification") fixed.push(fixNotification(item));
-        else if (item.key === "rule") fixed.push(fixRule(item));
-        else if (item.key === "claude_md") fixed.push(fixInclude());
-        else if (item.key === "shell") fixed.push(fixShell(item));
-        else if (item.key === "skill") fixed.push(fixSkill("claude", item));
-        else if (item.key === CREATOR_SKILL || selected.includes(item.key)) fixed.push(fixSkill("claude", item, item.key));
+        else if (item.key === "agy_sidecar") fixed.push(fixAgySidecar(item));
+        else if (item.key === "agy_credential") fixed.push(fixAgyToken(item));
+        else if (item.key === "skill") fixed.push(fixSkill("agy", item));
+        else if (item.key === CREATOR_SKILL || selected.includes(item.key)) fixed.push(fixSkill("agy", item, item.key));
         else fixed.push({ ...item, action: "none" });
       }
       report.items = fixed;
-      report.sessions = await sessions();
       return finish(report, false);
+    }
+    const { report, blocking } = await checkClaude(selected);
+    if (blocking) {
+      // 通知凭证是纯文件操作，即使 claude 命令不可用也自动生成。
+      report.items = report.items.map((i) =>
+        i.key === "notification" ? fixNotification(i) : { ...i, action: "none" },
+      );
+      return finish(report, true);
+    }
+    const fixed: SetupItem[] = [];
+    for (const item of report.items) {
+      if (item.status === "ok") fixed.push({ ...item, action: "skipped" });
+      else if (item.status === "conflict" || item.status === "unavailable") fixed.push({ ...item, action: "none" });
+      else if (item.key === "mcp") fixed.push(await fixMcp(item));
+      else if (item.key === "credential") fixed.push(fixToken(item));
+      else if (item.key === "notification") fixed.push(fixNotification(item));
+      else if (item.key === "rule") fixed.push(fixRule(item));
+      else if (item.key === "claude_md") fixed.push(fixInclude());
+      else if (item.key === "shell") fixed.push(fixShell(item));
+      else if (item.key === "skill") fixed.push(fixSkill("claude", item));
+      else if (item.key === CREATOR_SKILL || selected.includes(item.key)) fixed.push(fixSkill("claude", item, item.key));
+      else fixed.push({ ...item, action: "none" });
+    }
+    report.items = fixed;
+    report.sessions = await sessions();
+    return finish(report, false);
+  }
+
+  async function withSandbox(report: SetupReport, selected: string[], enable = false, revision?: string) {
+    if (report.agent !== "agy" && !selected.includes("agy-notify")) return report;
+    const path = join(resolveGeminiDir({ homeDir, env, platform }), "antigravity-cli", "settings.json");
+    const cliVersion = report.agent === "agy" ? report.version : (await agyVersion()).version;
+    const item: AgySandboxItem = cliVersion
+      ? agySandboxItem(path, enable && report.overall !== "unavailable", revision)
+      : { key: "agy_sandbox", path, status: "unavailable", message: "主动新建后台会话需要安装 agy CLI" };
+    report.agy_sandbox = item;
+    if (enable) {
+      report.items.push(item);
+      if (item.status !== "ok" && report.overall !== "unavailable") report.overall = "needs_action";
+      else if (item.action && report.overall === "ok") report.overall = "changed";
+    }
+    return report;
+  }
+
+  return {
+    async check(agent: Agent, selection?: unknown) {
+      const selected = optionalSkills(selection);
+      return withSandbox(await check(agent, selected), selected);
+    },
+    async install(agent: Agent, selection?: unknown, enableSandbox: unknown = false, revision?: string) {
+      const selected = optionalSkills(selection);
+      if (typeof enableSandbox !== "boolean") throw new TypeError("沙箱选项须为布尔值");
+      if (enableSandbox && agent !== "agy" && !selected.includes("agy-notify"))
+        throw new TypeError("请先选择 Antigravity 或 agy-notify");
+      return withSandbox(await installBase(agent, selected), selected, enableSandbox, revision);
     },
     // 卸载 channel 配置；通知 Skill 保留。只删除 Agent Relay 写入的内容。
     async uninstall(): Promise<SetupReport> {

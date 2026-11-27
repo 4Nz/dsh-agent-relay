@@ -141,7 +141,7 @@ export async function runJob(directory, { env = process.env } = {}) {
   const args = request.agent === 'codex'
     ? ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-C', request.cwd, '-']
     : request.agent === 'agy'
-      ? ['--output-format', 'stream-json', '-p', request.prompt]
+      ? ['--sandbox', '--output-format', 'stream-json', '-p', request.prompt]
       : ['-p', '--session-id', request.session_id, '--output-format', 'stream-json', '--verbose', '--permission-prompts', 'none'];
   // 子 Agent 的来源必须是自己的会话，不能继承发起方的身份。
   const childEnv = { ...env };
@@ -149,7 +149,7 @@ export async function runJob(directory, { env = process.env } = {}) {
   delete childEnv.CODEX_SESSION_ID;
   delete childEnv.CLAUDE_CODE_SESSION_ID;
   for (const key of Object.keys(childEnv)) {
-    if (key.startsWith('ANTIGRAVITY_')) delete childEnv[key];
+    if (key.startsWith('ANTIGRAVITY_') && key !== 'ANTIGRAVITY_GEMINI_DIR') delete childEnv[key];
   }
   if (request.agent === 'claude') childEnv.CLAUDE_CODE_SESSION_ID = request.session_id;
   let final = null, lastReply = null, agyStreamReply = '', ended = false, denied = false, line = '', parseError = false;
@@ -183,7 +183,8 @@ export async function runJob(directory, { env = process.env } = {}) {
           ended = true;
           final = typeof e.result.response === 'string' ? e.result.response : lastReply;
         } else {
-          state.status = 'failed';
+          const permissionDenied = typeof e.result.error === 'string' && /user denied permission|permission check failed.*denied permission/is.test(e.result.error);
+          state.status = permissionDenied ? 'needs_attention' : 'failed';
           state.error = (typeof e.result.error === 'string' && e.result.error.trim().slice(0, 500)) || 'Antigravity CLI 本轮执行失败，详情见本地输出记录';
         }
       }
@@ -220,8 +221,19 @@ export async function runJob(directory, { env = process.env } = {}) {
     child.stdin.on('error', () => {});
     child.stdin.end(request.agent === 'agy' ? '' : request.prompt);
     outcome = await new Promise(resolve_ => {
+      // agy 主进程退出后，宿主辅助进程可能仍持有管道。先排空尾部事件，再结束本次读取。
+      let drainTimeout;
+      if (request.agent === 'agy') child.once('exit', () => {
+        drainTimeout = setTimeout(() => {
+          child.stdout.destroy();
+          child.stderr.destroy();
+        }, 1000);
+      });
       child.once('error', () => resolve_({ code: null, spawnError: true }));
-      child.once('close', (code, signal) => resolve_({ code, signal }));
+      child.once('close', (code, signal) => {
+        clearTimeout(drainTimeout);
+        resolve_({ code, signal });
+      });
     });
     if (line.trim()) event(line);
   } finally {
@@ -233,7 +245,7 @@ export async function runJob(directory, { env = process.env } = {}) {
     state.result = final.slice(0, 16000); state.result_file = join(directory, 'result.txt'); state.result_truncated = final.length > 16000;
   }
   if (outcome.spawnError) { state.status = 'failed'; state.error = `无法启动 ${request.agent}，请检查 CLI 安装`; }
-  else if (state.status !== 'failed') {
+  else if (state.status === 'running') {
     state.status = ended && outcome.code === 0 && !parseError && state.session_id ? (denied ? 'needs_attention' : 'completed') : 'unknown';
     if (state.status === 'unknown') state.error = '未确认正常轮次结束；保留原会话与记录，不自动重跑';
     if (denied) state.error = '有工具权限请求被拒绝，请结合结果处理';

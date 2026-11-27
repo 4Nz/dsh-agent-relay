@@ -334,7 +334,7 @@ export function createRelayService({
             if (endpoint === "setup_check")
               value = await setup.check(agent(args.agent), args.optional_skills);
             else if (endpoint === "setup_install")
-              value = await setup.install(agent(args.agent), args.optional_skills);
+              value = await setup.install(agent(args.agent), args.optional_skills, args.enable_agy_sandbox, typeof args.agy_sandbox_revision === "string" ? args.agy_sandbox_revision : undefined);
             else if (endpoint === "setup_uninstall")
               value = await setup.uninstall();
             else if (endpoint === "setup_probe_start")
