@@ -23,10 +23,40 @@ import {
   connectCodexDaemon,
   type CodexReaderOptions,
 } from "./reader.js";
+import {
+  connectCodexVisibleStarter,
+  type CodexVisibleStarterClient,
+  type CodexVisibleStarterOptions,
+} from "./stdio.js";
 
 export interface CodexAdapterOptions extends CodexReaderOptions {
   connect?: () => Promise<CodexClient>;
+  connectVisibleStarter?: (
+    options?: Pick<CodexVisibleStarterOptions, "onNotification" | "onClose">,
+  ) => Promise<CodexClient & { closed?: Promise<void> }>;
   bindings?: CodexBindings;
+  bootstrapTimeoutMs?: number;
+}
+
+const BOOTSTRAP_PROMPT = "会话初始化确认：请仅回复 OK，不要调用任何工具。";
+function deriveSessionTitle(content: string, explicit?: string): string | null {
+  const clean = (raw: string, max: number) =>
+    raw.replace(/\s+/g, " ").trim().slice(0, max).trim();
+  if (typeof explicit === "string" && explicit.trim()) {
+    const title = clean(explicit, 80);
+    return title || null;
+  }
+  const stripped = content
+    .replace(/\n*\[接力来源\][\s\S]*$/, "")
+    .replace(/\n*\[接力任务[^\]]*\][\s\S]*$/, "")
+    .trim();
+  const firstLine = stripped
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) return null;
+  const title = clean(firstLine, 60);
+  return title || null;
 }
 
 // 协议边界只接受已验证的必要字段，未知字段忽略，必要字段变化则明确失败。
@@ -123,6 +153,14 @@ export function createCodexAdapter(
   let writeConnection: Promise<CodexClient> | undefined;
   let disposed = false;
   const sending = new Set<string>();
+  const activeStarters = new Set<CodexClient>();
+  const openVisibleStarter = (
+    hooks?: Pick<CodexVisibleStarterOptions, "onNotification" | "onClose">,
+  ): Promise<CodexClient & { closed?: Promise<void> }> => {
+    if (options.connectVisibleStarter) return options.connectVisibleStarter(hooks);
+    if (options.connect) return options.connect();
+    return connectCodexVisibleStarter({ ...options, ...hooks }) as Promise<CodexVisibleStarterClient>;
+  };
   async function writer(): Promise<CodexClient> {
     if (disposed) throw new AdapterError("unavailable", "Codex Adapter 已停止");
     if (!writeConnection) {
@@ -239,6 +277,14 @@ export function createCodexAdapter(
     }),
     async dispose() {
       disposed = true;
+      for (const starter of activeStarters) {
+        try {
+          starter.close();
+        } catch {
+          /* 已断开的连接无需重试。 */
+        }
+      }
+      activeStarters.clear();
       const pending = writeConnection;
       writeConnection = undefined;
       if (pending) {
@@ -282,11 +328,20 @@ export function createCodexAdapter(
       });
       return metadata(created);
     },
-    async startVisibleSession({ cwd, content }): Promise<StartVisibleSessionResult> {
+    async startVisibleSession({
+      cwd,
+      content,
+      title,
+      delivery = "auto",
+    }): Promise<StartVisibleSessionResult> {
+      if (disposed)
+        return { status: "rejected", reason: "Codex Adapter 已停止" };
       if (typeof cwd !== "string" || !isAbsolute(cwd))
         throw new AdapterError("invalid_input", "工作目录必须为绝对路径");
       if (typeof content !== "string" || !content.trim())
         throw new AdapterError("invalid_input", "消息不能为空");
+      if (delivery !== "auto" && delivery !== "queue")
+        throw new AdapterError("invalid_input", "delivery 仅支持 auto 或 queue");
       let directory: string;
       try {
         directory = await realpath(cwd);
@@ -294,55 +349,237 @@ export function createCodexAdapter(
       } catch {
         throw new AdapterError("invalid_input", "工作目录不存在或不可访问");
       }
-      let client: CodexClient;
+      let daemonForQueue: CodexClient | undefined;
+      if (delivery === "queue") {
+        // 先确认本机 daemon 可达，避免建出空白会话后才发现无法入队。
+        try {
+          daemonForQueue = await writer();
+        } catch {
+          return {
+            status: "rejected",
+            reason: "Codex 本机 daemon 未在线，无法使用桌面无锁排队模式",
+          };
+        }
+      }
+      const sessionTitle = deriveSessionTitle(content, title);
+      let targetThreadId: string | null = null;
+      let targetTurnId: string | null = null;
+      let seenActive = false;
+      let titleApplied = false;
+      let closingStarter = false;
+      const completedTurns = new Set<string>();
+      let resolveBootstrap: (() => void) | undefined;
+      let starter: (CodexClient & { closed?: Promise<void> }) | undefined;
+      async function applyTitleOnce(client: CodexClient, tid: string) {
+        if (!sessionTitle || titleApplied) return;
+        try {
+          await client.request("thread/name/set", { threadId: tid, name: sessionTitle });
+          titleApplied = true;
+        } catch {
+          /* 设置标题为尽力操作，不影响会话创建与任务执行。 */
+        }
+      }
+      function releaseStarter() {
+        if (closingStarter || !starter) return;
+        closingStarter = true;
+        const current = starter;
+        void (async () => {
+          if (targetThreadId) await applyTitleOnce(current, targetThreadId);
+          current.close();
+        })().catch(() => {
+          try { current.close(); } catch { /* 忽略重复关闭 */ }
+        });
+      }
       try {
-        client = await writer();
+        starter = await openVisibleStarter({
+          onNotification: (method, params) => {
+            const payload =
+              params && typeof params === "object" && !Array.isArray(params)
+                ? (params as RecordValue)
+                : null;
+            const tid = typeof payload?.threadId === "string" ? payload.threadId : null;
+            if (method === "turn/completed") {
+              if (!tid || (targetThreadId && tid !== targetThreadId)) return;
+              const turnObj =
+                payload?.turn && typeof payload.turn === "object" && !Array.isArray(payload.turn)
+                  ? (payload.turn as RecordValue)
+                  : null;
+              const doneId = typeof turnObj?.id === "string" ? turnObj.id : null;
+              if (doneId) completedTurns.add(doneId);
+              if (delivery === "queue") {
+                if (!targetTurnId || !doneId || doneId === targetTurnId) resolveBootstrap?.();
+              } else if (targetTurnId && (!doneId || doneId === targetTurnId)) {
+                releaseStarter();
+              }
+              return;
+            }
+            if (method === "thread/status/changed") {
+              if (!tid || !targetThreadId || tid !== targetThreadId) return;
+              const statusObj =
+                payload?.status && typeof payload.status === "object" && !Array.isArray(payload.status)
+                  ? (payload.status as RecordValue)
+                  : null;
+              const statusType = typeof statusObj?.type === "string" ? statusObj.type : null;
+              if (statusType === "active") {
+                seenActive = true;
+              } else if (seenActive && targetTurnId && (statusType === "idle" || statusType === "systemError")) {
+                if (delivery === "queue") resolveBootstrap?.();
+                else releaseStarter();
+              }
+            }
+          },
+          onClose: () => {
+            if (starter) activeStarters.delete(starter);
+            resolveBootstrap?.();
+          },
+        });
       } catch {
         return {
           status: "rejected",
-          reason: "Codex Desktop / 本机 daemon 未在线，无法创建桌面可见会话",
+          reason: "无法启动本机 Codex CLI，无法创建桌面可见会话",
         };
       }
+      activeStarters.add(starter);
+
       let id: string;
       try {
-        // 不登记为 Relay 专用隐藏绑定，保持桌面可见且后续可通过 thread/queue/add 续发。
+        // 使用短生命周期 stdio app-server 创建桌面可见会话（source: vscode），首轮结束后退出进程释放 active writer 锁。
         const created = object(
-          await client.request("thread/start", { cwd: directory, sandbox: "workspace-write" }),
+          await starter.request("thread/start", { cwd: directory, sandbox: "workspace-write" }),
         ).thread;
         id = string(object(created).id);
         checkId(id);
+        targetThreadId = id;
       } catch (error) {
-        if (error instanceof CodexTransportError) {
-          writeConnection = undefined;
-          if (!error.dispatched) {
-            return {
-              status: "rejected",
-              reason: "无法连接 Codex daemon，无法创建桌面可见会话",
-            };
-          }
+        starter.close();
+        activeStarters.delete(starter);
+        if (error instanceof CodexTransportError && !error.dispatched) {
+          return {
+            status: "rejected",
+            reason: "无法连接本机 Codex 启动进程，无法创建桌面可见会话",
+          };
         }
         return {
           status: "unknown",
           error: "Codex 桌面会话创建结果未知，请先在 Codex Desktop 核对，不自动回退或重发",
         };
       }
+
+      if (delivery === "queue") {
+        // 两阶段无锁模式：简短初始化首轮落盘 + 设标题 + 立即退出释放锁 → 经 daemon thread/queue/add 入队真实任务。
+        let bootstrapDone = false;
+        const bootstrapFinished = new Promise<void>((resolve) => {
+          resolveBootstrap = () => {
+            bootstrapDone = true;
+            resolve();
+          };
+        });
+        try {
+          const boot = object(
+            await starter.request("turn/start", {
+              threadId: id,
+              input: [{ type: "text", text: BOOTSTRAP_PROMPT }],
+            }),
+          );
+          const bootTurnId = string(object(boot.turn).id);
+          if (!bootTurnId.trim()) bad();
+          targetTurnId = bootTurnId;
+          if (!completedTurns.has(bootTurnId)) {
+            const timeoutMs = options.bootstrapTimeoutMs ?? 25_000;
+            await Promise.race([
+              bootstrapFinished,
+              new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, timeoutMs);
+                timer.unref?.();
+              }),
+            ]);
+          } else {
+            bootstrapDone = true;
+          }
+          await applyTitleOnce(starter, id);
+        } catch {
+          starter.close();
+          activeStarters.delete(starter);
+          return {
+            status: "failed",
+            error: `Codex 桌面会话（${id}）初始化阶段失败，未提交任务`,
+          };
+        }
+        starter.close();
+        activeStarters.delete(starter);
+        if (starter.closed) {
+          await Promise.race([
+            starter.closed,
+            new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, 2_000);
+              timer.unref?.();
+            }),
+          ]);
+        }
+        if (!bootstrapDone) {
+          return {
+            status: "failed",
+            error: `Codex 桌面会话（${id}）初始化等待超时，未入队真实任务，请在 Codex Desktop 核对`,
+          };
+        }
+        try {
+          const queued = object(
+            await daemonForQueue!.request("thread/queue/add", {
+              threadId: id,
+              input: [{ type: "text", text: content }],
+              clientUserMessageId: randomUUID(),
+            }),
+          );
+          const queueId = string(object(queued.queuedSubmission).id);
+          if (!queueId.trim()) bad();
+          return {
+            status: "started",
+            session_id: id,
+            external_ref: queueId,
+            project_name: basename(directory) || null,
+            delivery: "queue",
+            title: sessionTitle,
+          };
+        } catch (error) {
+          if (error instanceof CodexTransportError) writeConnection = undefined;
+          const rejected =
+            error instanceof CodexRpcError &&
+            [-32600, -32601, -32602, -32001].includes(error.code);
+          return rejected
+            ? {
+                status: "failed",
+                error: `Codex 无锁桌面会话（${id}）已创建，但任务入队被拒绝`,
+              }
+            : {
+                status: "unknown",
+                error: `Codex 无锁桌面会话（${id}）任务入队结果未知，请先核对目标队列，不要重复提交`,
+              };
+        }
+      }
+
       try {
         const result = object(
-          await client.request("turn/start", {
+          await starter.request("turn/start", {
             threadId: id,
             input: [{ type: "text", text: content }],
           }),
         );
         const turnId = string(object(result.turn).id);
         if (!turnId.trim()) bad();
+        targetTurnId = turnId;
+        await applyTitleOnce(starter, id);
+        if (completedTurns.has(turnId)) releaseStarter();
         return {
           status: "started",
           session_id: id,
           external_ref: turnId,
           project_name: basename(directory) || null,
+          delivery: "auto",
+          title: sessionTitle,
         };
       } catch (error) {
-        if (error instanceof CodexTransportError) writeConnection = undefined;
+        starter.close();
+        activeStarters.delete(starter);
         const rejected =
           error instanceof CodexRpcError &&
           [-32600, -32601, -32602, -32001].includes(error.code);

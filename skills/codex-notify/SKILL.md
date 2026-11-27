@@ -40,7 +40,7 @@ node "<当前 Skill 绝对目录>/send.mjs" --resolve --session-name "<用户指
 
 ## 新建前必须确定目录
 
-用户要求接力但没指定已有会话时，默认通过本机 DSH Agent Relay 连接 Codex daemon 创建 **Codex Desktop 侧边栏可见会话**；若 DSH 或 Codex daemon 未在线，则自动回退为官方 `codex exec` 离线 CLI 后台新建并明确提示未出现在 Desktop。先确定目录，遵循以下顺序：
+用户要求接力但没指定已有会话时，默认通过本机 DSH Agent Relay 拉起短生命周期官方 `codex app-server` 创建 **Codex Desktop 侧边栏可见会话**、自动设置简洁标题并立即开始执行（首轮完成后自动退出释放写锁，便于在 Codex Desktop 中直接继续对话）；若 DSH 或本机 Codex CLI 不可用，则自动回退为官方 `codex exec` 离线 CLI 后台新建并明确提示未出现在 Desktop。先确定目录，遵循以下顺序：
 
 1. 用户提供绝对路径或相对路径：验证它存在且是可访问目录，转换为规范化绝对路径。
 2. 用户提供项目名（例如 `ai-rag`）：运行目录查找，结合当前宿主的项目列表按真实路径核对。
@@ -55,7 +55,7 @@ macOS 会用 Spotlight 查全机已索引目录，再递归补查用户主目录
 
 ## 新建会话与查询
 
-目录确定后，调用当前 Skill 中的启动器。它优先通过本机 DSH Agent Relay 与 Codex daemon 创建 **Codex Desktop 可见会话**（直接返回真实 `session_id` 并提交首条任务）；当 DSH 或 Codex daemon 不可达/未在线时自动回退为离线 `codex exec` CLI 后台新建（也可加 `--cli` 显式走离线模式）。首条任务已提交，不再重复 send。若桌面新建请求已派发但结果不明（`unknown`），不会自动回退或重复新建。macOS / Linux 优先使用 `--stdin <<'EOF'` 传入正文，无需创建临时文件；Windows PowerShell 5.1 默认管道编码为 ASCII，建议先写入 UTF-8 文件再用 `--content-file`，短文本也可用 `--content`。
+目录确定后，调用当前 Skill 中的启动器。它默认通过本机 DSH Agent Relay 拉起短生命周期官方 `codex app-server` 创建 **Codex Desktop 可见会话**（自动设置简洁标题、直接返回真实 `session_id` 并立即在后台开始执行首条任务，首轮完成后立即释放写锁）；若用户明确希望长任务全程在 Codex Desktop 无锁交互/审批（点开该会话后再由桌面端自动开跑），可追加 `--desktop-queue`（两阶段先初始化解锁再经 daemon 排队）；需要指定会话标题时可传 `--title "<标题>"`。当 DSH 或桌面新建不可用时自动回退为离线 `codex exec` CLI 后台新建（也可加 `--cli` 显式走离线模式）。首条任务已提交，不再重复 send。若桌面新建请求已派发但结果不明（`unknown`），不会自动回退或重复新建。macOS / Linux 优先使用 `--stdin <<'EOF'` 传入正文，无需创建临时文件；Windows PowerShell 5.1 默认管道编码为 ASCII，建议先写入 UTF-8 文件再用 `--content-file`，短文本也可用 `--content`。
 
 ```bash
 node "<当前 Skill 绝对目录>/start.mjs" --cwd "<已验证绝对目录>" --request-id "<本次任务唯一 ID>" --stdin <<'EOF'

@@ -41,13 +41,17 @@ export function createMessageRoutes({ relay, credentials }: {
           agent: input.agent,
           cwd: input.cwd,
           content: input.content,
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.delivery !== undefined ? { delivery: input.delivery } : {}),
         });
         if (!result.ok) return Response.json({ error: result.error.message }, { status: result.error.code === "invalid_input" ? 400 : 503 });
-        const { message, duplicate, session_id, project_name } = result.value as {
+        const { message, duplicate, session_id, project_name, delivery, title } = result.value as {
           message: Message;
           duplicate?: boolean;
           session_id?: string | null;
           project_name?: string | null;
+          delivery?: string | null;
+          title?: string | null;
         };
         return Response.json({
           accepted: true,
@@ -56,6 +60,8 @@ export function createMessageRoutes({ relay, credentials }: {
           status: message.status,
           session_id: session_id ?? null,
           project_name: project_name ?? null,
+          delivery: delivery ?? "auto",
+          title: title ?? null,
           external_ref: message.external_ref,
           error: message.error,
         }, { status: 202 });

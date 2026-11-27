@@ -71,3 +71,60 @@ test('Codex stdio：协议错误保持错误码，不把进程退出或畸形响
   await assert.rejects(client.request('thread/read',{}),e=>e.code==='unavailable'&&!e.message.includes('SECRET_STDERR'));
  }
 });
+
+test('Codex visible starter：仅允许新建/设标题/首轮，保守拒绝审批，收到通知后可优雅关闭退出', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'relay-codex-starter-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  const script = join(dir, 'starter.mjs');
+  await writeFile(script, `import readline from 'node:readline';
+const send = m => process.stdout.write(JSON.stringify(m) + '\\n');
+const approvals = [];
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', line => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') return send({ id: m.id, result: { userAgent: 'starter-fixture' } });
+  if (m.method === 'initialized') return;
+  if (m.id && m.result !== undefined) { approvals.push(m); return; }
+  if (m.method === 'thread/start') return send({ id: m.id, result: { thread: { id: '11111111-1111-4111-8111-111111111111', status: { type: 'idle' } } } });
+  if (m.method === 'thread/name/set') return send({ id: m.id, result: { ok: true, approvalsCount: approvals.length } });
+  if (m.method === 'turn/start') {
+    send({ id: 9001, method: 'item/commandExecution/requestApproval', params: {} });
+    send({ id: 9002, method: 'execCommandApproval', params: {} });
+    send({ id: 9003, method: 'item/permissions/requestApproval', params: {} });
+    send({ id: m.id, result: { turn: { id: 'turn-starter-1' } } });
+    setTimeout(() => {
+      send({ method: 'turn/completed', params: { threadId: m.params.threadId, turn: { id: 'turn-starter-1', status: 'completed' } } });
+    }, 30);
+    return;
+  }
+});
+rl.on('close', () => process.exit(0));
+`);
+  const { connectCodexVisibleStarter } = await import('../../lib/adapters/codex/stdio.js');
+  const notifications = [];
+  const client = await connectCodexVisibleStarter({
+    cliPath: process.execPath,
+    cliArgs: [script],
+    timeoutMs: 2000,
+    onNotification: (method, params) => notifications.push({ method, params }),
+  });
+  t.after(() => client.close());
+
+  for (const disallowed of ['thread/resume', 'thread/archive', 'thread/queue/add', 'thread/list']) {
+    await assert.rejects(client.request(disallowed, {}), /仅允许/);
+  }
+  const started = await client.request('thread/start', { cwd: dir, sandbox: 'workspace-write' });
+  assert.equal(started.thread.id, '11111111-1111-4111-8111-111111111111');
+  const turn = await client.request('turn/start', { threadId: started.thread.id, input: [{ type: 'text', text: 'hi' }] });
+  assert.equal(turn.turn.id, 'turn-starter-1');
+
+  for (let i = 0; i < 40 && !notifications.some((n) => n.method === 'turn/completed'); i++) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.equal(notifications.some((n) => n.method === 'turn/completed'), true);
+  const named = await client.request('thread/name/set', { threadId: started.thread.id, name: '测试标题' });
+  assert.equal(named.approvalsCount, 3, '三类审批请求均应被保守拒绝回执');
+
+  client.close();
+  await client.closed;
+});

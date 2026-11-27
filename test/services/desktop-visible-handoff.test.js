@@ -50,6 +50,9 @@ test('CodexAdapter.startVisibleSession：经 daemon 创建桌面可见会话且�
         if (method === 'turn/start') {
           return { turn: { id: 'turn-visible-1' } };
         }
+        if (method === 'thread/name/set') {
+          return {};
+        }
         if (method === 'thread/queue/add') {
           return { queuedSubmission: { id: 'queue-follow-1' } };
         }
@@ -81,11 +84,15 @@ test('CodexAdapter.startVisibleSession：经 daemon 创建桌面可见会话且�
     session_id: UUID_1,
     external_ref: 'turn-visible-1',
     project_name: 'demo-project',
+    delivery: 'auto',
+    title: '首轮测试',
   });
   assert.equal(calls[0].method, 'thread/start');
   assert.equal(calls[0].params.cwd, realWorkDir);
   assert.equal(calls[0].params.sandbox, 'workspace-write');
   assert.equal(calls[1].method, 'turn/start');
+  assert.equal(calls[2].method, 'thread/name/set');
+  assert.equal(calls[2].params.name, '首轮测试');
   assert.equal(store.codexSessions.has(UUID_1, join(root, 'codex.sock')), false, '不登记为隐藏专用绑定');
 
   // 后续 visibleOnly 投递应走官方 thread/queue/add，不被当成 Relay 隐藏专用会话拒绝。
@@ -134,6 +141,131 @@ test('CodexAdapter.startVisibleSession：经 daemon 创建桌面可见会话且�
     }),
   });
   assert.equal((await uncertain.startVisibleSession({ cwd: workDir, content: '超时' })).status, 'unknown');
+});
+
+test('CodexAdapter.startVisibleSession：自动模式首轮完成后立即释放启动器，排队模式先解锁再入队且去噪设标题', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'relay-codex-release-'));
+  const workDir = join(root, 'proj-a');
+  mkdirSync(workDir, { recursive: true });
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+
+  // 1) auto 模式：剥离接力来源后缀设干净标题，首轮完成通知到达后自动 close() 释放 active writer 锁。
+  let starterHooks = null;
+  let closedCount = 0;
+  const starterCalls = [];
+  const adapterAuto = createCodexAdapter({
+    connectVisibleStarter: async (hooks) => {
+      starterHooks = hooks;
+      let resolveClosed;
+      const closed = new Promise((r) => { resolveClosed = r; });
+      return {
+        transport: 'stdio',
+        closed,
+        async request(method, params) {
+          starterCalls.push({ method, params });
+          if (method === 'thread/start') return { thread: { id: UUID_1, status: { type: 'idle' } } };
+          if (method === 'turn/start') return { turn: { id: 'turn-auto-1' } };
+          if (method === 'thread/name/set') return {};
+          throw new Error(`unexpected ${method}`);
+        },
+        close() {
+          closedCount++;
+          resolveClosed();
+          hooks?.onClose?.();
+        },
+      };
+    },
+  });
+
+  const autoRes = await adapterAuto.startVisibleSession({
+    cwd: workDir,
+    content: '检查构建失败原因\n\n[接力来源]\n{"agent":"agy","session_id":"abc"}',
+  });
+  assert.equal(autoRes.status, 'started');
+  assert.equal(autoRes.delivery, 'auto');
+  assert.equal(autoRes.title, '检查构建失败原因');
+  assert.equal(closedCount, 0, '首轮执行中保持启动器存活');
+  assert.equal(starterCalls.find((c) => c.method === 'thread/name/set')?.params.name, '检查构建失败原因');
+
+  starterHooks.onNotification('turn/completed', { threadId: UUID_1, turn: { id: 'turn-auto-1', status: 'completed' } });
+  for (let i = 0; i < 20 && closedCount === 0; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(closedCount, 1, '首轮完成后必须立即关闭临时启动器以释放 active writer 锁');
+
+  // 2) queue 模式：daemon 离线时直接 rejected 且绝不启动临时进程建孤儿会话。
+  let spawnedOnOffline = false;
+  const adapterQueueOffline = createCodexAdapter({
+    connect: async () => { throw new Error('ECONNREFUSED'); },
+    connectVisibleStarter: async () => { spawnedOnOffline = true; throw new Error('should not spawn'); },
+  });
+  const offlineQueue = await adapterQueueOffline.startVisibleSession({ cwd: workDir, content: '长任务', delivery: 'queue' });
+  assert.equal(offlineQueue.status, 'rejected');
+  assert.equal(spawnedOnOffline, false);
+
+  // 3) queue 模式：先简短初始化落盘 + 设标题 + 关闭退出释放锁，再通过 daemon thread/queue/add 入队真实任务。
+  const timeline = [];
+  const adapterQueue = createCodexAdapter({
+    connect: async () => ({
+      transport: 'daemon',
+      async request(method, params) {
+        timeline.push(`daemon:${method}`);
+        if (method === 'thread/queue/add') {
+          assert.equal(params.threadId, UUID_2);
+          assert.equal(params.input[0].text, '执行长耗时重构');
+          return { queuedSubmission: { id: 'queue-item-1' } };
+        }
+        throw new Error(`unexpected daemon ${method}`);
+      },
+      close() {},
+    }),
+    connectVisibleStarter: async (hooks) => {
+      let resolveClosed;
+      const closed = new Promise((r) => { resolveClosed = r; });
+      return {
+        transport: 'stdio',
+        closed,
+        async request(method, params) {
+          timeline.push(`starter:${method}`);
+          if (method === 'thread/start') return { thread: { id: UUID_2, status: { type: 'idle' } } };
+          if (method === 'turn/start') {
+            setTimeout(() => hooks?.onNotification?.('turn/completed', { threadId: UUID_2, turn: { id: 'boot-1', status: 'completed' } }), 15);
+            return { turn: { id: 'boot-1' } };
+          }
+          if (method === 'thread/name/set') {
+            assert.equal(params.name, '重构任务');
+            return {};
+          }
+          throw new Error(`unexpected starter ${method}`);
+        },
+        close() {
+          timeline.push('starter:close');
+          resolveClosed();
+          hooks?.onClose?.();
+        },
+      };
+    },
+  });
+
+  const queueRes = await adapterQueue.startVisibleSession({
+    cwd: workDir,
+    content: '执行长耗时重构',
+    title: '重构任务',
+    delivery: 'queue',
+  });
+  assert.deepEqual(queueRes, {
+    status: 'started',
+    session_id: UUID_2,
+    external_ref: 'queue-item-1',
+    project_name: 'proj-a',
+    delivery: 'queue',
+    title: '重构任务',
+  });
+  assert.deepEqual(timeline, [
+    'starter:thread/start',
+    'starter:turn/start',
+    'starter:thread/name/set',
+    'starter:close',
+    'daemon:thread/queue/add',
+  ]);
 });
 
 test('AgyBridge + Sidecar + AgyAdapter.startVisibleSession：按 cwd 匹配项目创建桌面可见会话，离线拒绝、超时转 unknown', async (t) => {
@@ -311,8 +443,9 @@ test('Relay HTTP /api/agent-relay/sessions/start：支持防重、目录冲突�
 
   // 不同正文冲突返回 400。
   assert.equal((await routes[SESSION_START_PATH](post({ ...payload, content: '改了正文' }))).status, 400);
-  // claude 不走桌面新建入口，返回 400。
+  // claude 不走桌面新建入口，返回 400；agy 不支持 delivery=queue，返回 400。
   assert.equal((await routes[SESSION_START_PATH](post({ ...payload, request_id: 'req-claude', agent: 'claude' }))).status, 400);
+  assert.equal((await routes[SESSION_START_PATH](post({ ...payload, request_id: 'req-agy-q', agent: 'agy', delivery: 'queue' }))).status, 400);
 
   // 同一 request_id 可直接经 messages/progress 只读查询执行结果。
   const progRes = await routes[MESSAGE_PROGRESS_PATH](post({ request_id: 'req-desktop-1' }));
@@ -353,7 +486,8 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: '${UUID
     const server = createServer(async (req, res) => {
       let body = '';
       for await (const chunk of req) body += chunk;
-      hits.push({ url: req.url, body: JSON.parse(body) });
+      const parsedBody = JSON.parse(body);
+      hits.push({ url: req.url, body: parsedBody });
       if (req.url === SESSION_START_PATH) {
         if (mode === 'desktop_ok') {
           res.writeHead(202, { 'Content-Type': 'application/json' });
@@ -364,6 +498,8 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: '${UUID
             status: 'sent',
             session_id: UUID_1,
             project_name: 'my repo',
+            delivery: parsedBody.delivery ?? 'auto',
+            title: parsedBody.title ?? null,
             external_ref: 'turn-1',
           }));
           return;
@@ -466,9 +602,9 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: '${UUID
     assert.equal(launched2.fallback_reason, '桌面桥接未在线');
     assert.match(launched2.view_hint, /回退/);
 
-    // 等待分离的 CLI worker 完成并检查 state。
+    // 等待分离的 CLI worker 完成并检查 state（Windows runner 冷启动 Node 子进程较慢，放宽到 30 秒）。
     let queried2;
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 300; i++) {
       queried2 = await starter.inspectJob('fallback-1', { env });
       if (queried2.status === 'completed') break;
       await new Promise((r) => setTimeout(r, 100));
@@ -503,6 +639,34 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: '${UUID
       const st = await starter.inspectJob('force-cli', { env });
       if (st.status === 'completed' || st.status === 'failed') break;
       await new Promise((r) => setTimeout(r, 100));
+    }
+
+    // 5) codex 支持 --desktop-queue + --title；agy 拒绝 --desktop-queue。
+    if (agent === 'codex') {
+      const prepQ = await starter.prepareJob({
+        request_id: 'desktop-queue-1',
+        cwd,
+        content: '长任务请入队',
+        title: '长任务标题',
+        desktop_queue: true,
+      }, { env });
+      const launchedQ = await starter.launchJob(prepQ, { env });
+      assert.equal(launchedQ.mode, 'desktop');
+      assert.equal(launchedQ.delivery, 'queue');
+      assert.equal(launchedQ.title, '长任务标题');
+      assert.match(launchedQ.view_hint, /入队.*全程无锁/);
+      const lastStartHit = hits.filter((h) => h.url === SESSION_START_PATH).at(-1);
+      assert.equal(lastStartHit.body.delivery, 'queue');
+      assert.equal(lastStartHit.body.title, '长任务标题');
+      await assert.rejects(
+        starter.prepareJob({ request_id: 'bad-combo', cwd, content: '冲突', cli_only: true, desktop_queue: true }, { env }),
+        /不能同时使用/,
+      );
+    } else {
+      await assert.rejects(
+        starter.prepareJob({ request_id: 'agy-no-queue', cwd, content: '不支持', desktop_queue: true }, { env }),
+        /仅 codex-notify/,
+      );
     }
   });
 }
