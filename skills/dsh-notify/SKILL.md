@@ -41,12 +41,20 @@ description: 外部 Agent 任务完成后向 DSH Agent Relay 发送一次结果�
 
 通知凭证在 DSH「任务跟踪 → 前置安装接入」安装时自动生成，随通知 Skill 一起落地；文件里就是明文 token 和本机 HTTP 地址，脚本每次读取最新内容，凭证轮换后无需重启 Codex/Claude。配置缺失时说明原因，不搜索无关文件、不猜测凭证，不把哈希摘要作为 Bearer token。
 
-调用同目录发送脚本，并用真实会话 ID 和稳定 request_id 替换占位符；摘要仅包含用户需要的任务结果。默认 Codex 全局 Skill 的示例：
+调用同目录发送脚本，并用真实会话 ID 和稳定 request_id 替换占位符；摘要仅包含用户需要的任务结果。多行或含引号摘要在 macOS / Linux 可用 `--summary-stdin <<'EOF'`，在 Windows PowerShell 5.1 建议写入 UTF-8 文件并用 `--summary-file`（与 `--summary` 三者互斥）。默认 Codex 全局 Skill 的示例：
 
 macOS：
 
 ```bash
 node "$HOME/.codex/skills/dsh-notify/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary "<任务结果摘要>"
+```
+
+多行摘要（macOS / Linux）：
+
+```bash
+node "$HOME/.codex/skills/dsh-notify/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary-stdin <<'EOF'
+<多行任务结果摘要>
+EOF
 ```
 
 Windows PowerShell：

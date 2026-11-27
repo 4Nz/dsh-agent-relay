@@ -33,7 +33,6 @@ import {
   createChannelCredentialService,
   createNotificationCredentialService,
 } from "./services/credentials.js";
-import { createSkillInstallService } from "./services/skill-install.js";
 import { createPushHandler, createPushServer } from "./services/push.js";
 import { createClaudeChannelService } from "./services/claude-channel.js";
 import { createProviderRegistry } from "./providers/registry.js";
@@ -189,13 +188,19 @@ export function apply(ctx: Context): void {
     store,
     transport: createDshDelivery(host, store.unread),
   });
-  const skillInstall = createSkillInstallService({ adapters });
+  let getPushStatus = () => ({
+    listening: false,
+    host: "127.0.0.1",
+    port: Number(process.env.DSH_AGENT_RELAY_PORT ?? 37421),
+    error: "本机通知服务尚未启动" as string | null,
+  });
   const setup = createSetupService({
     run: claudeRunner,
     codexRunner,
     agyRunner,
     agyBridge,
     agyBridgeCredentials,
+    pushServerStatus: () => getPushStatus(),
     supportedNotifyAgents: () => adapters.list().filter(item => item.capabilities.sendMessage).map(item => item.agent),
     channel,
     listAgents: listClaudeAgents,
@@ -235,7 +240,6 @@ export function apply(ctx: Context): void {
     subscriptions,
     checks,
     notifications,
-    skillInstall,
     createDshSession: createReceiveSession,
     listDshSessions: () => dshSessions.list(),
     hasDshSession: (id) => dshSessions.has(id),
@@ -305,6 +309,7 @@ export function apply(ctx: Context): void {
       ...createNotificationStatusRoutes({ store, credentials: notificationCredentials }),
     },
   });
+  getPushStatus = () => pushServer.status();
   const stopChannel = channel.start();
   ctx.effect(() => async () => {
     stopping = true;
@@ -327,6 +332,7 @@ export function apply(ctx: Context): void {
   stopApi = registerRelayApi(host.connection, relay);
   stopCleanup = startHistoryCleanup({
     store,
+    dataDir,
     onError: (error) =>
       ctx.logger.warn("[agent-relay] history cleanup failed: %s", error),
   });

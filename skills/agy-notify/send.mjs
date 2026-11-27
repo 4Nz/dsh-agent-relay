@@ -8,6 +8,48 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const targetAgent = { 'claude-notify': 'claude', 'codex-notify': 'codex', 'agy-notify': 'agy' }[basename(dirname(fileURLToPath(import.meta.url)))];
 const sessionId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+export async function readStdinText({ stream = process.stdin, maxBytes = 64 * 1024, timeoutMs = 15000 } = {}) {
+  if (stream.isTTY) throw new Error('使用 --stdin 时必须通过管道或 heredoc 传入正文，不能交互式等待终端输入');
+  return await new Promise((resolve_, reject) => {
+    const chunks = [];
+    let bytes = 0;
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stream.off('data', onData);
+      stream.off('end', onEnd);
+      stream.off('error', onError);
+      fn(value);
+    };
+    const timer = setTimeout(() => {
+      try { stream.destroy(); } catch { /* 忽略关闭异常 */ }
+      finish(reject, new Error('读取标准输入超时'));
+    }, timeoutMs);
+    timer.unref?.();
+    const onData = chunk => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+      bytes += buf.length;
+      if (bytes > maxBytes) {
+        try { stream.destroy(); } catch { /* 忽略关闭异常 */ }
+        finish(reject, new Error(`标准输入超过 ${maxBytes} 字节上限`));
+        return;
+      }
+      chunks.push(buf);
+    };
+    const onEnd = () => {
+      const text = Buffer.concat(chunks).toString('utf8').replace(/\r\n/g, '\n').replace(/\n$/, '');
+      finish(resolve_, text);
+    };
+    const onError = () => finish(reject, new Error('读取标准输入失败'));
+    stream.on('data', onData);
+    stream.on('end', onEnd);
+    stream.on('error', onError);
+    stream.resume?.();
+  });
+}
+
 export function resolveSource(input = {}, env = process.env) {
   const explicit = input.source_agent !== undefined || input.source_session_id !== undefined;
   if (input.omit_source === true) {
@@ -154,19 +196,23 @@ if (process.argv[1] && (import.meta.url === pathToFileURL(resolve(process.argv[1
       if (key === 'progress') { input.progress = true; continue; }
       if (key === 'resolve') { input.resolve = true; continue; }
       if (key === 'omit-source') { input.omit_source = true; continue; }
-      if (!allowed.has(key) || args[i + 1] === undefined) throw new Error('参数无效：发送需 --external-session-id、--request-id 和 --content-file；查询用 --status --request-id');
+      if (key === 'stdin') { input.stdin = true; continue; }
+      if (!allowed.has(key) || args[i + 1] === undefined) throw new Error('参数无效：发送需 --external-session-id、--request-id 和正文（--stdin、--content 或 --content-file）；查询用 --status --request-id');
       input[key.replaceAll('-', '_')] = args[++i];
     }
     if ([input.resolve, input.status, input.progress].filter(Boolean).length > 1) throw new Error('查找、投递状态和执行进度不能同时查询');
-    if (input.resolve && (input.status || input.progress || input.request_id !== undefined || input.content !== undefined || input.content_file !== undefined || input.external_session_id !== undefined))
+    if (input.resolve && (input.status || input.progress || input.request_id !== undefined || input.content !== undefined || input.content_file !== undefined || input.stdin === true || input.external_session_id !== undefined))
       throw new Error('查找仅接受 --resolve 与 --session-name，不会发送消息');
     if (!input.resolve && input.session_name !== undefined) throw new Error('先用 --resolve --session-name 查找，再以返回的 ID 发送');
-    if ((input.status || input.progress) && (input.content !== undefined || input.content_file !== undefined || input.external_session_id !== undefined))
+    if ((input.status || input.progress) && (input.content !== undefined || input.content_file !== undefined || input.stdin === true || input.external_session_id !== undefined))
       throw new Error('状态查询仅接受 --status 与 --request-id');
+    const contentSources = [input.content !== undefined, input.content_file !== undefined, input.stdin === true].filter(Boolean).length;
+    if (contentSources > 1) throw new Error('--content、--content-file 与 --stdin 不能同时使用');
     if (input.content_file !== undefined) {
-      if (input.content !== undefined) throw new Error('--content 与 --content-file 不能同时使用');
       try { input.content = await readFile(input.content_file, 'utf8'); }
       catch { throw new Error('无法读取正文文件'); }
+    } else if (input.stdin === true) {
+      input.content = await readStdinText();
     }
     const result = await sendMessage(input);
     console.log(JSON.stringify(result));

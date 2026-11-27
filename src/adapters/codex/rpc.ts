@@ -48,6 +48,7 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
   let fragments: Buffer[] = [];
   let fragmentSize = 0;
   let ended = false;
+  let initialized = false;
   let sequence = 0;
   const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; dispatched: boolean }>();
   function stop(error: Error = failure('Codex 连接已断开')) {
@@ -114,7 +115,7 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
         if (opcode >= 8 && (!final || size > 125)) throw failure('Codex 控制帧格式无效');
         if (buffer.length < offset + size) return;
         const body = buffer.subarray(offset, offset + size);
-        buffer = buffer.subarray(offset + size);
+        buffer = offset + size === buffer.length ? Buffer.alloc(0) : buffer.subarray(offset + size);
         if (opcode === 8) { stop(); return; }
         if (opcode === 9) { send(body, 10); continue; }
         if (opcode === 10) continue;
@@ -123,6 +124,9 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
           throw failure('Codex WebSocket 分片顺序无效');
         fragments.push(body); fragmentSize += size;
         if (final) { receive(Buffer.concat(fragments)); fragments = []; fragmentSize = 0; }
+      }
+      if (buffer.length > 0 && buffer.buffer.byteLength > 64 * 1024 && buffer.length < 4096) {
+        buffer = Buffer.from(buffer);
       }
     } catch { stop(failure('Codex 响应无法解析或超过大小上限')); }
   }
@@ -152,8 +156,15 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
     if (ended) return Promise.reject(failure('Codex 连接已断开'));
     return new Promise((resolve, reject) => {
       const id = ++sequence;
-      const timer = setTimeout(() => stop(failure('Codex 请求超时')), timeoutMs);
-      const entry = { resolve, reject, timer, dispatched: false };
+      const entry = { resolve, reject, timer: null as unknown as ReturnType<typeof setTimeout>, dispatched: false };
+      entry.timer = setTimeout(() => {
+        if (!initialized) {
+          stop(failure('Codex 请求超时'));
+          return;
+        }
+        if (!pending.delete(id)) return;
+        entry.reject(new CodexTransportError('Codex 请求超时', entry.dispatched));
+      }, timeoutMs);
       pending.set(id, entry);
       try { send({ id, method, params }); entry.dispatched = true; } catch { stop(); }
     });
@@ -164,6 +175,7 @@ export async function connectCodex(options: CodexConnectionOptions = {}): Promis
       capabilities: { experimentalApi: true },
     });
     send({ method: 'initialized' });
+    initialized = true;
   } catch (error) { stop(); throw error; }
   return {
     transport: 'daemon',

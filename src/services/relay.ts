@@ -13,7 +13,6 @@ import type {
 import type { SubscriptionService } from "./subscriptions.js";
 import type { CheckService } from "./checks.js";
 import type { NotificationService } from "./notifications.js";
-import type { SkillInstallService } from "./skill-install.js";
 import type { SetupService } from "./setup.js";
 import type { ReceiveSessionContext } from "./receive-session.js";
 import type { DshSessionStatus } from "./dsh-sessions.js";
@@ -48,8 +47,6 @@ export const endpoints = [
   "messages",
   "message_status",
   "update",
-  "install_skill",
-  "install_skill_preview",
   "setup_check",
   "setup_install",
   "setup_uninstall",
@@ -68,6 +65,8 @@ export const endpoints = [
   "cleanup_subscriptions",
 ] as const;
 export type Endpoint = (typeof endpoints)[number];
+// 含 HTTP 内部专用只读接口（不向 Web RPC 暴露，由 message-http 调用）。
+export type RelayEndpoint = Endpoint | "message_progress";
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new TypeError("参数必须为对象");
@@ -109,7 +108,6 @@ export function createRelayService({
   subscriptions,
   checks,
   notifications,
-  skillInstall,
   listDshSessions,
   hasDshSession,
   dshSessionStatus,
@@ -128,7 +126,6 @@ export function createRelayService({
   subscriptions: SubscriptionService;
   checks: CheckService;
   notifications: NotificationService;
-  skillInstall: SkillInstallService;
   listDshSessions: () => Promise<DshSessionOption[]>;
   // 验证接收会话存在且未归档，不读取标题/正文；归档抛明确错误，查询失败不当作不存在。
   hasDshSession?: (id: string) => Promise<boolean>;
@@ -319,12 +316,6 @@ export function createRelayService({
           case "agents":
             value = adapters.list();
             break;
-          case "install_skill_preview":
-            value = await skillInstall.preview(agent(args.agent));
-            break;
-          case "install_skill":
-            value = await skillInstall.install(agent(args.agent));
-            break;
           case "setup_check":
           case "setup_install":
           case "setup_uninstall":
@@ -376,16 +367,18 @@ export function createRelayService({
           }
           case "inspect": {
             const selected = agent(args.agent);
+            const external = text(args.external_session_id, "external_session_id");
             if (!adapters.get(selected).capabilities().snapshot)
               throw new TypeError("该 Agent 不支持查阅会话");
-            const snapshot = await subscriptions.inspect(
-              selected,
-              text(args.external_session_id, "external_session_id"),
-            );
-            value = snapshot;
-            if (!snapshot.closed && !snapshot.check_error)
-              observeTitle?.(selected, text(args.external_session_id, "external_session_id"), snapshot.title);
-            await notifications.drain();
+            if (bridge) {
+              value = await bridge.inspect(selected, external);
+            } else {
+              const snapshot = await subscriptions.inspect(selected, external);
+              value = snapshot;
+              if (!snapshot.closed && !snapshot.check_error)
+                observeTitle?.(selected, external, snapshot.title);
+              await notifications.drain();
+            }
             break;
           }
           case "dsh_sessions":
@@ -600,8 +593,12 @@ export function createRelayService({
                 try {
                   const snapshot = await adapter.snapshot(external);
                   if (snapshot.closed) {
-                    await subscriptions.closeSession(selected, external);
-                    await notifications.drain();
+                    if (bridge) {
+                      await bridge.closeSession(selected, external);
+                    } else {
+                      await subscriptions.closeSession(selected, external);
+                      await notifications.drain();
+                    }
                     sendResult = {
                       status: "rejected",
                       reason: "外部会话不存在或已归档",
@@ -958,7 +955,9 @@ export function createRelayService({
           }
           case "delete_subscription": {
             const id = text(args.subscription_id, "subscription_id");
-            const result = await subscriptions.delete(id);
+            const result = bridge
+              ? await bridge.deleteSubscription(id)
+              : await subscriptions.delete(id);
             if (!result.ok)
               return {
                 ok: false,
@@ -976,6 +975,7 @@ export function createRelayService({
               now: Date.now(),
               retention_days: retentionDays,
             });
+            if (bridge) await bridge.reconcile().catch(() => {});
             break;
           }
           default:

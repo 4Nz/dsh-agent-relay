@@ -1,7 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { parseV2Marker, hasLegacyMarker } from './schedule-marker.js';
-
-// 订阅调度边界；宿主适配保留用于清理升级前的模型提醒。
+// 订阅调度边界；宿主适配用于创建和清理定时提醒。
 export interface ScheduledTask {
   id: string;
   sessionId: string;
@@ -18,63 +15,6 @@ export interface Scheduler {
   }): Promise<string>;
   delete(input: { sessionId: string; id: string }): Promise<boolean>;
   catalog(): Promise<ScheduledTask[]>;
-}
-
-// 直接查阅外部历史，不通过定时提醒唤醒模型。持久化订阅由原对账流程恢复计时器。
-export function createPollingScheduler(
-  legacy: Pick<Scheduler, 'catalog' | 'delete'>,
-  check: (subscriptionId: string) => Promise<unknown>,
-  onError: (error: unknown) => void,
-  now: () => number = Date.now,
-) {
-  const tasks = new Map<string, ScheduledTask & { timer?: ReturnType<typeof setTimeout> }>();
-  const pending = new Set<Promise<unknown>>();
-  let stopping = false;
-  const scheduler: Scheduler & { stop(): Promise<void> } = {
-    async create({ sessionId, prompt, everySeconds, deadline }) {
-      if (stopping) throw new Error('插件调度器正在停止');
-      const subId = parseV2Marker(prompt);
-      if (!subId || !Number.isSafeInteger(everySeconds) || everySeconds < 60 || everySeconds > 3600 || (deadline !== undefined && (!Number.isSafeInteger(deadline) || deadline < 0)))
-        throw new TypeError('订阅检查参数无效');
-      const id = `relay-poll-${randomUUID()}`;
-      const task: ScheduledTask & { timer?: ReturnType<typeof setTimeout> } = { id, sessionId, prompt, status: 'active' };
-      tasks.set(id, task);
-      function arm() {
-        task.timer = setTimeout(() => {
-          if (stopping || tasks.get(id) !== task) return;
-          const operation = Promise.resolve().then(() => check(subId!)).catch(onError).finally(() => {
-            pending.delete(operation);
-            if (!stopping && tasks.get(id) === task && (deadline === undefined || now() < deadline)) arm();
-            else if (tasks.get(id) === task) task.status = 'inactive';
-          });
-          pending.add(operation);
-        }, Math.min(everySeconds * 1000, deadline === undefined ? Infinity : Math.max(0, deadline - now())));
-        task.timer.unref();
-      }
-      arm();
-      return id;
-    },
-    async delete({ sessionId, id }) {
-      const task = tasks.get(id);
-      if (!task) return legacy.delete({ sessionId, id });
-      if (task.sessionId !== sessionId) return false;
-      clearTimeout(task.timer);
-      return tasks.delete(id);
-    },
-    async catalog() {
-      // 旧 Relay 提醒标记为非活跃，触发先创建插件计时器，再清理旧提醒；其余宿主任务不变。
-      const old = (await legacy.catalog()).map(task => parseV2Marker(task.prompt) !== null || hasLegacyMarker(task.prompt)
-        ? { ...task, status: 'inactive' as const } : task);
-      return [...old, ...[...tasks.values()].map(({ timer: _timer, ...task }) => task)];
-    },
-    async stop() {
-      stopping = true;
-      for (const task of tasks.values()) clearTimeout(task.timer);
-      tasks.clear();
-      await Promise.allSettled([...pending]);
-    },
-  };
-  return scheduler;
 }
 
 // 与 @deepseek-ai/dsh-schedule 的 ScheduleService 对应的最小结构，避免直接依赖其类型包。
