@@ -30,19 +30,26 @@ export function buildViewGuidance({
   visibility = 'cli',
   projectName = null,
   fallbackReason = null,
+  delivery = 'auto',
+  title = null,
   platform = process.platform,
 }) {
   const id = typeof sessionId === 'string' && uuid.test(sessionId) ? sessionId : null;
   if (agent === 'codex') {
     const cliCommand = id ? `codex resume ${id}` : null;
+    const label = title ? `「${title}」` : '';
     const viewHint = visibility === 'desktop'
-      ? `已在 Codex Desktop 创建可见会话${projectName ? `（项目：${projectName}）` : ''}，请在 Codex Desktop 左侧对应项目列表中查看${id ? `（ID：${id}），或在终端运行：${cliCommand}` : ''}。`
+      ? delivery === 'queue'
+        ? `已在 Codex Desktop 创建无锁会话${label}${projectName ? `（项目：${projectName}）` : ''}并将任务入队；请打开 Codex Desktop 点击该会话即可自动开始执行（全程无锁，可随时打断或审批）${id ? `（ID：${id}），或在终端运行：${cliCommand}` : ''}。`
+        : `已在 Codex Desktop 创建可见会话${label}${projectName ? `（项目：${projectName}）` : ''}并已自动开始执行；随时可用 --status 查询结果，或在 Codex Desktop 左侧对应项目列表查看（首轮完成后自动释放写锁，可直接继续对话）${id ? `（ID：${id}），或在终端运行：${cliCommand}` : ''}。`
       : `${fallbackReason ? `未能通过 Codex Desktop 创建（${fallbackReason}），已自动回退为离线 CLI 会话，不会显示在 Codex Desktop 侧边栏` : '本次以离线 CLI 模式创建，不会显示在 Codex Desktop 侧边栏'}；${cliCommand ? `请在终端运行：${cliCommand}` : '待生成 session_id 后可通过 --status 获取 CLI 打开命令'}。`;
     return {
       visibility,
       view_hint: viewHint,
       cli_command: cliCommand,
       ...(projectName ? { project_name: projectName } : {}),
+      ...(title ? { title } : {}),
+      ...(visibility === 'desktop' && delivery === 'queue' ? { delivery: 'queue' } : {}),
       ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
     };
   }
@@ -164,8 +171,10 @@ async function requestDesktopStart(request, { env = process.env, home = homedir(
         request_id: request.request_id,
         cwd: request.cwd,
         content: request.prompt,
+        ...(request.title ? { title: request.title } : {}),
+        ...(request.delivery ? { delivery: request.delivery } : {}),
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(request.delivery === 'queue' ? 45000 : 30000),
       redirect: 'error',
     });
   } catch (error) {
@@ -212,6 +221,8 @@ async function requestDesktopStart(request, { env = process.env, home = homedir(
       status: 'running',
       session_id: result.session_id,
       project_name: typeof result.project_name === 'string' && result.project_name.trim() ? result.project_name.trim() : null,
+      delivery: result.delivery === 'queue' || result.delivery === 'auto' ? result.delivery : (request.delivery ?? 'auto'),
+      title: typeof result.title === 'string' && result.title.trim() ? result.title.trim() : (request.title ?? null),
       external_ref: typeof result.external_ref === 'string' ? result.external_ref : null,
       duplicate: result.duplicate === true,
     };
@@ -379,7 +390,25 @@ export async function prepareJob(input, options = {}) {
       throw new Error('回传必须同时指定来源 Agent（claude/codex/agy）与真实会话 ID');
     reply = { agent: input.reply_agent, session_id: input.reply_session_id, request_id: `${input.request_id}:result` };
   }
-  const fingerprint = hash(JSON.stringify({ cwd, content: input.content, reply, source }));
+  if (input.desktop_queue === true) {
+    if (target !== 'codex') throw new Error('仅 codex-notify 支持 --desktop-queue 无锁排队模式');
+    if (input.cli_only === true) throw new Error('--desktop-queue 与 --cli 不能同时使用');
+  }
+  let title = null;
+  if (input.title !== undefined) {
+    if (typeof input.title !== 'string' || !input.title.trim() || input.title.trim().length > 120)
+      throw new Error('会话标题必须为 1～120 字符');
+    title = input.title.replace(/\s+/g, ' ').trim();
+  }
+  const delivery = input.desktop_queue === true ? 'queue' : 'auto';
+  const fingerprint = hash(JSON.stringify({
+    cwd,
+    content: input.content,
+    reply,
+    source,
+    ...(title ? { title } : {}),
+    ...(delivery === 'queue' ? { delivery } : {}),
+  }));
   await mkdir(dirname(directory), { recursive: true, mode: 0o700 });
   try { await mkdir(directory, { mode: 0o700 }); }
   catch (error) {
@@ -409,6 +438,8 @@ export async function prepareJob(input, options = {}) {
     reply,
     source,
     fingerprint,
+    ...(title ? { title } : {}),
+    ...(delivery === 'queue' ? { delivery } : {}),
     ...(input.cli_only === true ? { cli_only: true } : {}),
     session_id: target === 'claude' ? randomUUID() : null,
     created_at: Date.now(),
@@ -470,6 +501,8 @@ export async function inspectJob(requestId, options = {}) {
       sessionId,
       visibility: 'desktop',
       projectName: state.project_name ?? null,
+      delivery: state.delivery ?? request.delivery ?? 'auto',
+      title: state.title ?? request.title ?? null,
       platform: options.platform,
     });
     return {
@@ -561,6 +594,8 @@ export async function launchJob(job, { env = process.env, home = homedir(), fetc
           status: 'running',
           session_id: desktop.session_id,
           project_name: desktop.project_name,
+          delivery: desktop.delivery ?? request.delivery ?? 'auto',
+          title: desktop.title ?? request.title ?? null,
           external_ref: desktop.external_ref,
           updated_at: now,
         });
@@ -570,6 +605,8 @@ export async function launchJob(job, { env = process.env, home = homedir(), fetc
           sessionId: desktop.session_id,
           visibility: 'desktop',
           projectName: desktop.project_name,
+          delivery: desktop.delivery ?? request.delivery ?? 'auto',
+          title: desktop.title ?? request.title ?? null,
           platform,
         });
         return {
@@ -581,7 +618,9 @@ export async function launchJob(job, { env = process.env, home = homedir(), fetc
           updated_at: now,
           error: null,
           ...view,
-          note: '已在桌面端创建可见会话并提交首条任务；用同一 request_id 查询进度，不重复提交。',
+          note: (desktop.delivery ?? request.delivery) === 'queue'
+            ? '已在 Codex Desktop 创建无锁会话并将任务入队；点开桌面端该会话即可自动开始执行，也可随时用同一 request_id 查询进度。'
+            : '已在桌面端创建可见会话并提交首条任务；用同一 request_id 查询进度，不重复提交。',
         };
       }
       const now = Date.now();
@@ -807,7 +846,8 @@ if (process.argv[1] && await realpath(process.argv[1]) === await realpath(self))
         if (key === 'omit-source') { input.omit_source = true; continue; }
         if (key === 'stdin') { input.stdin = true; continue; }
         if (key === 'cli') { input.cli_only = true; continue; }
-        if (!['request-id', 'cwd', 'content', 'content-file', 'reply-agent', 'reply-session-id', 'source-agent', 'source-session-id'].includes(key) || args[i + 1] === undefined)
+        if (key === 'desktop-queue') { input.desktop_queue = true; continue; }
+        if (!['request-id', 'cwd', 'content', 'content-file', 'title', 'reply-agent', 'reply-session-id', 'source-agent', 'source-session-id'].includes(key) || args[i + 1] === undefined)
           throw new Error('新建使用 --cwd --request-id 与正文（--stdin、--content 或 --content-file）；查询使用 --status --request-id');
         input[key.replaceAll('-', '_')] = args[++i];
       }

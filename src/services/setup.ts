@@ -448,9 +448,9 @@ export function createSetupService({
     const installed = entry.files.map(file => read(join(dir, file)));
     const source = entry.files.map(file => read(join(skillsDir, name, file)));
     if (installed.every((value, i) => value === source[i])) return {key: name, status: "ok", message: `${name} 全部登记文件匹配当前插件`};
-    let record: Record<string, any> = {};
-    try { record = JSON.parse(read(join(dir, ".agent-relay-skill.json")) ?? "{}"); } catch { /* 冲突提示 */ }
-    if (!record || installed.some((value, i) => value !== null && digest(value) !== (record.files?.[entry.files[i]!] ?? record[legacyFileKeys[entry.files[i]!] ?? ""])))
+    let record: Record<string, any> | null = null;
+    try { record = JSON.parse(read(join(dir, ".agent-relay-skill.json")) ?? "null"); } catch { /* 冲突提示 */ }
+    if (installed.some((value, i) => value !== null && value !== source[i] && (!record || typeof record !== "object" || digest(value) !== (record.files?.[entry.files[i]!] ?? record[legacyFileKeys[entry.files[i]!] ?? ""]))))
       return {key: name, status: "conflict", message: `${name} 文件被人工修改或未受安装管理，不自动覆盖`};
     return {key: name, status: "outdated", message: `${name} 需要更新或补齐登记文件`};
   }
@@ -483,9 +483,9 @@ export function createSetupService({
       return { key, status: "missing", message: "未安装 create-agent-notify；安装 / 修复时自动安装（必装）" };
     if (installed.every((value, i) => value === source[i]))
       return { key, status: "ok", message: "create-agent-notify 已安装，说明、接入契约与安装脚本均匹配当前插件" };
-    let record: { format?: number; files?: Record<string, string> } = {};
-    try { record = JSON.parse(read(join(dir, ".create-agent-notify-install.json")) ?? "{}"); } catch { /* 提示冲突 */ }
-    if (record?.format !== 1 || !record.files || installed.some((value, i) => value !== null && record.files![CREATOR_FILES[i]!] !== digest(value)))
+    let record: { format?: number; files?: Record<string, string> } | null = null;
+    try { record = JSON.parse(read(join(dir, ".create-agent-notify-install.json")) ?? "null"); } catch { /* 提示冲突 */ }
+    if (installed.some((value, i) => value !== null && value !== source[i] && (record?.format !== 1 || !record.files || record.files[CREATOR_FILES[i]!] !== digest(value))))
       return { key, status: "conflict", message: "create-agent-notify 已被人工修改或未纳管，请核对后处理；不会自动覆盖" };
     return { key, status: "outdated", message: "create-agent-notify 需要更新或补齐文件，请点击安装 / 修复" };
   }

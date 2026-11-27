@@ -613,3 +613,55 @@ test("没有 agy CLI 时选择沙箱不会创建配置", async t => {
   assert.equal(result.agy_sandbox.status, "unavailable");
   assert.equal(existsSync(join(home, ".gemini", "antigravity-cli", "settings.json")), false);
 });
+
+test("选装与必装 Skill 部分文件已匹配新插件包但清单滞后时按 outdated 补齐，仍保护真正的人工修改", async t => {
+  const { service, home, skillsDir } = fixture(t);
+  const srcDir = join(skillsDir, "demo-notify");
+  mkdirSync(srcDir, { recursive: true });
+  writeFileSync(
+    join(srcDir, "agent-notify.json"),
+    JSON.stringify({
+      format: 1,
+      name: "demo-notify",
+      label: "演示接力",
+      target_agent: "codex",
+      status: "ready",
+      files: ["SKILL.md", "send.mjs", "open.mjs"],
+    }),
+  );
+  for (const f of ["SKILL.md", "send.mjs", "open.mjs"]) writeFileSync(join(srcDir, f), `${f}-v1`);
+
+  // 先正常安装 v1（写入 .agent-relay-skill.json 与 .create-agent-notify-install.json）
+  const first = await service.install("codex", ["demo-notify"]);
+  assert.equal(byKey(first)["demo-notify"].status, "ok");
+  assert.equal(byKey(first)["create-agent-notify"].status, "ok");
+
+  // 插件包升级到 v2，但目标目录中只有部分文件已提前同步为 v2，其余仍为受管理的 v1，清单仍是 v1
+  for (const f of ["SKILL.md", "send.mjs", "open.mjs"]) writeFileSync(join(srcDir, f), `${f}-v2`);
+  const targetDir = join(home, ".codex", "skills", "demo-notify");
+  writeFileSync(join(targetDir, "SKILL.md"), "SKILL.md-v2");
+  writeFileSync(join(targetDir, "send.mjs"), "send.mjs-v2");
+  // open.mjs 仍为 v1（匹配旧清单），不应误报 conflict
+  assert.equal(byKey(await service.check("codex", ["demo-notify"]))["demo-notify"].status, "outdated");
+  const repaired = await service.install("codex", ["demo-notify"]);
+  assert.equal(byKey(repaired)["demo-notify"].status, "ok");
+  assert.equal(byKey(repaired)["demo-notify"].action, "updated");
+  assert.equal(readFileSync(join(targetDir, "open.mjs"), "utf8"), "open.mjs-v2");
+
+  // 必装 create-agent-notify 同理：部分文件已匹配 v2、其余仍匹配旧清单时按 outdated 补齐
+  const creatorSrc = join(skillsDir, "create-agent-notify");
+  const creatorDst = join(home, ".codex", "skills", "create-agent-notify");
+  writeFileSync(join(creatorSrc, "SKILL.md"), "creator-skill-v2");
+  writeFileSync(join(creatorSrc, "references/contract.md"), "creator-contract-v2");
+  writeFileSync(join(creatorDst, "SKILL.md"), "creator-skill-v2");
+  assert.equal(byKey(await service.check("codex"))["create-agent-notify"].status, "outdated");
+  const repairedCreator = await service.install("codex");
+  assert.equal(byKey(repairedCreator)["create-agent-notify"].status, "ok");
+  assert.equal(readFileSync(join(creatorDst, "references/contract.md"), "utf8"), "creator-contract-v2");
+
+  // 真正的人工修改（既不等于新插件包也不等于旧清单）依然报 conflict 且不覆盖
+  writeFileSync(join(targetDir, "open.mjs"), "用户手工改动");
+  assert.equal(byKey(await service.check("codex", ["demo-notify"]))["demo-notify"].status, "conflict");
+  await service.install("codex", ["demo-notify"]);
+  assert.equal(readFileSync(join(targetDir, "open.mjs"), "utf8"), "用户手工改动");
+});

@@ -706,6 +706,20 @@ export function createRelayService({
               throw new TypeError("仅 codex 与 agy 支持桌面可见新建入口");
             const cwd = text(args.cwd, "cwd", 2000);
             const content = startContent(args.content);
+            const title =
+              args.title === undefined || args.title === null || args.title === ""
+                ? undefined
+                : text(args.title, "title", 120);
+            const delivery =
+              args.delivery === undefined || args.delivery === null
+                ? "auto"
+                : args.delivery === "auto" || args.delivery === "queue"
+                  ? args.delivery
+                  : (() => {
+                      throw new TypeError("delivery 仅支持 auto 或 queue");
+                    })();
+            if (delivery === "queue" && selected !== "codex")
+              throw new TypeError("仅 codex 支持桌面无锁排队模式（delivery=queue）");
             const requestMessageId = externalMessageId(args.request_id);
             const pendingTarget = `pending:${cwd}`;
             const previous = store.messages.get(requestMessageId);
@@ -721,6 +735,8 @@ export function createRelayService({
                 duplicate: true,
                 session_id: UUID_ID.test(previous.external_session_id) ? previous.external_session_id : null,
                 project_name: null,
+                delivery,
+                title: title ?? null,
               };
               break;
             }
@@ -737,7 +753,12 @@ export function createRelayService({
             });
             let startResult: import("../adapters/types.js").StartVisibleSessionResult;
             try {
-              startResult = await adapter.startVisibleSession({ cwd, content });
+              startResult = await adapter.startVisibleSession({
+                cwd,
+                content,
+                ...(title ? { title } : {}),
+                delivery,
+              });
             } catch (error) {
               startResult =
                 error instanceof AdapterError && error.code === "invalid_input"
@@ -765,6 +786,8 @@ export function createRelayService({
               duplicate: false,
               session_id: startResult.status === "started" ? startResult.session_id : null,
               project_name: startResult.status === "started" ? (startResult.project_name ?? null) : null,
+              delivery: startResult.status === "started" ? (startResult.delivery ?? delivery) : delivery,
+              title: startResult.status === "started" ? (startResult.title ?? title ?? null) : (title ?? null),
             };
             break;
           }
