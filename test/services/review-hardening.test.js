@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PassThrough, Duplex } from "node:stream";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
@@ -483,7 +484,7 @@ test("R-07 & N-5 AgyBridge 按 app_data_dir 路由并回退；Sidecar /result �
     client = startAgyBridgeClient({
       env: {
         DSH_AGENT_RELAY_PORT: "37421",
-        AGENT_RELAY_AGY_TOKEN_FILE: new URL("../../package.json", import.meta.url).pathname,
+        AGENT_RELAY_AGY_TOKEN_FILE: fileURLToPath(new URL("../../package.json", import.meta.url)),
         ANTIGRAVITY_LS_ADDRESS: "127.0.0.1:1",
         ANTIGRAVITY_CSRF_TOKEN: "csrf",
       },
