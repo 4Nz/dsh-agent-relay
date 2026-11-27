@@ -26,12 +26,14 @@ const UUID_3 = '33333333-3333-4333-8333-333333333333';
 
 test('CodexAdapter.startVisibleSession：经 daemon 创建桌面可见会话且不登记隐藏绑定，支持后续队列发送与 turn_id 精确进度', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'relay-codex-visible-'));
-  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   const workDir = join(root, 'demo-project');
   mkdirSync(workDir, { recursive: true });
   const realWorkDir = await realpath(workDir);
   const store = openRelayStore({ dataDir: join(root, 'store') });
-  t.after(() => store.close());
+  t.after(() => {
+    store.close();
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
 
   const calls = [];
   let turnsBehavior = 'not_materialized';
@@ -136,7 +138,6 @@ test('CodexAdapter.startVisibleSession：经 daemon 创建桌面可见会话且�
 
 test('AgyBridge + Sidecar + AgyAdapter.startVisibleSession：按 cwd 匹配项目创建桌面可见会话，离线拒绝、超时转 unknown', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'relay-agy-create-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
   const matchedDir = join(root, 'matched-repo');
   const otherDir = join(root, 'other-repo');
   mkdirSync(matchedDir, { recursive: true });
@@ -213,6 +214,7 @@ test('AgyBridge + Sidecar + AgyAdapter.startVisibleSession：按 cwd 匹配项�
   t.after(() => {
     sidecar.stop();
     agyBridge.dispose();
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
   for (let i = 0; i < 30 && !agyBridge.isOnline(); i++) {
@@ -324,7 +326,6 @@ test('Relay HTTP /api/agent-relay/sessions/start：支持防重、目录冲突�
 for (const agent of ['codex', 'agy']) {
   test(`${agent}-notify start.mjs：优先创建 Desktop 可见会话并输出查看指引，离线安全回退 CLI，unknown 绝不回退`, async (t) => {
     const root = mkdtempSync(join(tmpdir(), `relay-start-desktop-${agent}-`));
-    t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
     const cwd = join(root, 'my repo');
     const bin = join(root, 'bin');
     mkdirSync(cwd, { recursive: true });
@@ -411,6 +412,7 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: '${UUID
     t.after(async () => {
       server.closeAllConnections?.();
       await new Promise((resolve) => server.close(resolve));
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     });
 
     const configPath = join(root, 'notification-client.json');
@@ -507,7 +509,6 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: '${UUID
 
 test('claude-notify start.mjs：新建方式保持后台 CLI 不变，输出含 claude --resume 命令', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'relay-start-claude-view-'));
-  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   const cwd = join(root, 'claude repo');
   const bin = join(root, 'bin');
   mkdirSync(cwd, { recursive: true });
@@ -533,6 +534,7 @@ console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false
   t.after(async () => {
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
   const configPath = join(root, 'notification-client.json');
