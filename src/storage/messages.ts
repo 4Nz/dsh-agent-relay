@@ -43,12 +43,14 @@ export function createMessages(db: DatabaseSync) {
       id,
       expected_status,
       status,
+      external_session_id,
       error = null,
       external_ref = null,
       sent_at = null,
     }: TransitionInput) {
       text(id, "id");
       text(expected_status, "expected_status");
+      if (external_session_id !== undefined) text(external_session_id, "external_session_id");
       if (!["sent", "rejected", "failed", "unknown"].includes(status))
         throw new TypeError("目标状态无效");
       validate({ sent_at });
@@ -56,9 +58,9 @@ export function createMessages(db: DatabaseSync) {
       return (
         db
           .prepare(
-            `UPDATE ${table} SET status=?,error=?,external_ref=?,sent_at=? WHERE id=? AND status=?`,
+            `UPDATE ${table} SET external_session_id=COALESCE(?,external_session_id),status=?,error=?,external_ref=?,sent_at=? WHERE id=? AND status=?`,
           )
-          .run(status, error, external_ref, sent_at, id, expected_status).changes === 1
+          .run(external_session_id ?? null, status, error, external_ref, sent_at, id, expected_status).changes === 1
       );
     },
     // Adapter 交给 channel 排队：sending → queued，等会话空闲后由 channel 服务推送。

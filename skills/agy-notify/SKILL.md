@@ -1,6 +1,6 @@
 ---
 name: agy-notify
-description: 将用户授权的消息、任务交接或结果回传给 Google Antigravity（agy）；支持已有会话 ID/名称，缺少目标时先定位工作目录再通过 agy CLI 后台新建；支持只读查询本次任务的投递状态与执行进度。在 Claude、Codex 或其他 Agent 中要求“发给 Antigravity”“交给 agy 接力”或“回传到 Antigravity”时使用；名称表示接收方。
+description: 将用户授权的消息、任务交接或结果回传给 Google Antigravity（agy）；支持已有会话 ID/名称，缺少目标时先定位工作目录并优先在 Antigravity 桌面端创建可见新会话（Sidecar 离线时自动回退 CLI 并提示）；支持只读查询本次任务的投递状态与执行进度。在 Claude、Codex 或其他 Agent 中要求“发给 Antigravity”“交给 agy 接力”或“回传到 Antigravity”时使用；名称表示接收方。
 ---
 
 # T2-T3-T4-T6-T7 向 Antigravity 会话接力
@@ -40,7 +40,7 @@ node "<当前 Skill 绝对目录>/send.mjs" --resolve --session-name "<用户指
 
 ## 新建前必须确定目录
 
-用户要求接力但没指定已有会话时，默认通过官方 `agy` CLI 后台新建，不打开额外终端。先确定目录，遵循以下顺序：
+用户要求接力但没指定已有会话时，默认通过本机 DSH Agent Relay 与在线的 Antigravity Sidecar 创建 **Antigravity 桌面端可见新会话**；若 DSH 或 Sidecar 未在线，则自动回退为官方 `agy` CLI 后台新建并明确提示未出现在桌面端。先确定目录，遵循以下顺序：
 
 1. 用户提供绝对路径或相对路径：验证它存在且是可访问目录，转换为规范化绝对路径。
 2. 用户提供项目名（例如 `ai-rag`）：运行目录查找，结合当前宿主的项目列表按真实路径核对。
@@ -53,11 +53,11 @@ node "<当前 Skill 绝对目录>/directory.mjs" --directory "/用户确认的/�
 
 macOS 会用 Spotlight 查全机已索引目录，再递归补查用户主目录；Windows 与其他系统递归查用户目录。跳过依赖、工具缓存与默认隐藏目录，不读取项目文件正文。其他磁盘可用 `--root "/绝对根目录"` 补查；权限不足或达到搜索上限返回 `incomplete`。只有 `resolved` 可直接采用；其他结果须与用户核实。定位成功后告诉用户采用的绝对路径。
 
-## 后台新建与查询
+## 新建会话与查询
 
-如需主动创建后台会话并运行终端命令，建议在 DSH 前置安装页勾选「允许 agy CLI 在沙箱内自动执行终端命令」。该配置适用于当前用户的所有 agy CLI 会话。权限拒绝会记录为 `needs_attention`。
+目录确定后，调用当前 Skill 中的启动器。它优先通过本机 DSH Agent Relay 与在线的 `DSH Agent Relay Bridge` Sidecar 调用 `ConversationService/CreateConversation` 创建 **Antigravity 桌面端可见新会话**（按工作目录自动匹配已有 Antigravity 项目，未建项目时创建为独立桌面可见会话并在任务中附带工作目录），直接返回真实 `session_id` 并提交首条任务。当 DSH 或桌面桥接 Sidecar 未在线时，自动回退为官方 `agy` CLI（`agy --sandbox --output-format stream-json -p`）新建独立 CLI 会话并明确标注 `visibility: "cli"`（也可加 `--cli` 显式走离线模式）。若桌面新建请求已派发但结果不明（`unknown`），不会自动回退或重复新建。
 
-目录确定后，调用当前 Skill 中的启动器。它运行官方 `agy` CLI（`agy --sandbox --output-format stream-json -p`），新建独立 CLI 会话并立即返回启动记录，不打开终端；首条任务已提交，不再重复 send。注意：Antigravity CLI 会话与桌面端会话目录默认隔离（分别位于 `~/.gemini/antigravity-cli/` 与 `~/.gemini/antigravity/`），不能将后台 CLI 新建宣称为已在桌面侧边栏打开的可见会话。macOS / Linux 优先使用 `--stdin <<'EOF'` 传入正文，无需创建临时文件；Windows PowerShell 5.1 建议先写入 UTF-8 文件再用 `--content-file`，短文本也可用 `--content`。
+若经常使用离线 `agy` CLI 后台新建并运行终端命令，建议在 DSH 前置安装页勾选「允许 agy CLI 在沙箱内自动执行终端命令」。该配置适用于当前用户的所有 agy CLI 会话。权限拒绝会记录为 `needs_attention`。macOS / Linux 优先使用 `--stdin <<'EOF'` 传入正文，无需创建临时文件；Windows PowerShell 5.1 建议先写入 UTF-8 文件再用 `--content-file`，短文本也可用 `--content`。
 
 ```bash
 node "<当前 Skill 绝对目录>/start.mjs" --cwd "<已验证绝对目录>" --request-id "<本次任务唯一 ID>" --stdin <<'EOF'
@@ -66,9 +66,14 @@ EOF
 node "<当前 Skill 绝对目录>/start.mjs" --status --request-id "<原任务 ID>"
 ```
 
-查询读取本机私有记录，返回真实 `session_id`、执行状态、最近回复及结果文件；不会启动任务或调用模型。`starting` 只说明已请求启动，`running` 表示执行进程心跳正常；`completed` 表示本轮结束，业务目标是否完成须看正文。`needs_attention` 表示权限受阻，`failed` 表示已知失败，`unknown` 表示无法确认，均不能自行换 ID 重跑。
+查询只读返回真实 `session_id`、执行状态、最近回复、结果文件以及 `visibility`、`view_hint`、`cli_command`；不会启动任务或调用模型。`starting` 只说明已请求启动，`running` 表示执行中；`completed` 表示本轮结束，业务目标是否完成须看正文。`needs_attention` 表示权限受阻，`failed` 表示已知失败，`unknown` 表示无法确认，均不能自行换 ID 重跑。
 
-同一 request_id、目录、任务、来源与回传目标只启动一次。记录保存在 `$DSH_HOME/agent-relay/background-jobs/agy/`（默认 `~/.dsh/agent-relay/background-jobs/agy/`，Windows 为 `%USERPROFILE%\.dsh\agent-relay\background-jobs\agy\`），终态记录默认保留 30 天后由清理任务自动移除。后台执行使用本机 `agy` CLI 登录和权限配置，不传入跳过权限审批参数。
+**向用户汇报要求（必须附带查看指引）**：无论是新建会话、向已有会话投递还是查询进度，**回复末尾必须附带查看方式**：
+- 桌面可见会话（`visibility: "desktop"`）：告知用户直接在 **Antigravity 桌面端左侧会话列表** 中查看（附 `session_id` 与匹配项目名，取自 `view_hint`）。
+- 离线回退会话（`visibility: "cli"`）：明确提示因 `fallback_reason` 未出现在 Antigravity 桌面端（CLI 与桌面目录隔离），并给出终端打开命令 `cd "<cwd>" && agy --conversation <session_id>`（取自 `cli_command`；启动初期尚无 `session_id` 时说明可通过 `--status` 获取）。
+- 向已有会话发送（`send.mjs`）：末尾附带去 Antigravity 桌面端侧边栏查看该会话（附目标 `session_id`）的提示。
+
+同一 request_id、目录、任务、来源与回传目标只启动一次。记录保存在 `$DSH_HOME/agent-relay/background-jobs/agy/`（默认 `~/.dsh/agent-relay/background-jobs/agy/`，Windows 为 `%USERPROFILE%\.dsh\agent-relay\background-jobs\agy\`），终态记录默认保留 30 天后由清理任务自动移除。后台执行使用本机登录和权限配置，不传入跳过权限审批参数。
 
 ## 是否回传
 

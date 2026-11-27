@@ -9,7 +9,7 @@ export interface AgyBridgeRegistration {
   last_seen: number;
 }
 
-export type AgyBridgeAction = "get_conversation" | "list_conversations" | "send_message";
+export type AgyBridgeAction = "get_conversation" | "list_conversations" | "send_message" | "create_conversation";
 
 export interface AgyBridgeCommand {
   request_id: string;
@@ -30,6 +30,12 @@ export interface AgyBridgeConversation {
 
 export type AgyBridgeSendOutcome =
   | { status: "sent" }
+  | { status: "rejected"; reason: string }
+  | { status: "failed"; error: string }
+  | { status: "unknown"; error: string };
+
+export type AgyBridgeCreateOutcome =
+  | { status: "started"; conversation_id: string }
   | { status: "rejected"; reason: string }
   | { status: "failed"; error: string }
   | { status: "unknown"; error: string };
@@ -311,6 +317,58 @@ export function createAgyBridgeService({
         status: "rejected",
         reason: lastError ?? "Antigravity 桌面桥接 Sidecar 未在线",
       };
+    },
+
+    async createConversation(
+      input: { projectId?: string | null; prompt: string },
+      options?: { preferredAppDataDir?: string | null },
+    ): Promise<AgyBridgeCreateOutcome> {
+      const pids = orderedOnlinePids(options?.preferredAppDataDir);
+      if (!pids.length) {
+        return { status: "rejected", reason: "Antigravity 桌面桥接 Sidecar 未在线" };
+      }
+      // 创建属于有副作用动作，仅向优先级最高的单个在线 Sidecar 派发，不跨实例重试。
+      const res = await invoke(
+        "create_conversation",
+        {
+          project_id: input.projectId ?? null,
+          prompt: input.prompt,
+        },
+        requestTimeoutMs,
+        pids[0],
+      );
+      if (!res.ok) {
+        if (res.timedOutAfterDispatch) {
+          return {
+            status: "unknown",
+            error: res.error ?? "等待 Antigravity Sidecar 创建会话回执超时，结果未知",
+          };
+        }
+        return {
+          status: "rejected",
+          reason: res.error ?? "Antigravity 桌面桥接 Sidecar 未在线",
+        };
+      }
+      const value = (res.value ?? {}) as {
+        status?: string;
+        conversation_id?: string;
+        reason?: string;
+        error?: string;
+      };
+      if (
+        value.status === "started" &&
+        typeof value.conversation_id === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.conversation_id)
+      ) {
+        return { status: "started", conversation_id: value.conversation_id };
+      }
+      if (value.status === "rejected") {
+        return { status: "rejected", reason: value.reason ?? "Antigravity 拒绝创建桌面会话" };
+      }
+      if (value.status === "unknown") {
+        return { status: "unknown", error: value.error ?? "Antigravity 创建桌面会话结果未知" };
+      }
+      return { status: "failed", error: value.error ?? "Antigravity 创建桌面会话失败" };
     },
 
     dispose() {

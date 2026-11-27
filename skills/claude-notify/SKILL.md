@@ -64,7 +64,11 @@ EOF
 node "<当前 Skill 绝对目录>/start.mjs" --status --request-id "<原任务 ID>"
 ```
 
-查询读取本机私有记录，返回真实 `session_id`（启动初期可能暂缺）、执行状态、最近回复及结果文件；不会启动任务或调用模型。`starting` 只说明已请求启动，`running` 表示执行进程心跳正常；`completed` 表示本轮结束，业务目标是否完成须看正文。`needs_attention` 表示权限受阻，`failed` 表示已知失败，`unknown` 表示无法确认，均不能自行换 ID 重跑。
+查询读取本机私有记录，返回真实 `session_id`（启动初期可能暂缺）、执行状态、最近回复、结果文件以及 `view_hint`、`cli_command`；不会启动任务或调用模型。`starting` 只说明已请求启动，`running` 表示执行进程心跳正常；`completed` 表示本轮结束，业务目标是否完成须看正文。`needs_attention` 表示权限受阻，`failed` 表示已知失败，`unknown` 表示无法确认，均不能自行换 ID 重跑。
+
+**向用户汇报要求（必须附带查看命令）**：无论是后台新建会话、向已有会话投递还是查询进度，**回复末尾必须附带 CLI 查看/恢复命令**：
+- 后台新建会话（`start.mjs`）：附带 `cli_command`（`cd "<cwd>" && claude --resume <session_id>`），提醒用户等本轮结束后在终端恢复查看或继续对话。
+- 向已有会话发送（`send.mjs`）：告知用户回到对应运行中的 Claude 终端查看，并附带 `claude --resume <目标会话 ID>` 作为后续恢复参考。
 
 同一 request_id、目录、任务、来源与回传目标只启动一次。记录保存在 `$DSH_HOME/agent-relay/background-jobs/`，默认 `~/.dsh/agent-relay/background-jobs/`，包含完整结果，终态记录默认保留 30 天后由清理任务自动移除。返回正文最多 16000 字符，截断时可按 `result_file` 读取完整结果。进程中断、电脑重启或记录不完整时保留未知状态，不自动恢复执行。后台执行使用本机 CLI 登录和权限配置，不绕过审批；无交互权限的工具可能被拒绝。
 

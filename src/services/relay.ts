@@ -3,7 +3,7 @@ import type { TeamRelayService } from "./team-relay/index.js";
 import type { DoubaoAccessAction } from "./team-relay/types.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { AdapterRegistry } from "../adapters/registry.js";
-import type { Snapshot } from "../adapters/types.js";
+import { AdapterError, type Snapshot } from "../adapters/types.js";
 import type {
   RelayStore,
   Agent,
@@ -65,8 +65,9 @@ export const endpoints = [
   "cleanup_subscriptions",
 ] as const;
 export type Endpoint = (typeof endpoints)[number];
-// 含 HTTP 内部专用只读接口（不向 Web RPC 暴露，由 message-http 调用）。
-export type RelayEndpoint = Endpoint | "message_progress";
+// 含 HTTP 内部专用只读/接力新建接口（不向 Web RPC 暴露，由 message-http 调用）。
+export type RelayEndpoint = Endpoint | "message_progress" | "start_visible_session";
+const UUID_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new TypeError("参数必须为对象");
@@ -85,6 +86,13 @@ function messageContent(value: unknown): string {
     throw new TypeError("content 必须为非空字符串");
   if (value.length > 2000)
     throw new TypeError("content 最多 2000 个 UTF-16 码元（普通汉字计 1，部分 emoji 计 2）；请先整理汇总，或将完整内容保存为接收方可访问的文档后发送摘要与路径，不建议分段发送");
+  return value;
+}
+function startContent(value: unknown): string {
+  if (typeof value !== "string" || !value.trim())
+    throw new TypeError("content 必须为非空字符串");
+  if (value.length > 16000)
+    throw new TypeError("新建会话初始正文最多 16000 个 UTF-16 码元");
   return value;
 }
 function integer(value: unknown, name: string, min: number, max: number) {
@@ -692,9 +700,96 @@ export function createRelayService({
             }
             break;
           }
+          case "start_visible_session": {
+            const selected = agent(args.agent);
+            if (selected !== "codex" && selected !== "agy")
+              throw new TypeError("仅 codex 与 agy 支持桌面可见新建入口");
+            const cwd = text(args.cwd, "cwd", 2000);
+            const content = startContent(args.content);
+            const requestMessageId = externalMessageId(args.request_id);
+            const pendingTarget = `pending:${cwd}`;
+            const previous = store.messages.get(requestMessageId);
+            if (previous) {
+              if (
+                previous.agent !== selected ||
+                previous.content !== content ||
+                (previous.external_session_id.startsWith("pending:") && previous.external_session_id !== pendingTarget)
+              )
+                throw new TypeError("request_id 已用于不同目标、目录或内容");
+              value = {
+                message: previous,
+                duplicate: true,
+                session_id: UUID_ID.test(previous.external_session_id) ? previous.external_session_id : null,
+                project_name: null,
+              };
+              break;
+            }
+            const adapter = adapters.get(selected);
+            if (!adapter.startVisibleSession)
+              throw new TypeError("该 Agent 不支持桌面可见新建");
+            const message = store.messages.create({
+              id: requestMessageId,
+              agent: selected,
+              external_session_id: pendingTarget,
+              subscription_id: null,
+              content,
+              created_at: Date.now(),
+            });
+            let startResult: import("../adapters/types.js").StartVisibleSessionResult;
+            try {
+              startResult = await adapter.startVisibleSession({ cwd, content });
+            } catch (error) {
+              startResult =
+                error instanceof AdapterError && error.code === "invalid_input"
+                  ? { status: "rejected", reason: error.message }
+                  : { status: "failed", error: messageOf(error) };
+            }
+            const transitioned = store.messages.transition({
+              id: message.id,
+              expected_status: "sending",
+              status: startResult.status === "started" ? "sent" : startResult.status,
+              ...(startResult.status === "started"
+                ? {
+                    external_session_id: startResult.session_id,
+                    external_ref: startResult.external_ref,
+                    sent_at: Date.now(),
+                  }
+                : {
+                    error: "reason" in startResult ? startResult.reason : startResult.error,
+                  }),
+            });
+            if (!transitioned) throw new Error("新建会话状态更新失败");
+            const saved = store.messages.get(message.id)!;
+            value = {
+              message: saved,
+              duplicate: false,
+              session_id: startResult.status === "started" ? startResult.session_id : null,
+              project_name: startResult.status === "started" ? (startResult.project_name ?? null) : null,
+            };
+            break;
+          }
           case "message_progress": {
             const message = store.messages.get(externalMessageId(args.request_id));
             if (!message) { value = null; break; }
+            if (message.external_session_id.startsWith("pending:")) {
+              value = {
+                agent: message.agent,
+                external_session_id: null,
+                message_id: message.id,
+                delivery_status: message.status,
+                observed_at: Date.now(),
+                progress: {
+                  status: message.status === "failed" || message.status === "rejected" ? "failed" : "unknown",
+                  turn_id: null,
+                  reply: null,
+                  truncated: false,
+                  note: message.error ?? "未取得有效外部会话 ID",
+                },
+                acked_at: null,
+                ack_summary: null,
+              };
+              break;
+            }
             const adapter = adapters.get(message.agent);
             if (!adapter.messageProgress) throw new TypeError("该 Agent 不支持消息进度查询");
             // 直接只读 Adapter；不经 inspect 的订阅触碰和通知排空。

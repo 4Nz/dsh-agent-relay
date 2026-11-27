@@ -1,7 +1,7 @@
-import { createReadStream, existsSync, readFileSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { createReadStream, existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -14,6 +14,7 @@ import type {
   SessionCursor,
   SessionInfo,
   Snapshot,
+  StartVisibleSessionResult,
 } from "../types.js";
 import { createResolvedRunner, type ClaudeRunner } from "../claude/runner.js";
 import type { AgyBridgeService } from "../../services/agy-bridge.js";
@@ -45,7 +46,8 @@ export interface AgyAdapterOptions {
   dataDirs?: string[];
   configDir?: string;
   runner?: ClaudeRunner;
-  bridge?: Pick<AgyBridgeService, "isOnline" | "getConversation" | "sendMessage">;
+  bridge?: Pick<AgyBridgeService, "isOnline" | "getConversation" | "sendMessage"> &
+    Partial<Pick<AgyBridgeService, "createConversation">>;
   acceptTimeoutMs?: number;
   pollIntervalMs?: number;
 }
@@ -83,6 +85,54 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): AgentAdapter 
     if (typeof sessionId !== "string" || !SESSION_ID.test(sessionId)) {
       throw new AdapterError("invalid_input", "Antigravity 会话 ID 格式无效");
     }
+  }
+
+  function normalizeDirForMatch(pathValue: string): string {
+    let resolvedPath = resolve(pathValue);
+    try {
+      // Windows 上 fs/promises.realpath 会展开 8.3 短路径，这里统一使用 native realpath 对齐。
+      resolvedPath = (realpathSync.native ?? realpathSync)(resolvedPath);
+    } catch {
+      /* 未存在或不可 realpath 时回退 resolve 结果。 */
+    }
+    const trimmed = resolvedPath.replace(/[\\/]+$/, "") || resolvedPath;
+    return platform === "win32" || platform === "darwin" ? trimmed.toLowerCase() : trimmed;
+  }
+
+  function findProjectByCwd(directory: string): { id: string; name: string | null } | null {
+    const projectsDir = join(configDir, "projects");
+    if (!existsSync(projectsDir)) return null;
+    const expected = normalizeDirForMatch(directory);
+    let entries: string[];
+    try {
+      entries = readdirSync(projectsDir).filter((name) => name.endsWith(".json"));
+    } catch {
+      return null;
+    }
+    for (const fileName of entries) {
+      try {
+        const parsed = JSON.parse(readFileSync(join(projectsDir, fileName), "utf8")) as {
+          id?: string;
+          name?: string;
+          projectResources?: { resources?: { gitFolder?: { folderUri?: string }; folder?: { folderUri?: string } }[] };
+        };
+        if (typeof parsed.id !== "string" || !parsed.id.trim()) continue;
+        const resources = parsed.projectResources?.resources;
+        if (!Array.isArray(resources)) continue;
+        for (const item of resources) {
+          const folderPath = uriToFilePath(item?.gitFolder?.folderUri ?? item?.folder?.folderUri ?? null);
+          if (folderPath && normalizeDirForMatch(folderPath) === expected) {
+            return {
+              id: parsed.id.trim(),
+              name: typeof parsed.name === "string" && parsed.name.trim() ? parsed.name.trim() : null,
+            };
+          }
+        }
+      } catch {
+        /* 跳过损坏的单个项目描述文件。 */
+      }
+    }
+    return null;
   }
 
   function resolveProjectCwd(projectId: string | null | undefined): string | null {
@@ -656,6 +706,43 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): AgentAdapter 
         };
       }
       return agyMessageProgress(located.transcript, message_);
+    },
+
+    async startVisibleSession({ cwd, content }): Promise<StartVisibleSessionResult> {
+      if (typeof cwd !== "string" || !isAbsolute(cwd)) {
+        throw new AdapterError("invalid_input", "工作目录必须为绝对路径");
+      }
+      if (typeof content !== "string" || !content.trim()) {
+        throw new AdapterError("invalid_input", "消息内容不能为空");
+      }
+      let directory: string;
+      try {
+        directory = await realpath(cwd);
+        if (!(await stat(directory)).isDirectory()) throw new Error();
+      } catch {
+        throw new AdapterError("invalid_input", "工作目录不存在或不可访问");
+      }
+      if (options.bridge?.isOnline() !== true || !options.bridge.createConversation) {
+        return { status: "rejected", reason: BRIDGE_OFFLINE_NOTE };
+      }
+      const matchedProject = findProjectByCwd(directory);
+      const desktopSurfaceDir = surfaces.find((item) => item.surface === "antigravity")?.dir ?? null;
+      const outcome = await options.bridge.createConversation(
+        {
+          projectId: matchedProject?.id ?? null,
+          prompt: content,
+        },
+        { preferredAppDataDir: desktopSurfaceDir },
+      );
+      if (outcome.status === "started") {
+        return {
+          status: "started",
+          session_id: outcome.conversation_id,
+          external_ref: "agy-after:-1",
+          project_name: matchedProject?.name ?? null,
+        };
+      }
+      return outcome;
     },
 
     async sendMessage(sessionId, text, sendOptions) {
