@@ -193,6 +193,51 @@ export function startAgyBridgeClient({
         return { ok: true, value: { status: "sent" } };
       }
 
+      if (command.action === "create_conversation") {
+        const prompt = String(command.payload.prompt ?? "");
+        const projectId =
+          typeof command.payload.project_id === "string" && command.payload.project_id.trim()
+            ? command.payload.project_id.trim()
+            : null;
+        if (!prompt.trim()) {
+          return { ok: true, value: { status: "rejected", reason: "初始任务正文不能为空" } };
+        }
+        if (!env.ANTIGRAVITY_LS_ADDRESS?.trim() || !env.ANTIGRAVITY_CSRF_TOKEN?.trim()) {
+          return {
+            ok: true,
+            value: { status: "rejected", reason: "当前运行环境缺少 ANTIGRAVITY_LS_ADDRESS 或 ANTIGRAVITY_CSRF_TOKEN" },
+          };
+        }
+        try {
+          const body: Record<string, unknown> = {
+            prompt: [{ text: prompt }],
+            ...(projectId ? { projectId } : {}),
+          };
+          const res = await callLs("CreateConversation", body);
+          const conv = res.data?.conversation ?? res.data;
+          const id = typeof conv?.id === "string" ? conv.id : "";
+          if (!SESSION_ID.test(id)) {
+            return {
+              ok: true,
+              value: { status: "unknown", error: "Antigravity 未返回有效的新会话 ID，请检查桌面侧边栏，不自动重试" },
+            };
+          }
+          return { ok: true, value: { status: "started", conversation_id: id } };
+        } catch (error) {
+          const name = error instanceof Error ? error.name : "";
+          if (name === "TimeoutError" || name === "AbortError") {
+            return {
+              ok: true,
+              value: { status: "unknown", error: "Antigravity CreateConversation 请求超时，结果未知" },
+            };
+          }
+          return {
+            ok: true,
+            value: { status: "failed", error: error instanceof Error ? error.message : String(error) },
+          };
+        }
+      }
+
       return { ok: false, error: `未知操作：${String(command.action)}` };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };

@@ -41,7 +41,7 @@ DSH Agent Relay 是 DSH 的本机单用户插件。已合入的能力分为三�
 - Codex 已有桌面或 CLI 会话经本机 daemon 的官方 `queue/add` 排队。Relay 登记的专用会话用 `turn/start`，不得同时交给其他执行实例。历史回退连接只读，`notLoaded` 不表示会话空闲或任务完成。会话绑定不构成全局排他锁。
 - Claude 被终端持有的会话经 Agent Relay channel 排队，空闲后投递并等待 `ack`。未启用 channel 时拒绝，ack 超时记未知。Adapter 仅可对无进程持有的会话使用 `claude -p --resume`。前置安装提供 channel 配置、自检、卸载和连通测试。
 - Antigravity 通过只读索引与会话记录发现和订阅会话。桌面或 IDE 已有会话通过在线 Sidecar 调用官方 `agentapi send-message`。前置安装将 Skill 写入全局 `.gemini/config/skills/` 并配置桌面桥接。主动创建后台会话可选择启用 agy CLI 用户级沙箱内执行，详见 `docs/research/T1-T2-T3-T5-T6-T7-antigravity-adapter-relay.md`。
-- `claude-notify`、`codex-notify`、`agy-notify` 按接收方命名。HTTP 转发只面向已有可见会话，Claude 终端退出后拒绝后台 resume，Codex 拒绝 Relay 后台绑定。缺少目标时由 `start.mjs` 用官方 CLI 后台新建，无需额外终端。保留显式可见新建选项；同请求防重，未知不重跑。HTTP `messages/progress` 只查原发送任务；回传由执行 Agent 按用户明确要求发送。转发正文上限为 2000 个 UTF-16 码元，包含来源后缀。
+- `claude-notify`、`codex-notify`、`agy-notify` 按接收方命名。HTTP 转发只面向已有可见会话，Claude 终端退出后拒绝后台 resume，Codex 拒绝 Relay 后台绑定。缺少目标时，`codex` 与 `agy` 优先经 `/api/agent-relay/sessions/start` 创建桌面端可见会话（Codex 经本机 daemon `thread/start` + `turn/start`，Antigravity 经在线 Sidecar `ConversationService/CreateConversation`），桌面端不可达或未在线时自动回退官方 CLI 后台新建并明确提示，派发后 `unknown` 不回退；`claude` 保持官方 CLI 后台新建（保留显式 `open.mjs` 可见终端选项）。三方均返回桌面查看指引或 CLI 打开命令；同请求防重，未知不重跑。HTTP `messages/progress` 只查原发送/新建任务；回传由执行 Agent 按用户明确要求发送。转发正文上限为 2000 个 UTF-16 码元，新建上限为 16000 个 UTF-16 码元，均包含来源后缀。
 - 前置安装按 `skills/*-notify/agent-notify.json` 发现选装 Skill。`create-agent-notify` 提供登记与安装流程，只有 `ready`、Adapter 声明发送能力且清单文件完整才可安装；保留人工改动。协议见 `skills/create-agent-notify/references/contract.md`。接力验收及现有限制见 `docs/research/T3.4-T6.6-T7.6-visible-handoff-validation.md`。
 
 ## TeamRelay（实验）

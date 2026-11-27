@@ -161,6 +161,7 @@ export interface TransitionInput {
   id: string;
   expected_status: MessageStatus;
   status: Exclude<MessageStatus, "sending" | "queued">;
+  external_session_id?: string;
   error?: string | null;
   external_ref?: string | null;
   sent_at?: number | null;

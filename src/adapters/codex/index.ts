@@ -1,4 +1,4 @@
-import { isAbsolute } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { realpath, stat } from "node:fs/promises";
 import type { CodexBindings } from "../../storage/codex-sessions.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -10,6 +10,7 @@ import type {
   SessionInfo,
   Snapshot,
   MessageProgress,
+  StartVisibleSessionResult,
 } from "../types.js";
 import {
   codexEndpoint,
@@ -281,6 +282,81 @@ export function createCodexAdapter(
       });
       return metadata(created);
     },
+    async startVisibleSession({ cwd, content }): Promise<StartVisibleSessionResult> {
+      if (typeof cwd !== "string" || !isAbsolute(cwd))
+        throw new AdapterError("invalid_input", "工作目录必须为绝对路径");
+      if (typeof content !== "string" || !content.trim())
+        throw new AdapterError("invalid_input", "消息不能为空");
+      let directory: string;
+      try {
+        directory = await realpath(cwd);
+        if (!(await stat(directory)).isDirectory()) throw new Error();
+      } catch {
+        throw new AdapterError("invalid_input", "工作目录不存在或不可访问");
+      }
+      let client: CodexClient;
+      try {
+        client = await writer();
+      } catch {
+        return {
+          status: "rejected",
+          reason: "Codex Desktop / 本机 daemon 未在线，无法创建桌面可见会话",
+        };
+      }
+      let id: string;
+      try {
+        // 不登记为 Relay 专用隐藏绑定，保持桌面可见且后续可通过 thread/queue/add 续发。
+        const created = object(
+          await client.request("thread/start", { cwd: directory, sandbox: "workspace-write" }),
+        ).thread;
+        id = string(object(created).id);
+        checkId(id);
+      } catch (error) {
+        if (error instanceof CodexTransportError) {
+          writeConnection = undefined;
+          if (!error.dispatched) {
+            return {
+              status: "rejected",
+              reason: "无法连接 Codex daemon，无法创建桌面可见会话",
+            };
+          }
+        }
+        return {
+          status: "unknown",
+          error: "Codex 桌面会话创建结果未知，请先在 Codex Desktop 核对，不自动回退或重发",
+        };
+      }
+      try {
+        const result = object(
+          await client.request("turn/start", {
+            threadId: id,
+            input: [{ type: "text", text: content }],
+          }),
+        );
+        const turnId = string(object(result.turn).id);
+        if (!turnId.trim()) bad();
+        return {
+          status: "started",
+          session_id: id,
+          external_ref: turnId,
+          project_name: basename(directory) || null,
+        };
+      } catch (error) {
+        if (error instanceof CodexTransportError) writeConnection = undefined;
+        const rejected =
+          error instanceof CodexRpcError &&
+          [-32600, -32601, -32602, -32001].includes(error.code);
+        return rejected
+          ? {
+              status: "failed",
+              error: `Codex 桌面会话（${id}）已创建，但首轮提交被拒绝`,
+            }
+          : {
+              status: "unknown",
+              error: `Codex 桌面会话（${id}）首轮提交结果未知，请先核对目标轮次，不要重复提交`,
+            };
+      }
+    },
     async sendMessage(sessionId, text, sendOptions): Promise<SendResult> {
       if (!options.bindings)
         return { status: "rejected", reason: "Codex 第一版不支持发送消息" };
@@ -383,17 +459,36 @@ export function createCodexAdapter(
       checkId(sessionId);
       return using(async client => {
         const matches: RecordValue[] = [];
+        let exactMatch: RecordValue | null = null;
         let next: string | null = null, incomplete = false, uncertain = false;
         const seen = new Set<string>();
-        // 排队回执不是 turn ID；按落库时间和原正文核对，多个匹配时不猜测。
+        const note = "只读持久化历史；轮次结束不等于业务完成，未观察到或 interrupted 不证明任务未执行。";
+        // 排队回执不是 turn ID；按落库时间和原正文核对，多个匹配时不猜测。新建可见会话的首轮 external_ref 即 turn ID，可精确匹配。
         for (let n = 0; n < 20; n++) {
-          const turns = page(await client.request("thread/turns/list", {
-            threadId: sessionId, limit: 50, cursor: next, sortDirection: "desc", itemsView: "full",
-          }));
+          let turns: { data: unknown[]; nextCursor: string | null };
+          try {
+            turns = page(await client.request("thread/turns/list", {
+              threadId: sessionId, limit: 50, cursor: next, sortDirection: "desc", itemsView: "full",
+            }));
+          } catch (error) {
+            if (
+              n === 0 &&
+              error instanceof CodexRpcError &&
+              error.code === -32600 &&
+              error.message.startsWith(`thread ${sessionId} is not materialized yet;`)
+            ) {
+              return { status: "not_observed", turn_id: null, reply: null, truncated: false, note };
+            }
+            throw error;
+          }
           let before = false;
           for (const raw of turns.data) {
             const candidate = object(raw);
             if (!Array.isArray(candidate.items)) bad();
+            if (message.external_ref && candidate.id === message.external_ref) {
+              exactMatch = candidate;
+              break;
+            }
             const started = candidate.startedAt == null ? null : millis(candidate.startedAt);
             // CLI 时间为秒精度，允许当前秒；正文相同时仍做歧义检查。
             if (started !== null && started < Math.floor(message.created_at / 1000) * 1000) { before = true; continue; }
@@ -408,17 +503,16 @@ export function createCodexAdapter(
               uncertain = true;
             }
           }
-          if (before || !turns.nextCursor) break;
+          if (exactMatch || before || !turns.nextCursor) break;
           if (seen.has(turns.nextCursor)) bad();
           seen.add(turns.nextCursor); next = turns.nextCursor;
           if (n === 19) incomplete = true;
         }
-        const note = "只读持久化历史；轮次结束不等于业务完成，未观察到或 interrupted 不证明任务未执行。";
-        if (incomplete || uncertain || matches.length > 1) return {
+        if (!exactMatch && (incomplete || uncertain || matches.length > 1)) return {
           status: "unknown", turn_id: null, reply: null, truncated: false,
           note: incomplete ? "查询达到上限，无法唯一关联本次任务" : "匹配存在歧义或缺少时间证据，无法唯一关联本次任务",
         };
-        const selected = matches[0];
+        const selected = exactMatch ?? matches[0];
         if (!selected) return { status: "not_observed", turn_id: null, reply: null, truncated: false, note };
         const messages = (selected.items as unknown[]).map(object).filter(item => item.type === "agentMessage");
         const finals = messages.filter(item => item.phase === "final_answer");

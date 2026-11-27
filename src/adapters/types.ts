@@ -81,6 +81,17 @@ export type SendResult =
   | { status: "rejected"; reason: string }
   | { status: "failed"; error: string }
   | { status: "unknown"; error: string };
+// 在桌面端新建可见会话并提交首条消息的结果；仅 rejected 表示未派发创建，可安全回退到离线 CLI。
+export type StartVisibleSessionResult =
+  | {
+      status: "started";
+      session_id: string;
+      external_ref: string | null;
+      project_name?: string | null;
+    }
+  | { status: "rejected"; reason: string }
+  | { status: "failed"; error: string }
+  | { status: "unknown"; error: string };
 // 开新会话执行一次性提示词的结果；completed 表示 CLI 正常退出并返回内容。
 export type RunPromptResult =
   | { status: "completed"; output: string | null }
@@ -110,6 +121,7 @@ export interface AgentAdapter {
     baseline?: SessionCursor | null,
   ): Promise<IncrementalPage>;
   createSession?(input: { cwd: string }): Promise<SessionInfo>;
+  startVisibleSession?(input: { cwd: string; content: string }): Promise<StartVisibleSessionResult>;
   // 只查指定消息对应的历史，不启动任务、不影响订阅。
   messageProgress?(sessionId: string, message: {
     message_id: string; content: string; external_ref: string | null; created_at: number;
