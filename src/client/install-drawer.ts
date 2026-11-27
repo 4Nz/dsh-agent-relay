@@ -8,6 +8,8 @@ export interface InstallDrawerContext {
   notifyCatalog: any[];
   optionalSkills: string[];
   installBusy: boolean;
+  enableAgySandbox: boolean;
+  onToggleSandbox: (enabled: boolean) => void;
   setupReport: any;
   probe: any;
   installError: string;
@@ -26,6 +28,8 @@ export function renderInstallDrawer(ctx: InstallDrawerContext) {
     notifyCatalog,
     optionalSkills,
     installBusy,
+    enableAgySandbox,
+    onToggleSandbox,
     setupReport,
     probe,
     installError,
@@ -40,15 +44,6 @@ export function renderInstallDrawer(ctx: InstallDrawerContext) {
   return h(
     Drawer,
     { title: "前置安装接入", onClose },
-    h(
-      "p",
-      { className: "muted" },
-      installAgent === "claude"
-        ? "为 Claude 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装；另含 channel（把消息送进开在终端里的会话）。已正常的项不会改动，修改前自动备份。"
-        : installAgent === "agy"
-          ? "为 Antigravity 一次配好接入（兼容 macOS 与 Windows）：通知 Skill 与 create-agent-notify 默认必装，写入 ~/.gemini/config/skills；同时写入桌面桥接 Sidecar 配置。已正常的项不会改动，修改前自动备份。"
-          : "为 Codex 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。",
-    ),
     fieldSelect(
       "Agent",
       installAgent,
@@ -58,11 +53,6 @@ export function renderInstallDrawer(ctx: InstallDrawerContext) {
         ["codex", "Codex"],
         ["agy", "Antigravity"],
       ],
-    ),
-    h(
-      "p",
-      { className: "muted small" },
-      "默认必装：dsh-notify（通知 DSH / 查询投递状态）、create-agent-notify（创建与安装 Agent 接力 Skill）。无需勾选，安装 / 修复时自动处理。",
     ),
     h(
       "fieldset",
@@ -82,12 +72,14 @@ export function renderInstallDrawer(ctx: InstallDrawerContext) {
           `${name}：${label}${available ? "" : `（${reason}）`}`,
         ),
       ),
-      h(
-        "p",
-        { className: "muted small" },
-        "安装到上方选中的 Agent，共用 dsh-notify 的本机凭证。DSH 插件需保持运行；消息直接投递，不经 DSH 模型处理。取消勾选不会卸载已有 Skill。",
-      ),
     ),
+    setupReport?.agy_sandbox && h("div", null,
+      h("label", { style: { display: "block" } },
+        h("input", { type: "checkbox", checked: setupReport.agy_sandbox.status === "ok" || enableAgySandbox,
+          disabled: installBusy || setupReport.agy_sandbox.status !== "missing",
+          onChange: (e: any) => onToggleSandbox(e.target.checked) }), " 允许 agy CLI 在沙箱内自动执行终端命令"),
+      h("p", { className: "muted small" }, "建议在需要主动创建 agy 后台会话时启用。此设置影响当前用户的所有 agy CLI 会话。"),
+      setupReport.agy_sandbox.status !== "missing" && h("p", null, setupReport.agy_sandbox.message)),
     !setupReport && !installError && h("p", { className: "muted" }, "正在检查安装状态…"),
     setupReport &&
       h(
@@ -98,7 +90,25 @@ export function renderInstallDrawer(ctx: InstallDrawerContext) {
           null,
           `${SETUP_OVERALL[setupReport.overall] ?? setupReport.overall}${setupReport.version ? ` · ${installAgent === "claude" ? "Claude Code" : installAgent === "agy" ? "Antigravity" : "Codex"} ${setupReport.version}` : ""}`,
         ),
-        h(
+      ),
+    h("details", { key: installAgent, className: "setup-details" },
+      h("summary", null, h("span", { className: "collapsed" }, "展开安装详情"), h("span", { className: "expanded" }, "收起安装详情")),
+      h(
+        "p",
+        { className: "muted" },
+        installAgent === "claude"
+          ? "为 Claude 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装；另含 channel（把消息送进开在终端里的会话）。已正常的项不会改动，修改前自动备份。"
+          : installAgent === "agy"
+            ? "为 Antigravity 一次配好接入（兼容 macOS 与 Windows）：通知 Skill 与 create-agent-notify 默认必装，写入 ~/.gemini/config/skills；同时写入桌面桥接 Sidecar 配置。已正常的项不会改动，修改前自动备份。"
+            : "为 Codex 一次配好接入：通知 Skill 与 create-agent-notify（创建和安装 Agent 接力 Skill）默认必装。订阅可选择已有桌面或 CLI 会话，不需要 channel。已正常的项不会改动，修改前自动备份。",
+      ),
+      h(
+        "p",
+        { className: "muted small" },
+        "安装到上方选中的 Agent，共用 dsh-notify 的本机凭证。DSH 插件需保持运行；消息直接投递，不经 DSH 模型处理。取消勾选不会卸载已有 Skill。",
+      ),
+      setupReport?.agy_sandbox && h("p", null, `${setupReport.agy_sandbox.message}。勾选后将更新 ${setupReport.agy_sandbox.path}，设置 enableTerminalSandbox=true 和 toolPermission=proceed-in-sandbox。`),
+      setupReport && h(
           "ul",
           null,
           ...setupReport.items.map((item: any) =>
@@ -118,7 +128,7 @@ export function renderInstallDrawer(ctx: InstallDrawerContext) {
             ),
           ),
         ),
-        setupReport.sessions &&
+        setupReport?.sessions &&
           h(
             "p",
             { className: "muted" },
@@ -126,7 +136,7 @@ export function renderInstallDrawer(ctx: InstallDrawerContext) {
               ? `在线桌面桥接 Sidecar：${setupReport.sessions.online} 个`
               : `已启用 channel 的会话：${setupReport.sessions.online} 个`,
           ),
-        setupReport.next_steps?.length > 0 &&
+        setupReport?.next_steps?.length > 0 &&
           h(
             "div",
             null,
@@ -164,7 +174,7 @@ export function renderInstallDrawer(ctx: InstallDrawerContext) {
     installError && h("p", { role: "alert", className: "error" }, installError),
     h(
       "footer",
-      null,
+      { className: "setup-actions" },
       h("button", { disabled: installBusy, onClick: () => onRunSetup("setup_check") }, "检查安装状态"),
       installAgent === "claude" &&
         h(

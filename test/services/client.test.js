@@ -408,3 +408,33 @@ test('打开接收会话先核对状态，历史订阅保留原目标，异常�
  assert.ok(calls.filter(c=>c.endpoint==='dsh_session_status').every(c=>c.args.dsh_session_id==='historical-dsh'));
  assert.ok(!calls.some(c=>['current','subscribe','create_session'].includes(c.endpoint)));
 });
+
+test('后台沙箱默认不勾选，仅安装提交勾选值和自检版本', async () => {
+  const installs = [];
+  const rpc = { async call(_channel, method, args) {
+    const endpoint = method.split('/').at(-1);
+    if (endpoint === 'setup_install') installs.push(args);
+    const report = { overall: 'ok', items: [], agy_sandbox: { status: 'missing', revision: 'latest' } };
+    return { ok: true, value: endpoint === 'list' ? { items: [] } : endpoint === 'agents' ? [] : report };
+  } };
+  const ui = clientHarness(rpc);
+  let tree = ui.render();
+  const button = label => ui.nodes(tree).find(n => n.type === 'button' && n.children.includes(label));
+  const sandbox = () => ui.nodes(tree).find(n => n.type === 'input' && n.props.type === 'checkbox');
+  button('前置安装接入').props.onClick();
+  tree = ui.render(); await ui.flush(); tree = ui.render();
+  const agent = ui.nodes(tree).find(n => n.type === 'label' && n.children.includes('Agent'));
+  ui.nodes(agent).find(n => n.type === 'select').props.onChange({ target: { value: 'agy' } });
+  tree = ui.render(); await ui.flush(); tree = ui.render();
+  assert.equal(sandbox().props.checked, false);
+  button('重新检查并修复').props.onClick();
+  await ui.flush(); tree = ui.render();
+  assert.equal(installs[0].enable_agy_sandbox, undefined);
+  sandbox().props.onChange({ target: { checked: true } });
+  tree = ui.render();
+  button('重新检查并修复').props.onClick();
+  await ui.flush();
+  assert.equal(installs[1].agent, 'agy');
+  assert.equal(installs[1].enable_agy_sandbox, true);
+  assert.equal(installs[1].agy_sandbox_revision, 'latest');
+});

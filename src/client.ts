@@ -76,6 +76,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
   const [candidateRevision, setCandidateRevision] = useState(0);
   const [installAgent, setInstallAgent] = useState("claude");
   const [notifyCatalog, setNotifyCatalog] = useState<any[]>([]);
+  const [enableAgySandbox, setEnableAgySandbox] = useState(false);
   const [optionalSkills, setOptionalSkills] = useState<string[]>([]);
   const [installBusy, setInstallBusy] = useState(false);
   const [setupReport, setSetupReport] = useState<any>(null);
@@ -598,10 +599,11 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
     setInstallError("");
     setSetupMessage("");
     try {
-      const report = await call(endpoint, {
-        agent: installAgent,
-        optional_skills: optionalSkills,
+      const applySandbox = endpoint === "setup_install" && enableAgySandbox && setupReport?.agy_sandbox?.status === "missing";
+      const report = await call(endpoint, { agent: installAgent, optional_skills: optionalSkills,
+        ...(applySandbox ? { enable_agy_sandbox: true, agy_sandbox_revision: setupReport.agy_sandbox.revision } : {}),
       });
+      if (endpoint === "setup_install") setEnableAgySandbox(false);
       setSetupReport(report);
       setNotifyCatalog(report.optional_skills ?? []);
       const changed = report.items.filter(
@@ -616,7 +618,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         report.items.some((i: any) => i.status !== "ok")
       )
         setInstallError(
-          `${changed > 0 ? `本次已处理 ${changed} 项，但` : ""}仍有安装项未就绪，请按下方检查结果处理后重试。`,
+          `${changed > 0 ? `本次已处理 ${changed} 项，但` : ""}仍有安装项未就绪，请展开安装详情查看原因。`,
         );
       else
         setSetupMessage(
@@ -855,6 +857,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           "button",
           {
             onClick: () => {
+              setEnableAgySandbox(false);
               setInstallAgent("claude");
               setInstallError("");
               setSetupMessage("");
@@ -1132,7 +1135,10 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
         installError,
         setupMessage,
         onClose: close,
+        enableAgySandbox,
+        onToggleSandbox: setEnableAgySandbox,
         onChangeAgent: (v) => {
+          setEnableAgySandbox(false);
           setInstallAgent(v);
           setOptionalSkills([]);
           setSetupReport(null);
@@ -1140,6 +1146,7 @@ export function AgentRelayPanel({ rpc, openSession }: PanelProps) {
           setSetupMessage("");
         },
         onToggleOptionalSkill: (name, checked) => {
+          if (name === "agy-notify") setEnableAgySandbox(false);
           setOptionalSkills((list) =>
             checked ? [...list, name] : list.filter((item) => item !== name),
           );

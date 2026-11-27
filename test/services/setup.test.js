@@ -564,3 +564,52 @@ test('Antigravity 未装 CLI 但存在桌面版 language_server 时可用，均�
   assert.equal('agy_sidecar' in byKey(badCheck), false);
 });
 
+
+test("后台会话沙箱仅在勾选时写入，保留现有字段和权限，按检查版本防止覆盖", async t => {
+  const { service, home } = fixture(t);
+  const dir = join(home, ".gemini", "antigravity-cli");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "settings.json");
+  const original = '{"colorScheme":"dark","custom":{"enabled":true}}\n';
+  writeFileSync(path, original, { mode: 0o600 });
+  const checked = await service.check("agy");
+  assert.equal(checked.agy_sandbox.status, "missing");
+  await service.install("agy");
+  assert.equal(readFileSync(path, "utf8"), original);
+  await service.requireReady("agy");
+  writeFileSync(path, original + " ");
+  const conflict = await service.install("agy", [], true, checked.agy_sandbox.revision);
+  assert.equal(conflict.overall, "needs_action");
+  assert.equal(conflict.agy_sandbox.status, "conflict");
+  const enabled = (await service.install("agy", [], true)).agy_sandbox;
+  assert.equal(enabled.action, "updated");
+  assert.equal(readFileSync(enabled.backup, "utf8"), original + " ");
+  assert.deepEqual(JSON.parse(readFileSync(path)), {
+    ...JSON.parse(original), enableTerminalSandbox: true, toolPermission: "proceed-in-sandbox",
+  });
+  if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
+  const files = readdirSync(dir);
+  assert.equal((await service.install("agy", [], true)).agy_sandbox.status, "ok");
+  assert.deepEqual(readdirSync(dir), files);
+  writeFileSync(path, "broken");
+  assert.equal((await service.install("agy", [], true)).agy_sandbox.status, "conflict");
+  assert.equal(readFileSync(path, "utf8"), "broken");
+});
+
+test("勾选 agy-notify 的发送方可以配置新会话沙箱", async t => {
+  const { service, skillsDir } = fixture(t);
+  const { cpSync } = await import("node:fs");
+  cpSync(new URL("../../skills/agy-notify", import.meta.url), join(skillsDir, "agy-notify"), { recursive: true });
+  for (const agent of ["claude", "codex"]) {
+    assert.equal((await service.check(agent)).agy_sandbox, undefined);
+    await assert.rejects(service.install(agent, [], true), /agy-notify/);
+    assert.equal((await service.install(agent, ["agy-notify"], true)).agy_sandbox.status, "ok");
+  }
+});
+
+test("没有 agy CLI 时选择沙箱不会创建配置", async t => {
+  const { service, home } = fixture(t, { agyVersion: null });
+  const result = await service.install("agy", [], true);
+  assert.equal(result.agy_sandbox.status, "unavailable");
+  assert.equal(existsSync(join(home, ".gemini", "antigravity-cli", "settings.json")), false);
+});

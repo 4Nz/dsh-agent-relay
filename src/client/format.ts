@@ -194,5 +194,6 @@ export const SETUP_ITEM: Record<string, string> = {
   "create-agent-notify": "Agent 接入 Skill（必装）",
   "claude-notify": "向 Claude 接力",
   "codex-notify": "向 Codex 接力",
+  agy_sandbox: "后台会话沙箱",
   "agy-notify": "向 Antigravity 接力",
 };
