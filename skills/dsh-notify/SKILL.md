@@ -1,11 +1,11 @@
 ---
 name: dsh-notify
-description: 外部 Agent 任务完成后向 DSH Agent Relay 发送一次结果通知。用户说“完成后通知 DSH”、需要把 Claude、Codex 或 Antigravity 的任务结果推送回 DSH，或需要调用 Agent Relay 通知入口时使用；支持按 DSH 会话名或 ID 定向发送，以及按 request_id 查询通知投递状态；不负责创建订阅或查询外部会话。
+description: 外部 Agent 任务完成后向 DSH（默认昵称：大肥鱼）Agent Relay 发送一次结果通知。用户说“完成后通知 DSH”“发给大肥鱼”、需要把 Claude、Codex 或 Antigravity（默认昵称：哈基米）的任务结果推送回 DSH，或需要调用 Agent Relay 通知入口时使用；自定义别名见 $DSH_HOME/agent-relay/agent-aliases.json。支持按 DSH 会话名或 ID 定向发送，以及按 request_id 查询通知投递状态；不负责创建订阅或查询外部会话。
 ---
 
 # T2-T3-T7 外部 Agent 消息通知
 
-这个 Skill 供 Claude、Codex、Antigravity（`agy`）以及后续接入的外部 Agent 共用。它把任务结果摘要或用户授权的消息推送到本机 DSH Agent Relay。未指定目标时，由 Relay 按 `(agent, external_session_id)` 创建或复用唯一会话路由、复用原 DSH 接收会话并持久保存事件。Agent 不需要为了发送通知预先创建订阅。
+这个 Skill 供 Claude、Codex、Antigravity（`agy`，默认昵称「哈基米」）以及后续接入的外部 Agent 共用。它把任务结果摘要或用户授权的消息推送到本机 DSH（默认昵称「大肥鱼」）Agent Relay。未指定目标时，由 Relay 按 `(agent, external_session_id)` 创建或复用唯一会话路由、复用原 DSH 接收会话并持久保存事件。Agent 不需要为了发送通知预先创建订阅。若用户提到其他自定义 Agent 昵称，可查阅 `$DSH_HOME/agent-relay/agent-aliases.json`（默认 `~/.dsh/agent-relay/agent-aliases.json`）核对映射。
 
 ## 发送前准备
 

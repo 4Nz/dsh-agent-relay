@@ -1,11 +1,11 @@
 ---
 name: agy-notify
-description: 将用户授权的消息、任务交接或结果回传给 Google Antigravity（agy）；支持已有会话 ID/名称，缺少目标时先定位工作目录并优先在 Antigravity 桌面端创建可见新会话（Sidecar 离线时自动回退 CLI 并提示）；支持只读查询本次任务的投递状态与执行进度。在 Claude、Codex 或其他 Agent 中要求“发给 Antigravity”“交给 agy 接力”或“回传到 Antigravity”时使用；名称表示接收方。
+description: 将用户授权的消息、任务交接或结果回传给 Google Antigravity（agy，默认昵称：哈基米）；支持已有会话 ID/名称，缺少目标时先定位工作目录并优先在 Antigravity 桌面端创建可见新会话（Sidecar 离线时自动回退 CLI 并提示）；支持只读查询本次任务的投递状态与执行进度。在 Claude、Codex 或其他 Agent 中要求“发给 Antigravity”“交给 agy 接力”“发给哈基米”或“回传到 Antigravity/哈基米”时使用；自定义别名见 $DSH_HOME/agent-relay/agent-aliases.json；名称表示接收方。
 ---
 
 # T2-T3-T4-T6-T7 向 Antigravity 会话接力
 
-使用同目录的 `send.mjs`，通过本机 DSH Agent Relay 的发送入口投递至 Antigravity（`agy`）。无需 DSH 模型转述，不创建关注或 DSH 接收会话。Node.js >=24，DSH 插件必须运行并支持接力入口；向已有 Antigravity 桌面端会话投递需在 Antigravity 的 Automations 面板启用 `DSH Agent Relay Bridge`。
+使用同目录的 `send.mjs`，通过本机 DSH（默认昵称「大肥鱼」）Agent Relay 的发送入口投递至 Antigravity（`agy`，默认昵称「哈基米」）。若用户使用其他自定义 Agent 昵称，可查阅 `$DSH_HOME/agent-relay/agent-aliases.json`（默认 `~/.dsh/agent-relay/agent-aliases.json`）确认对应目标。无需 DSH 模型转述，不创建关注或 DSH 接收会话。Node.js >=24，DSH 插件必须运行并支持接力入口；向已有 Antigravity 桌面端会话投递需在 Antigravity 的 Automations 面板启用 `DSH Agent Relay Bridge`。
 
 ## 确定目标与交接内容
 
