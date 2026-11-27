@@ -27,5 +27,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: >-
-          gh release create "$RELEASE_TAG" dist/*/*.tgz dist/*/SHA256SUMS dist/*/release.json
+          cp dist/*/*.tgz dist/dsh-agent-relay.tgz &&
+          gh release create "$RELEASE_TAG" dist/*/*.tgz dist/dsh-agent-relay.tgz dist/*/SHA256SUMS dist/*/release.json
           --verify-tag --draft --latest=false --title "Agent Relay $RELEASE_TAG" --notes-file CHANGELOG.md

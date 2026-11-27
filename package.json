@@ -1,6 +1,27 @@
 {
   "name": "dsh-agent-relay",
-  "version": "0.1.9",
+  "version": "0.2.0",
+  "description": "Connect DSH with local Claude Code, Codex, and Antigravity sessions to track progress, relay messages, and hand off tasks across agents.",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "agent",
+    "relay",
+    "notify",
+    "claude",
+    "codex",
+    "antigravity"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/4Nz/dsh-agent-relay.git"
+  },
+  "homepage": "https://github.com/4Nz/dsh-agent-relay#readme",
+  "bugs": {
+    "url": "https://github.com/4Nz/dsh-agent-relay/issues"
+  },
   "private": true,
   "license": "Apache-2.0",
   "files": [

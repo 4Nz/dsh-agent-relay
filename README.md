@@ -34,17 +34,33 @@
 
 ## 功能展示
 
-### 任务跟踪与前置安装接入
-
-在「任务跟踪」面板里统一查看 Claude、Codex 和 agy 的外部会话、关注主题、检查频率和最近进展，也可以点开「前置安装接入」一键检查并「安装 / 修复」通知 Skill、可选接力 Skill、本机桥接配置与 agy 终端沙箱选项，凭证自动落在本机私有目录，不用手动拷 token。
-
-![DSH 任务跟踪面板与前置安装接入：集中查看多 Agent 订阅状态并一键配置接入](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/prerequisite-setup.png)
-
 ### 在 DSH 里盯进度、暂停与恢复
 
 直接用大白话告诉 DSH 想盯哪个会话、看什么重点、出事怎么提醒，DSH 会先跟你核对目标并安排检查频率；暂时不想看时可以暂停，24 小时内随时恢复，彻底不看了再点「结束关注」。
 
 ![在 DSH 中自然语言订阅外部会话进展并按需暂停或恢复](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/dsh-subscribe-and-pause.png)
+
+### 多 Agent 之间直接接力协作
+
+DSH、Claude、Codex、agy 之间可以直接来回交接任务，不用人工复制粘贴上下文：
+
+- DSH 收到 Claude 发来的执行请求后修完问题，并直接回传给 Claude 继续联合跑测：
+
+![DSH 收到外部 Agent 接力请求后完成修复并回传给 Claude 继续运行](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-dsh-fix.png)
+
+- Claude CLI 通过 `agent-relay` channel 实时收到对方更新的方案与样例，自动接着执行下一步验证：
+
+![Claude CLI 通过 agent-relay channel 实时接收接力消息并继续执行](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-claude-receive.png)
+
+- Claude CLI 在多 Agent 协作中等待 DSH 改好样例并同步等待 Codex 运行器结果：
+
+![Claude CLI 在多 Agent 协作中等待 DSH 与 Codex 接力反馈](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-wait.png)
+
+### 任务跟踪与前置安装接入
+
+在「任务跟踪」面板里统一查看 Claude、Codex 和 agy 的外部会话、关注主题、检查频率和最近进展，也可以点开「前置安装接入」一键检查并「安装 / 修复」通知 Skill、可选接力 Skill、本机桥接配置与 agy 终端沙箱选项，凭证自动落在本机私有目录，不用手动拷 token。
+
+![DSH 任务跟踪面板与前置安装接入：集中查看多 Agent 订阅状态并一键配置接入](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/prerequisite-setup.png)
 
 ### 外部 Agent 主动通知、定向发给 DSH 与未读提醒
 
@@ -57,22 +73,6 @@
 DSH 查完线上报错 / 数据库、或者你中途想到新要求时，直接在 DSH 里把结论或补充要求发回原 Claude / Codex / agy 会话，让它接着出方案或改代码。
 
 ![从 DSH 向原外部会话转发排查结果或补充要求](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/dsh-send-to-external.png)
-
-### 多 Agent 之间直接接力协作
-
-DSH、Claude、Codex、agy 之间可以直接来回交接任务，不用人工复制粘贴上下文：
-
-- Claude CLI 等待 DSH 改好样例并同步等待 Codex 运行器结果：
-
-![Claude CLI 在多 Agent 协作中等待 DSH 与 Codex 接力反馈](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-wait.png)
-
-- DSH 收到 Claude 发来的执行请求后修完问题，并直接回传给 Claude 继续联合跑测：
-
-![DSH 收到外部 Agent 接力请求后完成修复并回传给 Claude 继续运行](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-dsh-fix.png)
-
-- Claude CLI 通过 `agent-relay` channel 实时收到对方更新的方案与样例，自动接着执行下一步验证：
-
-![Claude CLI 通过 agent-relay channel 实时接收接力消息并继续执行](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-claude-receive.png)
 
 ### TeamRelay 调度模式（实验）
 

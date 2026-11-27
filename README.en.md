@@ -36,17 +36,33 @@ Connect DSH with local Claude Code, Codex, and Antigravity (`agy`) sessions: let
 
 The screenshots below show the Chinese interface with sensitive project details sanitized.
 
-### Task Tracking and Prerequisite Setup
-
-Monitor Claude, Codex, and Antigravity sessions, topics, planned check intervals, and recent checks in Task Tracking (任务跟踪), and open Prerequisite Setup (前置安装接入) to check and install skills, local credentials, bridge configs, optional relay skills, and Antigravity CLI sandbox settings.
-
-![DSH Task Tracking panel and Prerequisite Setup drawer for Claude, Codex, and Antigravity](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/prerequisite-setup.png)
-
 ### Subscribe to progress and pause monitoring in DSH
 
 Subscribe using natural language, let DSH plan or apply your check interval, and pause or resume within the 24-hour window.
 
 ![Subscribing to an external session and pausing monitoring in DSH](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/dsh-subscribe-and-pause.png)
+
+### Multi-agent handoff in action
+
+DSH, Claude, Codex, and Antigravity can hand off tasks back and forth without manual copy-pasting:
+
+- DSH receiving the execution request from Claude, fixing both issues, and sending results back to Claude:
+
+![DSH receiving a handoff request from Claude, fixing issues, and replying back](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-dsh-fix.png)
+
+- Claude CLI receiving the live `agent-relay` channel update and immediately running follow-up verification:
+
+![Claude CLI receiving a live agent-relay channel message and continuing execution](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-claude-receive.png)
+
+- Claude CLI coordinating while waiting for DSH fixes and Codex runner updates:
+
+![Claude CLI waiting for DSH and Codex handoff updates](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-wait.png)
+
+### Task Tracking and Prerequisite Setup
+
+Monitor Claude, Codex, and Antigravity sessions, topics, planned check intervals, and recent checks in Task Tracking (任务跟踪), and open Prerequisite Setup (前置安装接入) to check and install skills, local credentials, bridge configs, optional relay skills, and Antigravity CLI sandbox settings.
+
+![DSH Task Tracking panel and Prerequisite Setup drawer for Claude, Codex, and Antigravity](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/prerequisite-setup.png)
 
 ### Proactive notifications, targeted delivery, and sidebar unread indicators
 
@@ -59,22 +75,6 @@ External agents send results or troubleshooting requests back to DSH (default ro
 Send investigation results or additional instructions directly from DSH back to the original external session with explicit delivery receipts.
 
 ![Forwarding troubleshooting findings from DSH back to an external session](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/dsh-send-to-external.png)
-
-### Multi-agent handoff in action
-
-DSH, Claude, Codex, and Antigravity can hand off tasks back and forth without manual copy-pasting:
-
-- Claude CLI coordinating while waiting for DSH fixes and Codex runner updates:
-
-![Claude CLI waiting for DSH and Codex handoff updates](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-wait.png)
-
-- DSH receiving the execution request from Claude, fixing both issues, and sending results back to Claude:
-
-![DSH receiving a handoff request from Claude, fixing issues, and replying back](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-dsh-fix.png)
-
-- Claude CLI receiving the live `agent-relay` channel update and immediately running follow-up verification:
-
-![Claude CLI receiving a live agent-relay channel message and continuing execution](https://raw.githubusercontent.com/4Nz/dsh-agent-relay/main/docs/images/showcase/relay-handoff-claude-receive.png)
 
 ### TeamRelay mode (experimental)
 
