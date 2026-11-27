@@ -1,11 +1,11 @@
 ---
 name: dsh-notify
-description: 外部 Agent 任务完成后向 DSH Agent Relay 发送一次结果通知。用户说“完成后通知 DSH”、需要把 Claude 或 Codex 的任务结果推送回 DSH，或需要调用 Agent Relay 通知入口时使用；支持按 DSH 会话名或 ID 定向发送，以及按 request_id 查询通知投递状态；不负责创建订阅或查询外部会话。
+description: 外部 Agent 任务完成后向 DSH Agent Relay 发送一次结果通知。用户说“完成后通知 DSH”、需要把 Claude、Codex 或 Antigravity 的任务结果推送回 DSH，或需要调用 Agent Relay 通知入口时使用；支持按 DSH 会话名或 ID 定向发送，以及按 request_id 查询通知投递状态；不负责创建订阅或查询外部会话。
 ---
 
 # T2-T3-T7 外部 Agent 消息通知
 
-这个 Skill 供 Claude、Codex 以及后续接入的外部 Agent 共用。它把任务结果摘要或用户授权的消息推送到本机 DSH Agent Relay。未指定目标时，由 Relay 按 `(agent, external_session_id)` 创建或复用唯一会话路由、复用原 DSH 接收会话并持久保存事件。Agent 不需要为了发送通知预先创建订阅。
+这个 Skill 供 Claude、Codex、Antigravity（`agy`）以及后续接入的外部 Agent 共用。它把任务结果摘要或用户授权的消息推送到本机 DSH Agent Relay。未指定目标时，由 Relay 按 `(agent, external_session_id)` 创建或复用唯一会话路由、复用原 DSH 接收会话并持久保存事件。Agent 不需要为了发送通知预先创建订阅。
 
 ## 发送前准备
 
@@ -41,12 +41,20 @@ description: 外部 Agent 任务完成后向 DSH Agent Relay 发送一次结果�
 
 通知凭证在 DSH「任务跟踪 → 前置安装接入」安装时自动生成，随通知 Skill 一起落地；文件里就是明文 token 和本机 HTTP 地址，脚本每次读取最新内容，凭证轮换后无需重启 Codex/Claude。配置缺失时说明原因，不搜索无关文件、不猜测凭证，不把哈希摘要作为 Bearer token。
 
-调用同目录发送脚本，并用真实会话 ID 和稳定 request_id 替换占位符；摘要仅包含用户需要的任务结果。默认 Codex 全局 Skill 的示例：
+调用同目录发送脚本，并用真实会话 ID 和稳定 request_id 替换占位符；摘要仅包含用户需要的任务结果。多行或含引号摘要在 macOS / Linux 可用 `--summary-stdin <<'EOF'`，在 Windows PowerShell 5.1 建议写入 UTF-8 文件并用 `--summary-file`（与 `--summary` 三者互斥）。默认 Codex 全局 Skill 的示例：
 
 macOS：
 
 ```bash
 node "$HOME/.codex/skills/dsh-notify/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary "<任务结果摘要>"
+```
+
+多行摘要（macOS / Linux）：
+
+```bash
+node "$HOME/.codex/skills/dsh-notify/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary-stdin <<'EOF'
+<多行任务结果摘要>
+EOF
 ```
 
 Windows PowerShell：
@@ -55,7 +63,7 @@ Windows PowerShell：
 node "$env:USERPROFILE/.codex/skills/dsh-notify/send.mjs" --agent codex --external-session-id "<当前真实会话ID>" --request-id "<稳定请求ID>" --summary "<任务结果摘要>"
 ```
 
-Claude 使用实际安装目录的脚本，并将 `--agent` 改为 `claude`。如果 Skill 安装在自定义 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 或项目目录，使用当前 Skill 的实际绝对路径。可选参数为 `--result`、`--subscription-id`、`--external-ref`、`--dsh-session-id`、`--dsh-session-name`。默认结果为 `completed`。脚本仅向本机回环 HTTP 地址发送，不跟随重定向；输出只包含接收状态和接收会话 ID，不输出凭证。
+Claude 使用实际安装目录的脚本，并将 `--agent` 改为 `claude`；Antigravity 默认安装在 `~/.gemini/config/skills/dsh-notify/send.mjs`（Windows 为 `%USERPROFILE%\.gemini\config\skills\dsh-notify\send.mjs`），将 `--agent` 设为 `agy` 并使用环境变量 `ANTIGRAVITY_CONVERSATION_ID` 作为真实会话 ID。如果 Skill 安装在自定义 `CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`GEMINI_DIR` 或项目目录，使用当前 Skill 的实际绝对路径。可选参数为 `--result`、`--subscription-id`、`--external-ref`、`--dsh-session-id`、`--dsh-session-name`。默认结果为 `completed`。脚本仅向本机回环 HTTP 地址发送，不跟随重定向；输出只包含接收状态和接收会话 ID，不输出凭证。
 
 以下为协议说明；优先调用脚本，避免手工处理凭证。
 
@@ -96,7 +104,7 @@ Claude 使用实际安装目录的脚本，并将 `--agent` 改为 `claude`。�
 
 本机回环地址也可能受到 Agent 执行沙箱限制。发送失败不能直接推断 DSH 没启动；不要在相同受限环境中原样重复调用，也不要让用户盲目重启 DSH 或重新生成凭证。
 
-- `EPERM` / `EACCES`：当前执行环境阻止了连接。用户已经授权发送通知时，使用执行工具提供的正常审批流程申请本次本机网络访问；例如 Codex 的 `exec_command` 支持 `sandbox_permissions: "require_escalated"` 时，说明需要向本机 DSH 发送用户授权的结果摘要。获准后执行同一发送脚本，保留原 Agent、会话 ID、`request_id` 和摘要。不要关闭全局沙箱或绕过拒绝的审批；无法获得权限时说明通知尚未确认接收及具体阻碍。
+- `EPERM` / `EACCES`：当前执行环境阻止了连接。用户已经授权发送通知时，使用执行工具提供的正常审批流程申请本次本机网络访问；例如 Codex 的 `exec_command` 支持 `sandbox_permissions: "require_escalated"`，Antigravity 的 `run_command` 支持对单条发送命令设置 `BypassSandbox: true`，说明需要向本机 DSH 发送用户授权的结果摘要。获准后执行同一发送脚本，保留原 Agent、会话 ID、`request_id` 和摘要。不要关闭全局沙箱或绕过拒绝的审批；无法获得权限时说明通知尚未确认接收及具体阻碍。
 - `ECONNREFUSED`：检查配置中的本机地址、端口与通知服务监听状态；DSH 主界面在线不等于通知端口在线。
 - 超时、连接中断或无法解析响应：保持结果未知，先核对接收记录；需要重试时继续使用原 `request_id` 和原摘要，不能生成新的事件 ID。
 - 只读连通检查可以向配置中的通知入口发起不带凭证、不带正文的 GET。HTTP `405` 表示接口可达但不允许 GET，不表示通知已接收；在受限环境中 GET 失败也不能证明服务停机。
@@ -118,11 +126,12 @@ node "<本 Skill 目录>/send.mjs" --status --request-id "<原请求ID>"
 - 默认桥梁还可能返回 `muted`（屏蔽）、`processed`（批次已确认）、`needs_attention` / `unknown_attention`（需要人工核对）。这些都不代表用户已读或 DSH 执行完新的业务任务。
 - 返回原接收会话 ID、投递次数、重试时间等白名单字段，不返回通知正文或凭证。已绑定批次查询其固定目标，不跟随默认路由后来重绑。
 - HTTP 404 可能是请求未记录、记录已清理、旧通知没有保存 request_id，或宿主尚不支持查询。不能据此推断完成，也不能自动新 ID 重发。
-- 本 Skill 不提供 DSH 任务执行的 `--progress`；外部 Agent 的执行进度使用对应 `claude-notify` / `codex-notify`。
+- 本 Skill 不提供 DSH 任务执行的 `--progress`；外部 Agent 的执行进度使用对应 `claude-notify` / `codex-notify` / `agy-notify`。
 
 ## Agent 差异
 
 - Claude：使用 Claude 会话 UUID 作为 `external_session_id`。
 - Codex：使用当前 Codex 会话 ID；通知入口与 Adapter 发送能力独立；已有 Codex 会话按本机 daemon 的官方队列能力投递，独立历史回退只读，Relay 专用会话可直接发起轮次。通知方只需能访问本机 HTTP 入口。
+- Antigravity（`agy`）：使用当前会话环境变量 `ANTIGRAVITY_CONVERSATION_ID` 作为 `external_session_id`；桌面端、IDE 与 `agy` CLI 共用 `~/.gemini/config/skills/dsh-notify`。
 
-本 Skill 不创建订阅、不调用 `relay_subscribe`、不调用 `relay_send`，也不通过标题或工作目录查找外部 Agent 会话；DSH 目标会话名只由服务端精确解析。若用户需要关注外部会话进展，交给 DSH 侧 Agent Relay 工具处理；若要从当前 Agent 向指定 Claude / Codex 会话转发或接力，可使用已安装的 `claude-notify` / `codex-notify`，它们共用本机凭证。
+本 Skill 不创建订阅、不调用 `relay_subscribe`、不调用 `relay_send`，也不通过标题或工作目录查找外部 Agent 会话；DSH 目标会话名只由服务端精确解析。若用户需要关注外部会话进展，交给 DSH 侧 Agent Relay 工具处理；若要从当前 Agent 向指定 Claude / Codex / Antigravity 会话转发或接力，可使用已安装的 `claude-notify` / `codex-notify` / `agy-notify`，它们共用本机凭证。

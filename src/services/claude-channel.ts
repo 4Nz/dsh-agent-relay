@@ -88,6 +88,12 @@ export function createClaudeChannelService({
 
   async function runTick() {
     const at = now();
+    // 清理长期离线且无挂起等待者的历史登记，防止进程反复重启累积内存。
+    for (const [pid, entry] of entries) {
+      if (at - entry.last_seen > onlineMs * 10 && entry.waiters.length === 0) {
+        entries.delete(pid);
+      }
+    }
     // ack 超时：结果不明，保留 unknown，不重发。
     for (const message of store.messages.awaitingAck(Math.max(0, at - ackTimeoutMs)))
       store.messages.ackTimeout(message.id, "推送后超时未收到 Claude 确认，结果未知");

@@ -33,7 +33,7 @@ export async function sendNotification(input, { env = process.env, home } = {}) 
     typeof input.request_id !== 'string' || !input.request_id.trim() || input.request_id.length > 1000))
     throw new Error('状态查询仅接受 --status 与原 --request-id，不接受发送参数');
   const results = ['completed','failed','idle_timeout','expired','session_closed','unreachable'];
-  if (!query && (!input || !['claude','codex'].includes(input.agent) || !input.external_session_id || !input.request_id || typeof input.summary !== 'string' || input.summary.length > 4000 || !results.includes(input.result ?? 'completed'))) throw new Error('通知参数无效，必须提供 Agent、真实会话 ID、稳定 request_id 和不超过 4000 字符的摘要');
+  if (!query && (!input || !['claude','codex','agy'].includes(input.agent) || !input.external_session_id || !input.request_id || typeof input.summary !== 'string' || input.summary.length > 4000 || !results.includes(input.result ?? 'completed'))) throw new Error('通知参数无效，必须提供 Agent（claude/codex/agy）、真实会话 ID、稳定 request_id 和不超过 4000 字符的摘要');
   const targeted = input.dsh_session_id !== undefined || input.dsh_session_name !== undefined;
   if ([input.dsh_session_id, input.dsh_session_name].some(value => value !== undefined && (typeof value !== 'string' || !value.trim())))
     throw new Error('目标会话 ID 或名称不能为空');
@@ -93,19 +93,62 @@ export async function sendNotification(input, { env = process.env, home } = {}) 
     ...(result.targeted === true ? {targeted: true, delivery_status: result.delivery_status} : {}) };
 }
 
+async function readStdin(maxBytes = 64 * 1024, timeoutMs = 15000) {
+  if (process.stdin.isTTY) throw new Error('使用 --summary-stdin 时必须通过管道或 heredoc 传入摘要，当前标准输入是交互终端');
+  const raw = await new Promise((resolve_, reject) => {
+    const chunks = [];
+    let total = 0, settled = false;
+    const done = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.stdin.removeListener('data', onData);
+      process.stdin.removeListener('end', onEnd);
+      process.stdin.removeListener('error', onError);
+      fn(value);
+    };
+    const timer = setTimeout(() => { process.stdin.pause(); done(reject, new Error('读取标准输入超时，请确认已关闭输入流或改用 --summary-file')); }, timeoutMs);
+    const onData = chunk => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buf.length;
+      if (total > maxBytes) { process.stdin.pause(); done(reject, new Error('标准输入摘要超过大小上限')); return; }
+      chunks.push(buf);
+    };
+    const onEnd = () => done(resolve_, Buffer.concat(chunks).toString('utf8'));
+    const onError = () => done(reject, new Error('读取标准输入失败'));
+    process.stdin.on('data', onData);
+    process.stdin.once('end', onEnd);
+    process.stdin.once('error', onError);
+    process.stdin.resume();
+  });
+  return raw.replace(/\r\n/g, '\n').replace(/\n$/, '');
+}
+
 // 兼容 Node 24.0：不依赖较新版本的 import.meta.main。
 if (process.argv[1] && (import.meta.url === pathToFileURL(resolve(process.argv[1])).href || import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href)) {
   try {
     const input = {};
-    const allowed = new Set(['agent','external-session-id','request-id','summary','result','subscription-id','external-ref','dsh-session-id','dsh-session-name']);
+    const allowed = new Set(['agent','external-session-id','request-id','summary','summary-file','result','subscription-id','external-ref','dsh-session-id','dsh-session-name']);
     const args = process.argv.slice(2), seen = new Set();
+    let summaryStdin = false;
     for (let i = 0; i < args.length; i++) {
       const key = args[i].replace(/^--/, '');
       if (seen.has(key)) throw new Error('参数重复');
       seen.add(key);
       if (args[i] === '--status') { input.status = true; continue; }
-      if (!args[i].startsWith('--') || !allowed.has(key) || args[i + 1] === undefined) throw new Error('用法：node send.mjs --agent codex --external-session-id <真实 ID> --request-id <稳定 ID> --summary <结果摘要>');
+      if (args[i] === '--summary-stdin') { summaryStdin = true; continue; }
+      if (!args[i].startsWith('--') || !allowed.has(key) || args[i + 1] === undefined) throw new Error('用法：node send.mjs --agent codex --external-session-id <真实 ID> --request-id <稳定 ID> (--summary <摘要> | --summary-stdin | --summary-file <文件>)');
       input[key.replaceAll('-', '_')] = args[++i];
+    }
+    const summarySources = [input.summary !== undefined, input.summary_file !== undefined, summaryStdin].filter(Boolean).length;
+    if (summarySources > 1) throw new Error('--summary、--summary-file 与 --summary-stdin 不能同时使用');
+    if (input.status && summarySources > 0) throw new Error('状态查询仅接受 --status 与原 --request-id，不接受发送参数');
+    if (input.summary_file !== undefined) {
+      try { input.summary = (await readFile(input.summary_file, 'utf8')).replace(/\r\n/g, '\n'); }
+      catch { throw new Error('无法读取摘要文件'); }
+      delete input.summary_file;
+    } else if (summaryStdin) {
+      input.summary = await readStdin();
     }
     console.log(JSON.stringify(await sendNotification(input)));
   } catch (error) { console.error(error.message); process.exitCode = 1; }

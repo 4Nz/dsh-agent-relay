@@ -15,9 +15,10 @@ export function registerTools(
 ): void {
   const agent = {
     type: "string",
-    enum: ["claude", "codex"],
+    enum: ["claude", "codex", "agy"],
     required: true,
   } as const;
+  const optionalSkills = { type: "array", items: { type: "string" } } as const;
   const subscription = {
     subscription_id: { type: "string", required: true },
   } as const;
@@ -84,22 +85,22 @@ export function registerTools(
       name: "relay_setup_check",
       endpoint: "setup_check",
       description:
-        "检查前置安装接入状态：Claude 检查 channel 参数、MCP 登记、规则、shell 函数、channel 凭证和通知 Skill；Codex 只检查通知 Skill。逐项返回 ok/missing/outdated/conflict/unavailable 与下一步提示。",
-      parameters: { agent },
+        "检查前置安装接入状态：Claude 检查 channel 参数、MCP 登记、规则、shell 函数、channel 凭证和通知 Skill；Codex 检查通知 Skill；Antigravity（agy）检查命令或桌面端、通知 Skill 与桌面桥接 Sidecar 配置。逐项返回 ok/missing/outdated/conflict/unavailable 与下一步提示。",
+      parameters: { agent, optional_skills: optionalSkills },
     },
     {
       name: "relay_setup_install",
       endpoint: "setup_install",
       description:
-        "执行前置安装接入：只修复不正常的项，已正常的项不改动；修改前备份，冲突项不自动覆盖。Claude 安装后需新开终端或重新进入会话才生效。",
-      parameters: { agent },
+        "执行前置安装接入：只修复不正常的项，已正常的项不改动；修改前备份，冲突项不自动覆盖。Claude 安装后需新开终端或重新进入会话才生效；Antigravity 如需桌面已有会话接收外部消息，请在 Automations 面板启用 DSH Agent Relay Bridge。",
+      parameters: { agent, optional_skills: optionalSkills, enable_agy_sandbox: { type: "boolean", description: "仅在用户明确选择时启用 agy CLI 用户级沙箱内执行，供主动创建后台会话使用" } },
     },
     {
       name: "relay_list",
       endpoint: "list",
       description: "分页查看订阅、检查和通知投递状态；任务结果与投递结果不同。",
       parameters: {
-        agent: { type: "string", enum: ["claude", "codex"] },
+        agent: { type: "string", enum: ["claude", "codex", "agy"] },
         status: { type: "string", enum: ["active", "paused", "ended"] },
         type: { type: "string", enum: ["poll", "push"] },
         limit: { type: "integer" },

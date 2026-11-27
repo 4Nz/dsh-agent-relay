@@ -6,7 +6,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { randomUUID } from "node:crypto";
-import type { Subscription, Result } from "../storage/types.js";
+import type { Agent, Subscription, Result } from "../storage/types.js";
 
 const RESULTS = new Set<Result>([
   "completed",
@@ -50,7 +50,7 @@ export interface PushHandlerOptions {
   createSubscription: (input: {
     id: string;
     type: "push";
-    agent: "claude" | "codex";
+    agent: Agent;
     external_session_id: string;
     dsh_session_id: null;
   }) => Promise<
@@ -58,7 +58,7 @@ export interface PushHandlerOptions {
   >;
   createSession: (subscription: Subscription) => Promise<string>;
   drain: () => Promise<unknown>;
-  requireReady: (agent: "claude" | "codex") => Promise<void>;
+  requireReady: (agent: Agent) => Promise<void>;
   now?: () => number;
   newId?: () => string;
 }
@@ -157,7 +157,7 @@ export function createPushHandler({
       (typeof input.request_id !== "string" ||
         !input.request_id.trim() ||
         input.request_id.length > 500 ||
-        (input.agent !== "claude" && input.agent !== "codex") ||
+        (input.agent !== "claude" && input.agent !== "codex" && input.agent !== "agy") ||
         typeof input.external_session_id !== "string" ||
         !input.external_session_id.trim())
     )
@@ -177,7 +177,7 @@ export function createPushHandler({
       if (explicit && (typeof input.request_id !== "string" || !input.request_id.trim()))
         return new Response("定向消息需要稳定 request_id", {status: 400});
       const selected = direct
-        ? (input.agent as "claude" | "codex")
+        ? (input.agent as Agent)
         : source!.agent;
       try {
         await requireReady(selected);
@@ -232,7 +232,7 @@ export function createPushHandler({
         const created = await createSubscription({
           id: subscriptionId,
           type: "push",
-          agent: input.agent as "claude" | "codex",
+          agent: input.agent as Agent,
           external_session_id: input.external_session_id as string,
           dsh_session_id: null,
         });
@@ -336,24 +336,46 @@ export function createPushServer({
       }
     });
   });
+  let state: { listening: boolean; host: string; port: number; error: string | null } = {
+    listening: false,
+    host,
+    port,
+    error: null,
+  };
   return {
     server,
+    status: () => ({ ...state }),
     start: () =>
       new Promise<{ host: string; port: number }>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(port, host, () => {
-          server.removeListener("error", reject);
-          const address = server.address();
-          resolve({
+        const onError = (error: Error) => {
+          state = {
+            listening: false,
             host,
-            port: typeof address === "object" && address ? address.port : port,
-          });
+            port,
+            error: error instanceof Error ? error.message : String(error),
+          };
+          reject(error);
+        };
+        server.once("error", onError);
+        server.listen(port, host, () => {
+          server.removeListener("error", onError);
+          const address = server.address();
+          const boundPort =
+            typeof address === "object" && address ? address.port : port;
+          state = { listening: true, host, port: boundPort, error: null };
+          resolve({ host, port: boundPort });
         });
       }),
     stop: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
+      new Promise<void>((resolve, reject) => {
+        state = { ...state, listening: false };
+        if (!server.listening) {
+          resolve();
+          return;
+        }
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections?.();
+      }),
   };
 }
 

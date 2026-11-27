@@ -12,6 +12,10 @@ import { startHistoryCleanup } from "./services/cleanup.js";
 import { createAdapterRegistry } from "./adapters/registry.js";
 import { createClaudeAdapter } from "./adapters/claude/index.js";
 import { createCodexAdapter } from "./adapters/codex/index.js";
+import { createAgyAdapter } from "./adapters/agy/index.js";
+import { resolveAgyCommand } from "./adapters/agy/paths.js";
+import { createAgyBridgeService } from "./services/agy-bridge.js";
+import { createAgyBridgeRoutes } from "./services/agy-bridge-http.js";
 import { createDshScheduler } from "./services/scheduler.js";
 import { createSubscriptionService } from "./services/subscriptions.js";
 import { createCheckService } from "./services/checks.js";
@@ -29,7 +33,6 @@ import {
   createChannelCredentialService,
   createNotificationCredentialService,
 } from "./services/credentials.js";
-import { createSkillInstallService } from "./services/skill-install.js";
 import { createPushHandler, createPushServer } from "./services/push.js";
 import { createClaudeChannelService } from "./services/claude-channel.js";
 import { createProviderRegistry } from "./providers/registry.js";
@@ -120,10 +123,19 @@ export function apply(ctx: Context): void {
   const codex = createCodexAdapter({ bindings: store.codexSessions });
   // Claude channel：独立凭证，明文由前置安装接入写入 Claude 侧供 channel server 读取。
   const channelCredentials = createChannelCredentialService({ dataDir });
+  const agyBridgeCredentials = createChannelCredentialService({
+    dataDir,
+    name: "agy-bridge-credential.json",
+  });
+  const agyBridge = createAgyBridgeService();
   const claudeRunner = createRunner();
   const codexRunner = createResolvedRunner((args) =>
     resolveCodexCommand({ cliArgs: args }),
   );
+  const agyRunner = createResolvedRunner((args) => {
+    const resolved = resolveAgyCommand({ cliArgs: args });
+    return { command: resolved.command, args: resolved.args };
+  });
   const listClaudeAgents = createClaudeAgentList(claudeRunner);
   const channel = createClaudeChannelService({
     store,
@@ -131,9 +143,11 @@ export function apply(ctx: Context): void {
     onError: (error) =>
       ctx.logger.warn("[agent-relay] claude channel: %s", error),
   });
+  const agy = createAgyAdapter({ bridge: agyBridge, runner: agyRunner });
   const adapters = createAdapterRegistry([
     createClaudeAdapter({ channel }),
     codex,
+    agy,
   ]);
   const doubaoDirectory = join(dataDir, "doubao");
   const doubaoCredentials = createDoubaoCredentialStore(doubaoDirectory);
@@ -148,7 +162,10 @@ export function apply(ctx: Context): void {
   const teamRelay = createTeamRelayService({
     providers,
     doubao: doubaoAccess,
-    sessionTargets: adapters.list().map((item) => item.agent),
+    sessionTargets: adapters
+      .list()
+      .map((item) => item.agent)
+      .filter((id) => id === "claude" || id === "codex"),
     settingsStore: createTeamSettingsStore(join(dataDir, "team-relay-settings.json")),
     inspectAgents: createTeamAgentInspector({
       doubaoStatus: doubaoAccess.status,
@@ -171,10 +188,19 @@ export function apply(ctx: Context): void {
     store,
     transport: createDshDelivery(host, store.unread),
   });
-  const skillInstall = createSkillInstallService({ adapters });
+  let getPushStatus = () => ({
+    listening: false,
+    host: "127.0.0.1",
+    port: Number(process.env.DSH_AGENT_RELAY_PORT ?? 37421),
+    error: "本机通知服务尚未启动" as string | null,
+  });
   const setup = createSetupService({
     run: claudeRunner,
     codexRunner,
+    agyRunner,
+    agyBridge,
+    agyBridgeCredentials,
+    pushServerStatus: () => getPushStatus(),
     supportedNotifyAgents: () => adapters.list().filter(item => item.capabilities.sendMessage).map(item => item.agent),
     channel,
     listAgents: listClaudeAgents,
@@ -214,7 +240,6 @@ export function apply(ctx: Context): void {
     subscriptions,
     checks,
     notifications,
-    skillInstall,
     createDshSession: createReceiveSession,
     listDshSessions: () => dshSessions.list(),
     hasDshSession: (id) => dshSessions.has(id),
@@ -279,10 +304,12 @@ export function apply(ctx: Context): void {
     handler: pushHandler,
     routes: {
       ...createChannelRoutes({ channel, credentials: channelCredentials }),
+      ...createAgyBridgeRoutes({ agyBridge, credentials: agyBridgeCredentials }),
       ...createMessageRoutes({ relay, credentials: notificationCredentials }),
       ...createNotificationStatusRoutes({ store, credentials: notificationCredentials }),
     },
   });
+  getPushStatus = () => pushServer.status();
   const stopChannel = channel.start();
   ctx.effect(() => async () => {
     stopping = true;
@@ -292,6 +319,7 @@ export function apply(ctx: Context): void {
     stopCleanup();
     stopChannel();
     channel.dispose();
+    agyBridge.dispose();
     doubaoAccess.dispose();
     try {
       await pushServer.stop().catch(() => {});
@@ -304,6 +332,7 @@ export function apply(ctx: Context): void {
   stopApi = registerRelayApi(host.connection, relay);
   stopCleanup = startHistoryCleanup({
     store,
+    dataDir,
     onError: (error) =>
       ctx.logger.warn("[agent-relay] history cleanup failed: %s", error),
   });

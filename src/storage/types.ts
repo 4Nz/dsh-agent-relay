@@ -1,4 +1,4 @@
-export type Agent = "claude" | "codex";
+export type Agent = "claude" | "codex" | "agy";
 export type SubscriptionType = "poll" | "push";
 export type SubscriptionStatus = "active" | "paused" | "ended";
 export type Result =

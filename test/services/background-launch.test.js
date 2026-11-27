@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-for (const agent of ['codex', 'claude']) {
+for (const agent of ['codex', 'claude', 'agy']) {
   async function fixture(t, source) {
     const root = await mkdtemp(join(tmpdir(), 'relay-background-'));
     t.after(() => rm(root, { recursive: true, force: true }));
@@ -16,8 +16,9 @@ for (const agent of ['codex', 'claude']) {
     await mkdir(cwd); await mkdir(bin);
     const cli = join(bin, `${agent}.mjs`);
     await writeFile(cli, source);
-    const env = { ...process.env, DSH_HOME: root, PATH: bin, Path: bin, [agent === 'codex' ? 'DSH_CODEX_BIN' : 'DSH_CLAUDE_BIN']: cli,
-      CODEX_THREAD_ID: '22222222-2222-4222-8222-222222222222', CODEX_SESSION_ID: '22222222-2222-4222-8222-222222222222', CLAUDE_CODE_SESSION_ID: '' };
+    const binVar = agent === 'codex' ? 'DSH_CODEX_BIN' : agent === 'agy' ? 'DSH_AGY_BIN' : 'DSH_CLAUDE_BIN';
+    const env = { ...process.env, DSH_HOME: root, PATH: bin, Path: bin, [binVar]: cli,
+      CODEX_THREAD_ID: '22222222-2222-4222-8222-222222222222', CODEX_SESSION_ID: '22222222-2222-4222-8222-222222222222', CLAUDE_CODE_SESSION_ID: '', ANTIGRAVITY_CONVERSATION_ID: '' };
     const module = await import(`../../skills/${agent}-notify/start.mjs`);
     return { root, cwd, env, ...module };
   }
@@ -27,12 +28,16 @@ for (const agent of ['codex', 'claude']) {
 import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 const input=readFileSync(0,'utf8');
 appendFileSync('次数.txt','1');
-writeFileSync('输入.json',JSON.stringify({input,args:process.argv.slice(2),env:Object.fromEntries(['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_CODE_SESSION_ID'].map(k=>[k,process.env[k]??null]))}));
+writeFileSync('输入.json',JSON.stringify({input,args:process.argv.slice(2),env:Object.fromEntries(['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_CODE_SESSION_ID','ANTIGRAVITY_CONVERSATION_ID'].map(k=>[k,process.env[k]??null]))}));
 const id='11111111-1111-4111-8111-111111111111';
 if('${agent}'==='codex') {
  console.log(JSON.stringify({type:'thread.started',thread_id:id}));
  console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'完整结果\\n第二行'}}));
  console.log(JSON.stringify({type:'turn.completed'}));
+} else if('${agent}'==='agy') {
+ console.log(JSON.stringify({event:'init',conversation_id:id}));
+ console.log(JSON.stringify({event:'step_update',step_update:{conversation_id:id,step_index:2,state:'DONE',step_type:'agent_response',text_delta:'完整结果\\n第二行'}}));
+ console.log(JSON.stringify({event:'result',result:{conversation_id:id,status:'SUCCESS',response:'完整结果\\n第二行'}}));
 } else console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,session_id:process.argv[process.argv.indexOf('--session-id')+1],result:'完整结果\\n第二行',permission_denials:[]}));
 `);
     const input = { request_id: '一次任务', cwd: f.cwd, content: '任务含 `shell` 与 $(命令)，保持原文' };
@@ -49,10 +54,13 @@ if('${agent}'==='codex') {
     assert.equal(result.result, '完整结果\n第二行');
     assert.equal(await readFile(join(f.cwd, '次数.txt'), 'utf8'), '1');
     const actual = JSON.parse(await readFile(join(f.cwd, '输入.json'), 'utf8'));
-    assert.ok(actual.input.includes(input.content));
-    assert.ok(actual.input.includes('22222222-2222-4222-8222-222222222222'));
+    if (agent === 'agy') assert.ok(actual.args.includes('--sandbox'));
+    const submitted = agent === 'agy' ? actual.args.join('\n') : actual.input;
+    assert.ok(submitted.includes(input.content));
+    assert.ok(submitted.includes('22222222-2222-4222-8222-222222222222'));
     assert.equal(actual.env.CODEX_THREAD_ID, null);
     assert.equal(actual.env.CODEX_SESSION_ID, null);
+    assert.equal(actual.env.ANTIGRAVITY_CONVERSATION_ID, null);
     assert.equal(actual.env.CLAUDE_CODE_SESSION_ID, agent === 'claude' ? result.session_id : null);
     assert.equal(actual.args.some(a => a.includes('bypass') || a.includes('skip-permissions')), false);
     assert.deepEqual(result.source, { agent: 'codex', session_id: f.env.CODEX_THREAD_ID });
@@ -60,6 +68,40 @@ if('${agent}'==='codex') {
     await assert.rejects(f.prepareJob({ ...input, source_agent: 'claude', source_session_id: '33333333-3333-4333-8333-333333333333' }, { env: f.env }), /request_id/);
     await assert.rejects(f.prepareJob({ ...input, request_id: '缺目录', cwd: '/不存在目录' }, { env: f.env }));
   });
+
+  if (agent === 'agy') {
+    test('agy 辅助进程继承输出流时，CLI 退出后仍可完成轮次', async t => {
+      const f = await fixture(t, `
+        import { spawn } from 'node:child_process';
+        const helper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 6000)'], {
+          stdio: ['ignore', 'inherit', 'inherit'],
+        });
+        helper.unref();
+        console.log(JSON.stringify({event:'result',result:{conversation_id:'11111111-1111-4111-8111-111111111111',status:'SUCCESS',response:'OK'}}));
+      `);
+      const job = await f.prepareJob({ request_id: '辅助进程', cwd: f.cwd, content: '测试' }, { env: f.env });
+      await f.runJob(job.directory, { env: f.env });
+      const state = await f.inspectJob('辅助进程', { env: f.env });
+      assert.equal(state.status, 'completed');
+      assert.ok(state.finished_at - state.created_at < 5500);
+    });
+
+    for (const [error, expected] of [
+      ['permission check failed: user denied permission to run command', 'needs_attention'],
+      ['model unavailable', 'failed'],
+    ]) {
+      test(`agy 后台错误归类为 ${expected} 并保留会话 ID`, async t => {
+        const id = '11111111-1111-4111-8111-111111111111';
+        const result = { event: 'result', result: { conversation_id: id, status: 'ERROR', error } };
+        const f = await fixture(t, `console.log(JSON.stringify(${JSON.stringify(result)})); process.exitCode = 1;`);
+        const job = await f.prepareJob({ request_id: '错误', cwd: f.cwd, content: '测试' }, { env: f.env });
+        await f.runJob(job.directory, { env: f.env });
+        const state = await f.inspectJob('错误', { env: f.env });
+        assert.equal(state.status, expected);
+        assert.equal(state.session_id, id);
+      });
+    }
+  }
 
   test(`${agent} 旧启动记录保留原始任务，升级后不追加来源或再次启动`, async t => {
     const f = await fixture(t, 'process.exit(0);');

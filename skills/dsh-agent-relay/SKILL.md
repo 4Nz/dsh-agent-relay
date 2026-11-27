@@ -1,6 +1,6 @@
 ---
 name: dsh-agent-relay
-description: 用户需要在 DSH 中发现、查阅、持续关注 Claude 或 Codex 会话、处理 Relay 进展或恢复提醒，或向已确认的外部会话补充消息时使用。
+description: 用户需要在 DSH 中发现、查阅、持续关注 Claude、Codex 或 Antigravity（agy）会话、处理 Relay 进展或恢复提醒，或向已确认的外部会话补充消息时使用。
 ---
 
 # T2-T3-T4-T6-T7 DSH 会话桥梁使用说明
@@ -57,6 +57,7 @@ push 与历史进展进入同一路由。push 取消下一次定时等待，DSH 
 
 - Claude 终端持有会话必须启用 Agent Relay channel，先排队、空闲推送、处理后 `ack`；未启用按原因处理，不以 `--resume` 向被持有会话注入。
 - Codex 先 `relay_inspect` 核对 `send_allowed`。本机 daemon 的已有桌面/CLI 会话使用官方 `queue/add`；未加载聊天打开后由原实例消费，不为了催执行而 resume 业务会话。独立历史回退连接只读。Relay 创建登记的专用会话可 `turn/start`，不得同时交给桌面或 CLI。`relay_create_session` 只用于确需新后台任务。
+- Antigravity（`agy`）先 `relay_inspect` 核对 `send_allowed`。订阅与查阅直接读取本机只读索引与 `transcript.jsonl`，不要求桥接在线；向桌面/IDE 已有会话发送消息需在 Antigravity 的 Automations 面板启用 `DSH Agent Relay Bridge`，未在线时按返回原因提示用户。
 - 发送复用同一路由。确实需要后续关注时显式选择 `subscribe_after_send:true`，复用或创建持续关注，再按主题规划；不要无条件新增重复关注。外部执行结果、发送回执、检查失败、DSH 投递与语义处理状态必须分开。
 
 通知凭证由「前置安装接入」安装到本机私有配置；不写入日志、仓库或摘要。

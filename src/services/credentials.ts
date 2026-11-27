@@ -143,10 +143,10 @@ export function createNotificationCredentialService({
     },
     verify(value) {
       if (typeof value !== "string" || !value) return false;
-      const stored = read();
-      if (!stored) return false;
+      const expectedToken = valid();
+      if (!expectedToken) return false;
       const actual = Buffer.from(value);
-      const expected = Buffer.from(stored.token);
+      const expected = Buffer.from(expectedToken);
       return actual.length === expected.length && timingSafeEqual(actual, expected);
     },
     status() {

@@ -56,6 +56,9 @@ export function createBridgeService({
   const targeted = dshSessions ? createTargetedNotifications({store: store.targetedNotifications, sessions: dshSessions, transport, now}) : null;
   const locks = new Map<string, Promise<unknown>>();
   let draining: Promise<void> | undefined;
+  let reconciling: Promise<{ created: number; deleted: number; errors: string[] }> | undefined;
+  let reconcileAgain = false;
+  const routeKey = (agent: Agent, external: string) => `${agent}/${external}`;
   function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const pending = locks.get(key) ?? Promise.resolve();
     const work = pending.catch(() => {}).then(fn);
@@ -89,20 +92,27 @@ export function createBridgeService({
         id: s.schedule_task_id,
         sessionId: s.dsh_session_id,
       });
-      subs.update({
-        id: s.id,
-        expected_status: s.status,
-        patch: { schedule_task_id: null, updated_at: now() },
-      });
+      const current = subs.get(s.id);
+      if (current && current.status !== "ended") {
+        subs.update({
+          id: s.id,
+          expected_status: current.status,
+          patch: { schedule_task_id: null, updated_at: now() },
+        });
+      }
     } catch {
       /* 保留标识，维护时重试。 */
     }
   }
   async function end(s: Subscription, reason: EndReason, summary?: string) {
     if (s.status === "ended") return;
+    // 先尝试删除宿主定时任务并清空 schedule_task_id，再转入 ended 终态；删除失败仍结束订阅，留待对账回收。
+    await cancel(s);
+    const current = subs.get(s.id);
+    if (!current || current.status === "ended") return;
     subs.update({
-      id: s.id,
-      expected_status: s.status,
+      id: current.id,
+      expected_status: current.status,
       patch: {
         status: "ended",
         end_reason: reason,
@@ -110,19 +120,20 @@ export function createBridgeService({
         updated_at: now(),
       },
     });
-    await cancel(s);
     if (summary) {
-      const b = db.route(s.agent, s.external_session_id)!;
-      db.append(
-        b,
-        {
-          id: `end:${s.id}`,
-          subscription_id: s.id,
-          kind: "end",
-          body: summary,
-        },
-        now(),
-      );
+      const b = db.route(current.agent, current.external_session_id);
+      if (b) {
+        db.append(
+          b,
+          {
+            id: `end:${current.id}`,
+            subscription_id: current.id,
+            kind: "end",
+            body: summary,
+          },
+          now(),
+        );
+      }
     }
   }
   async function expire(s: Subscription) {
@@ -359,6 +370,184 @@ export function createBridgeService({
       );
     }
   }
+  async function planUnlocked(id: string, seconds: number) {
+    validateInterval(seconds);
+    const s = subs.get(id);
+    if (!s)
+      return { ok: false as const, code: "not_found", message: "订阅不存在" };
+    if ((await expire(s)) || s.status !== "active")
+      return conflict("关注已结束或暂停");
+    if (seconds * 1000 > s.hard_expires_at - now())
+      return conflict("频率超过剩余关注期");
+    await cancel(s);
+    subs.update({
+      id,
+      expected_status: "active",
+      patch: {
+        selected_interval_seconds: seconds,
+        check_interval_seconds: s.type === "poll" ? seconds : null,
+        planning_state: db.open(db.route(s.agent, s.external_session_id)!.id)
+          ? "deciding"
+          : "ready",
+        updated_at: now(),
+      },
+    });
+    await schedule(subs.get(id)!);
+    return { ok: true as const, subscription: subs.get(id)! };
+  }
+  async function reconcileRun() {
+    const report = { created: 0, deleted: 0, errors: [] as string[] };
+    let tasks;
+    try {
+      tasks = await scheduler.catalog();
+    } catch (error) {
+      report.errors.push(String(error));
+      for (const b of db.routes()) {
+        const s = db.live(b);
+        if (s) await expire(s);
+      }
+      return report;
+    }
+    const wanted = new Set<string>();
+    // 恢复提醒属于批次本身，关注已结束或从未创建也不会失去恢复入口；但所属订阅已删除的孤儿批次须及时收敛，避免阻塞同路由新关注。
+    for (const route of db.routes()) {
+      const batch = db.open(route.id);
+      if (!batch) continue;
+      if (batch.subscription_id && !subs.get(batch.subscription_id)) {
+        db.state(
+          batch.id,
+          "needs_attention",
+          now(),
+          "所属订阅已不存在，批次已收敛以解除路由阻塞",
+          batch.state,
+        );
+        continue;
+      }
+      if (now() - batch.created_at >= 86400000) {
+        db.state(
+          batch.id,
+          ["unknown", "delivering"].includes(batch.state)
+            ? "unknown_attention"
+            : "needs_attention",
+          now(),
+          "批次恢复窗口已结束，保留未确认事件待人工处理",
+          batch.state,
+        );
+        continue;
+      }
+      if (now() - batch.created_at < 300000) continue;
+      const session = batch.dsh_session_id ?? route.dsh_session_id;
+      if (!session) continue;
+      const marker = v2Marker(`batch:${batch.id}`);
+      const existing = tasks.find(
+        (t) =>
+          t.status === "active" &&
+          t.sessionId === session &&
+          t.prompt.startsWith(marker),
+      );
+      if (existing) {
+        wanted.add(existing.id);
+        db.recoveryTask(batch.id, existing.id);
+        continue;
+      }
+      try {
+        const id = await scheduler.create({
+          sessionId: session,
+          title: "Agent Relay 待确认批次",
+          everySeconds: 300,
+          deadline: batch.created_at + 86400000,
+          prompt: `${marker} 调用 relay_batch(batch_id=${JSON.stringify(batch.id)}) 恢复原批次事实。若状态muted则停止，不展示push。根据原主题处理后调用relay_decide，携带原batch_id和decision_version。不创建或恢复关注，不重复发送外部任务。${OBSERVATION_GUIDANCE}`,
+        });
+        if (db.recoveryTask(batch.id, id)) {
+          wanted.add(id);
+          report.created++;
+        } else await scheduler.delete({ id, sessionId: session });
+      } catch (error) {
+        report.errors.push(String(error));
+      }
+    }
+    for (const b of db.routes()) {
+      let s = db.live(b);
+      if (!s) continue;
+      if (await expire(s)) continue;
+      const open = db.open(b.id);
+      if (s.status !== "active") {
+        await cancel(s);
+        continue;
+      }
+      if (open) {
+        await cancel(s);
+        continue;
+      }
+      // 确认落库后、恢复提醒前崩溃：没有开放批次时安全恢复原规划，不重放已处理事件。
+      if (
+        s.planning_state === "deciding" &&
+        !db.visiblePending(b.id).length
+      ) {
+        subs.update({
+          id: s.id,
+          expected_status: s.status,
+          patch: {
+            planning_state: s.selected_interval_seconds ? "ready" : "pending",
+            updated_at: now(),
+          },
+        });
+        s = subs.get(s.id)!;
+      }
+      if (s.planning_state !== "ready") {
+        if (s.planning_state === "pending" && now() - s.created_at >= 300000)
+          db.append(
+            b,
+            {
+              id: `plan:${s.id}`,
+              subscription_id: s.id,
+              kind: "planning",
+              body: "尚未选择关注频率，请调用relay_plan并告知用户。",
+            },
+            now(),
+          );
+        await cancel(s);
+        continue;
+      }
+      const found = tasks.find(
+        (t) =>
+          t.id === s.schedule_task_id &&
+          t.status === "active" &&
+          t.sessionId === s.dsh_session_id &&
+          parseV2Marker(t.prompt) === s.id,
+      );
+      if (found) {
+        wanted.add(found.id);
+        continue;
+      }
+      try {
+        await schedule(s);
+        const fresh = subs.get(s.id)!;
+        if (fresh.schedule_task_id) {
+          wanted.add(fresh.schedule_task_id);
+          report.created++;
+        }
+      } catch (error) {
+        report.errors.push(String(error));
+      }
+    }
+    for (const task of tasks) {
+      if (
+        !wanted.has(task.id) &&
+        (parseV2Marker(task.prompt) || hasLegacyMarker(task.prompt))
+      ) {
+        try {
+          if (
+            await scheduler.delete({ id: task.id, sessionId: task.sessionId })
+          )
+            report.deleted++;
+        } catch (error) {
+          report.errors.push(String(error));
+        }
+      }
+    }
+    return report;
+  }
   const service = {
     view,
     routes(after: string, limit: number) {
@@ -378,7 +567,8 @@ export function createBridgeService({
     async subscribe(
       input: SubscribeInput & { topic?: string; request_planning?: boolean },
     ): Promise<SubscribeResult> {
-      return serial(`${input.agent}/${input.external_session_id}`, async () => {
+      let shouldDrain = false;
+      const outcome: SubscribeResult = await serial(routeKey(input.agent, input.external_session_id), async (): Promise<SubscribeResult> => {
         const topic = input.topic?.trim() || TOPIC;
         if (topic.length > 1000) throw new TypeError("关注主题最多1000字");
         if (input.check_interval_seconds !== undefined)
@@ -476,37 +666,29 @@ export function createBridgeService({
             },
             time,
           );
-        await service.drain();
+        shouldDrain = true;
         return { ok: true as const, subscription: subs.get(sub.id)! };
       });
+      if (shouldDrain && outcome.ok) {
+        await service.drain();
+        return { ok: true as const, subscription: subs.get(outcome.subscription.id) ?? outcome.subscription };
+      }
+      return outcome;
     },
     async plan(id: string, seconds: number) {
       validateInterval(seconds);
-      const s = subs.get(id);
-      if (!s)
+      const initial = subs.get(id);
+      if (!initial)
         return { ok: false as const, code: "not_found", message: "订阅不存在" };
-      if ((await expire(s)) || s.status !== "active")
-        return conflict("关注已结束或暂停");
-      if (seconds * 1000 > s.hard_expires_at - now())
-        return conflict("频率超过剩余关注期");
-      await cancel(s);
-      subs.update({
-        id,
-        expected_status: "active",
-        patch: {
-          selected_interval_seconds: seconds,
-          check_interval_seconds: s.type === "poll" ? seconds : null,
-          planning_state: db.open(db.route(s.agent, s.external_session_id)!.id)
-            ? "deciding"
-            : "ready",
-          updated_at: now(),
-        },
-      });
-      await schedule(subs.get(id)!);
-      return { ok: true as const, subscription: subs.get(id)! };
+      return serial(routeKey(initial.agent, initial.external_session_id), () =>
+        planUnlocked(id, seconds),
+      );
     },
     async check(id: string, deliveredToModel = true) {
-      return serial(`check:${id}`, async () => {
+      const initial = subs.get(id);
+      if (!initial) return { status: "not_found" };
+      let shouldDrain = false;
+      const result = await serial(routeKey(initial.agent, initial.external_session_id), async () => {
         let s = subs.get(id);
         if (!s) return { status: "not_found" };
         if (await expire(s)) return { status: "inactive" };
@@ -525,6 +707,7 @@ export function createBridgeService({
             return { status: "inactive" };
           if (page.closed) {
             await end(s, "session_closed", "外部会话已关闭");
+            shouldDrain = true;
             return { status: "closed" };
           }
           observeTitle?.(s.agent, s.external_session_id, page.title);
@@ -552,7 +735,7 @@ export function createBridgeService({
           if (batch) {
             await cancel(s);
             if (deliveredToModel) db.state(batch.id, "delivered", now());
-            else await service.drain();
+            else shouldDrain = true;
             return {
               status: "events",
               topic: s.topic,
@@ -582,11 +765,15 @@ export function createBridgeService({
               updated_at: now(),
             },
           });
-          if (count >= s.max_consecutive_failures)
+          if (count >= s.max_consecutive_failures) {
             await end(s, "unreachable", `连续检查失败达到阈值：${message}`);
+            shouldDrain = true;
+          }
           return { status: "check_failed", error: message };
         }
       });
+      if (shouldDrain) await service.drain();
+      return result;
     },
     async decide(input: {
       batch_id: string;
@@ -595,77 +782,90 @@ export function createBridgeService({
       decision: "continue" | "end" | "needs_user";
       check_interval_seconds?: number;
     }) {
-      const batch = db.batch(input.batch_id);
+      const initialBatch = db.batch(input.batch_id);
       if (
-        !batch ||
-        batch.version !== input.decision_version ||
+        !initialBatch ||
+        initialBatch.version !== input.decision_version ||
         (input.subscription_id !== undefined &&
-          input.subscription_id !== batch.subscription_id)
+          input.subscription_id !== initialBatch.subscription_id)
       )
         return conflict("批次或执行版本不匹配");
-      const batchRoute = db
-        .routes()
-        .find((route) => route.id === batch.bridge_id);
-      if (
-        batch.state === "muted" ||
-        (batchRoute?.muted &&
-          db.events(batch.id).some((event) => event.kind === "push"))
-      )
-        return conflict("批次中的push已屏蔽，解除屏蔽后再处理");
-      if (batch.state === "processed")
-        return { ok: true as const, duplicate: true };
-      const b = db.routes().find((x) => x.id === batch.bridge_id)!;
-      const s = batch.subscription_id ? subs.get(batch.subscription_id) : null;
-      const live = db.live(b);
-      // 原批次ID和版本已在入口校验。旧批次可消费自己的事实，不能结束、暂停
-      // 或重新规划已推进版本的关注；屏蔽恢复和待人工处理均遵守同一边界。
-      if (
-        (live && batch.subscription_id !== live.id) ||
-        (s && s.decision_version > batch.version)
-      ) {
+      const initialRoute = db.routeById(initialBatch.bridge_id);
+      if (!initialRoute) return conflict("批次路由不存在");
+      let shouldDrain = false;
+      const result = await serial(routeKey(initialRoute.agent, initialRoute.external_session_id), async () => {
+        const batch = db.batch(input.batch_id);
+        if (
+          !batch ||
+          batch.version !== input.decision_version ||
+          (input.subscription_id !== undefined &&
+            input.subscription_id !== batch.subscription_id)
+        )
+          return conflict("批次或执行版本不匹配");
+        const b = db.routeById(batch.bridge_id);
+        if (!b) return conflict("批次路由不存在");
+        if (
+          batch.state === "muted" ||
+          (b.muted &&
+            db.events(batch.id).some((event) => event.kind === "push"))
+        )
+          return conflict("批次中的push已屏蔽，解除屏蔽后再处理");
+        if (batch.state === "processed")
+          return { ok: true as const, duplicate: true };
+        const s = batch.subscription_id ? subs.get(batch.subscription_id) : null;
+        const live = db.live(b);
+        // 原批次ID和版本已在入口校验。旧批次可消费自己的事实，不能结束、暂停
+        // 或重新规划已推进版本的关注；屏蔽恢复和待人工处理均遵守同一边界。
+        if (
+          (live && batch.subscription_id !== live.id) ||
+          (s && s.decision_version > batch.version)
+        ) {
+          db.acknowledge(batch.id, now());
+          shouldDrain = true;
+          return { ok: true as const, stale_processing_only: true };
+        }
+        if (s && s.decision_version !== batch.version)
+          return conflict("关注执行版本已变化");
+        if (input.check_interval_seconds !== undefined)
+          validateInterval(input.check_interval_seconds);
+        if (
+          input.decision === "end" &&
+          db.visiblePending(b.id).length > db.visibleEvents(batch.id).length
+        )
+          return conflict(
+            "还有增量事件待处理，请先continue确认本批再读取后续批次",
+          );
         db.acknowledge(batch.id, now());
-        await service.drain();
-        return { ok: true as const, stale_processing_only: true };
-      }
-      if (s && s.decision_version !== batch.version)
-        return conflict("关注执行版本已变化");
-      if (input.check_interval_seconds !== undefined)
-        validateInterval(input.check_interval_seconds);
-      if (
-        input.decision === "end" &&
-        db.visiblePending(b.id).length > db.visibleEvents(batch.id).length
-      )
-        return conflict(
-          "还有增量事件待处理，请先continue确认本批再读取后续批次",
-        );
-      db.acknowledge(batch.id, now());
-      if (s && s.status !== "ended" && !(await expire(s))) {
-        if (input.decision === "end") await end(s, "completed");
-        else {
-          subs.update({
-            id: s.id,
-            expected_status: s.status,
-            patch: {
-              planning_state: s.selected_interval_seconds ? "ready" : "pending",
-              ...(input.decision === "needs_user"
-                ? { status: "paused" as const }
-                : {}),
-              updated_at: now(),
-            },
-          });
-          if (input.check_interval_seconds !== undefined)
-            await service.plan(s.id, input.check_interval_seconds);
+        if (s && s.status !== "ended" && !(await expire(s))) {
+          if (input.decision === "end") await end(s, "completed");
           else {
-            try {
-              await schedule(subs.get(s.id)!);
-            } catch {
-              /* 对账补建。 */
+            subs.update({
+              id: s.id,
+              expected_status: s.status,
+              patch: {
+                planning_state: s.selected_interval_seconds ? "ready" : "pending",
+                ...(input.decision === "needs_user"
+                  ? { status: "paused" as const }
+                  : {}),
+                updated_at: now(),
+              },
+            });
+            if (input.check_interval_seconds !== undefined)
+              await planUnlocked(s.id, input.check_interval_seconds);
+            else {
+              try {
+                await schedule(subs.get(s.id)!);
+              } catch {
+                /* 对账补建。 */
+              }
             }
           }
         }
-      }
-      await service.drain();
-      return { ok: true as const };
+        shouldDrain = true;
+        return { ok: true as const };
+      });
+      if (shouldDrain) await service.drain();
+      return result;
     },
     async push(input: DshTarget & {
       agent: Agent;
@@ -675,7 +875,7 @@ export function createBridgeService({
       result: string;
       external_ref?: string | null;
     }) {
-      return serial(`push:${input.request_id}`, () => serial(`${input.agent}/${input.external_session_id}`, async () => {
+      return serial(`push:${input.request_id}`, async () => {
         const explicit = input.dsh_session_id !== undefined || input.dsh_session_name !== undefined;
         if (explicit) {
           if (db.event(`push:${input.request_id}`))
@@ -685,113 +885,195 @@ export function createBridgeService({
           await service.drain();
           return {...result, delivery_status: store.targetedNotifications.get(input.request_id)!.state};
         }
-        if (store.targetedNotifications.get(input.request_id))
-          throw new DshTargetError("request_conflict", "request_id 已用于定向消息，重试必须指定原目标");
-        const previous = db.event(`push:${input.request_id}`);
-        if (previous) {
-          const route = db.routes().find((b) => b.id === previous.bridge_id);
-          if (
-            route?.agent !== input.agent ||
-            route.external_session_id !== input.external_session_id
-          )
-            throw new TypeError("request_id 已绑定其他外部会话");
-        }
-        const b = await ensureRoute(input.agent, input.external_session_id);
-        const sub = db.live(b);
-        const created = db.append(
-          b,
-          {
-            id: `push:${input.request_id}`,
-            subscription_id: sub?.id,
-            kind: "push",
-            body: JSON.stringify({
-              summary: input.summary,
-              result: input.result,
-              external_ref: input.external_ref ?? null,
-            }),
-          },
-          now(),
-        );
-        if (sub && created && !b.muted) {
-          await cancel(sub);
-          if (!(await expire(sub)))
-            subs.update({
-              id: sub.id,
-              expected_status: sub.status,
-              patch: { planning_state: "deciding", updated_at: now() },
-            });
-        }
+        const accepted = await serial(routeKey(input.agent, input.external_session_id), async () => {
+          if (store.targetedNotifications.get(input.request_id))
+            throw new DshTargetError("request_conflict", "request_id 已用于定向消息，重试必须指定原目标");
+          const previous = db.event(`push:${input.request_id}`);
+          if (previous) {
+            const route = db.routeById(previous.bridge_id);
+            if (
+              route?.agent !== input.agent ||
+              route.external_session_id !== input.external_session_id
+            )
+              throw new TypeError("request_id 已绑定其他外部会话");
+          }
+          const b = await ensureRoute(input.agent, input.external_session_id);
+          const sub = db.live(b);
+          const created = db.append(
+            b,
+            {
+              id: `push:${input.request_id}`,
+              subscription_id: sub?.id,
+              kind: "push",
+              body: JSON.stringify({
+                summary: input.summary,
+                result: input.result,
+                external_ref: input.external_ref ?? null,
+              }),
+            },
+            now(),
+          );
+          if (sub && created && !b.muted) {
+            await cancel(sub);
+            if (!(await expire(sub)))
+              subs.update({
+                id: sub.id,
+                expected_status: sub.status,
+                patch: { planning_state: "deciding", updated_at: now() },
+              });
+          }
+          return {
+            accepted: true,
+            duplicate: !created,
+            subscription_id: sub?.id ?? null,
+            bridge_id: b.id,
+            fallback_dsh_session_id: b.dsh_session_id,
+          };
+        });
         await service.drain();
         return {
-          accepted: true,
-          duplicate: !created,
-          subscription_id: sub?.id ?? null,
-          dsh_session_id: db.routeById(b.id)?.dsh_session_id ?? b.dsh_session_id,
+          accepted: accepted.accepted,
+          duplicate: accepted.duplicate,
+          subscription_id: accepted.subscription_id,
+          dsh_session_id: db.routeById(accepted.bridge_id)?.dsh_session_id ?? accepted.fallback_dsh_session_id,
         };
-      }));
+      });
     },
     async stop(id: string) {
-      const s = subs.get(id);
-      if (!s)
+      const initial = subs.get(id);
+      if (!initial)
         return { ok: false as const, code: "not_found", message: "订阅不存在" };
-      await end(s, "user_stopped");
-      return { ok: true as const, subscription: subs.get(id)! };
+      return serial(routeKey(initial.agent, initial.external_session_id), async () => {
+        const s = subs.get(id);
+        if (!s)
+          return { ok: false as const, code: "not_found", message: "订阅不存在" };
+        await end(s, "user_stopped");
+        return { ok: true as const, subscription: subs.get(id)! };
+      });
     },
     async pause(id: string) {
-      const s = subs.get(id);
-      if (!s)
+      const initial = subs.get(id);
+      if (!initial)
         return { ok: false as const, code: "not_found", message: "订阅不存在" };
-      if ((await expire(s)) || s.status !== "active")
-        return conflict("关注不活跃");
-      subs.update({
-        id,
-        expected_status: "active",
-        patch: { status: "paused", updated_at: now() },
+      return serial(routeKey(initial.agent, initial.external_session_id), async () => {
+        const s = subs.get(id);
+        if (!s)
+          return { ok: false as const, code: "not_found", message: "订阅不存在" };
+        if ((await expire(s)) || s.status !== "active")
+          return conflict("关注不活跃");
+        await cancel(s);
+        subs.update({
+          id,
+          expected_status: "active",
+          patch: { status: "paused", updated_at: now() },
+        });
+        return { ok: true as const, subscription: subs.get(id)! };
       });
-      await cancel(s);
-      return { ok: true as const, subscription: subs.get(id)! };
     },
     async resume(id: string) {
-      const s = subs.get(id);
-      if (!s)
+      const initial = subs.get(id);
+      if (!initial)
         return { ok: false as const, code: "not_found", message: "订阅不存在" };
-      if ((await expire(s)) || s.status !== "paused")
-        return conflict("关注不处于暂停状态");
-      subs.update({
-        id,
-        expected_status: "paused",
-        patch: {
-          status: "active",
-          planning_state: s.selected_interval_seconds ? "ready" : "pending",
-          updated_at: now(),
-        },
+      const updated = await serial(routeKey(initial.agent, initial.external_session_id), async () => {
+        const s = subs.get(id);
+        if (!s)
+          return { ok: false as const, code: "not_found", message: "订阅不存在" };
+        if ((await expire(s)) || s.status !== "paused")
+          return conflict("关注不处于暂停状态");
+        subs.update({
+          id,
+          expected_status: "paused",
+          patch: {
+            status: "active",
+            planning_state: s.selected_interval_seconds ? "ready" : "pending",
+            updated_at: now(),
+          },
+        });
+        db.mute(db.route(s.agent, s.external_session_id)!.id, false);
+        return { ok: true as const, subscription: subs.get(id)! };
       });
-      db.mute(db.route(s.agent, s.external_session_id)!.id, false);
+      if (!updated.ok) return updated;
       await service.reconcile();
       return { ok: true as const, subscription: subs.get(id)! };
     },
     async mute(agent: Agent, external: string, muted: boolean) {
-      const b = db.route(agent, external);
-      if (!b) return conflict("会话路由不存在");
-      db.mute(b.id, muted);
-      if (muted)
-        for (const batch of db.routeBatches(b.id)) {
-          if (batch.recovery_schedule_id && batch.dsh_session_id)
+      return serial(routeKey(agent, external), async () => {
+        const b = db.route(agent, external);
+        if (!b) return conflict("会话路由不存在");
+        db.mute(b.id, muted);
+        if (muted)
+          for (const batch of db.routeBatches(b.id)) {
+            if (batch.recovery_schedule_id && batch.dsh_session_id)
+              try {
+                await scheduler.delete({
+                  id: batch.recovery_schedule_id,
+                  sessionId: batch.dsh_session_id,
+                });
+              } catch {
+                /* 对账重试 */
+              }
+          }
+        return { ok: true as const, muted };
+      });
+    },
+    async closeSession(agent: Agent, external: string) {
+      const closed = await serial(routeKey(agent, external), async () => {
+        const b = db.route(agent, external);
+        if (!b) return 0;
+        const s = db.live(b);
+        if (!s) return 0;
+        await end(
+          s,
+          "session_closed",
+          `外部会话 ${s.external_session_title ?? s.external_session_id} 已归档或删除`,
+        );
+        return 1;
+      });
+      if (closed > 0) await service.drain();
+      return closed;
+    },
+    async inspect(agent: Agent, external: string) {
+      const snapshot = await adapters.get(agent).snapshot(external);
+      if (snapshot.check_error) throw new Error(snapshot.check_error);
+      if (snapshot.closed) await service.closeSession(agent, external);
+      else observeTitle?.(agent, external, snapshot.title);
+      const observedAt = now();
+      return {
+        ...snapshot,
+        observed_at: observedAt,
+        last_activity_age_seconds:
+          snapshot.closed || snapshot.last_activity_at == null
+            ? null
+            : Math.max(0, Math.floor((observedAt - snapshot.last_activity_at) / 1000)),
+      };
+    },
+    async deleteSubscription(id: string): Promise<ChangeResult> {
+      const initial = subs.get(id);
+      if (!initial) return { ok: false, code: "not_found", message: "订阅不存在" };
+      return serial(routeKey(initial.agent, initial.external_session_id), async () => {
+        const current = subs.get(id);
+        if (!current) return { ok: false, code: "not_found", message: "订阅不存在" };
+        await cancel(current);
+        for (const openBatch of db.openBatchesForSubscription(id)) {
+          if (openBatch.recovery_schedule_id && openBatch.dsh_session_id) {
             try {
               await scheduler.delete({
-                id: batch.recovery_schedule_id,
-                sessionId: batch.dsh_session_id,
+                id: openBatch.recovery_schedule_id,
+                sessionId: openBatch.dsh_session_id,
               });
             } catch {
-              /* 对账重试 */
+              /* 对账时清理孤儿恢复任务 */
             }
+          }
         }
-      return { ok: true as const, muted };
+        store.deleteSubscription({ id });
+        return { ok: true, subscription: current };
+      });
     },
     batch(id: string) {
       const batch = db.batch(id);
       if (!batch) return { status: "not_found" };
-      const route = db.routes().find((route) => route.id === batch.bridge_id);
+      const route = db.routeById(batch.bridge_id);
       if (
         batch.state === "muted" ||
         (route?.muted && db.events(id).some((event) => event.kind === "push"))
@@ -822,148 +1104,25 @@ export function createBridgeService({
       db.recover();
       store.targetedNotifications.recover();
     },
-    async reconcile() {
-      const report = { created: 0, deleted: 0, errors: [] as string[] };
-      let tasks;
-      try {
-        tasks = await scheduler.catalog();
-      } catch (error) {
-        report.errors.push(String(error));
-        for (const b of db.routes()) {
-          const s = db.live(b);
-          if (s) await expire(s);
-        }
-        return report;
+    // 单飞串行化对账：进行中再次触发时合并为一次紧随其后的补跑，避免并发重复建定时任务。
+    reconcile() {
+      if (reconciling) {
+        reconcileAgain = true;
+        return reconciling;
       }
-      const wanted = new Set<string>();
-      // 恢复提醒属于批次本身，关注已结束或从未创建也不会失去恢复入口。
-      for (const route of db.routes()) {
-        const batch = db.open(route.id);
-        if (!batch) continue;
-        if (now() - batch.created_at >= 86400000) {
-          db.state(
-            batch.id,
-            ["unknown", "delivering"].includes(batch.state)
-              ? "unknown_attention"
-              : "needs_attention",
-            now(),
-            "批次恢复窗口已结束，保留未确认事件待人工处理",
-            batch.state,
-          );
-          continue;
-        }
-        if (now() - batch.created_at < 300000) continue;
-        const session = batch.dsh_session_id ?? route.dsh_session_id;
-        if (!session) continue;
-        const marker = v2Marker(`batch:${batch.id}`);
-        const existing = tasks.find(
-          (t) =>
-            t.status === "active" &&
-            t.sessionId === session &&
-            t.prompt.startsWith(marker),
-        );
-        if (existing) {
-          wanted.add(existing.id);
-          db.recoveryTask(batch.id, existing.id);
-          continue;
-        }
+      reconciling = (async () => {
+        let last = { created: 0, deleted: 0, errors: [] as string[] };
         try {
-          const id = await scheduler.create({
-            sessionId: session,
-            title: "Agent Relay 待确认批次",
-            everySeconds: 300,
-            deadline: batch.created_at + 86400000,
-            prompt: `${marker} 调用 relay_batch(batch_id=${JSON.stringify(batch.id)}) 恢复原批次事实。若状态muted则停止，不展示push。根据原主题处理后调用relay_decide，携带原batch_id和decision_version。不创建或恢复关注，不重复发送外部任务。${OBSERVATION_GUIDANCE}`,
-          });
-          if (db.recoveryTask(batch.id, id)) {
-            wanted.add(id);
-            report.created++;
-          } else await scheduler.delete({ id, sessionId: session });
-        } catch (error) {
-          report.errors.push(String(error));
+          do {
+            reconcileAgain = false;
+            last = await reconcileRun();
+          } while (reconcileAgain);
+          return last;
+        } finally {
+          reconciling = undefined;
         }
-      }
-      for (const b of db.routes()) {
-        let s = db.live(b);
-        if (!s) continue;
-        if (await expire(s)) continue;
-        const open = db.open(b.id);
-        if (s.status !== "active") {
-          await cancel(s);
-          continue;
-        }
-        if (open) {
-          await cancel(s);
-          continue;
-        }
-        // 确认落库后、恢复提醒前崩溃：没有开放批次时安全恢复原规划，不重放已处理事件。
-        if (
-          s.planning_state === "deciding" &&
-          !db.visiblePending(b.id).length
-        ) {
-          subs.update({
-            id: s.id,
-            expected_status: s.status,
-            patch: {
-              planning_state: s.selected_interval_seconds ? "ready" : "pending",
-              updated_at: now(),
-            },
-          });
-          s = subs.get(s.id)!;
-        }
-        if (s.planning_state !== "ready") {
-          if (s.planning_state === "pending" && now() - s.created_at >= 300000)
-            db.append(
-              b,
-              {
-                id: `plan:${s.id}`,
-                subscription_id: s.id,
-                kind: "planning",
-                body: "尚未选择关注频率，请调用relay_plan并告知用户。",
-              },
-              now(),
-            );
-          await cancel(s);
-          continue;
-        }
-        const found = tasks.find(
-          (t) =>
-            t.id === s.schedule_task_id &&
-            t.status === "active" &&
-            t.sessionId === s.dsh_session_id &&
-            parseV2Marker(t.prompt) === s.id,
-        );
-        if (found) {
-          wanted.add(found.id);
-          continue;
-        }
-        try {
-          await schedule(s);
-          const fresh = subs.get(s.id)!;
-          if (fresh.schedule_task_id) {
-            wanted.add(fresh.schedule_task_id);
-            report.created++;
-          }
-        } catch (error) {
-          report.errors.push(String(error));
-        }
-      }
-      for (const task of tasks) {
-        if (
-          !wanted.has(task.id) &&
-          (parseV2Marker(task.prompt) || hasLegacyMarker(task.prompt))
-        ) {
-          try {
-            if (
-              await scheduler.delete({ id: task.id, sessionId: task.sessionId })
-            )
-              report.deleted++;
-          } catch (error) {
-            report.errors.push(String(error));
-          }
-        }
-      }
-      return report;
+      })();
+      return reconciling;
     },
   };
   return service;

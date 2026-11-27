@@ -154,7 +154,9 @@ export function startChannelServer({
     if (id !== undefined && method) send({ id, error: { code: -32601, message: "Method not found" } });
   }
 
+  const MAX_STDIN_BUFFER = 16 * 1024 * 1024;
   let buffer = "";
+  let chain = Promise.resolve();
   input.setEncoding?.("utf8");
   input.on("data", (chunk: string | Buffer) => {
     buffer += chunk.toString();
@@ -169,7 +171,13 @@ export function startChannelServer({
       } catch {
         continue;
       }
-      void handle(message);
+      chain = chain
+        .then(() => handle(message))
+        .catch((error) => log(error instanceof Error ? error.message : String(error)));
+    }
+    if (buffer.length > MAX_STDIN_BUFFER) {
+      log("stdin 单行缓冲超过 16MB 上限，已丢弃未完整消息");
+      buffer = "";
     }
   });
   input.on("end", () => {
