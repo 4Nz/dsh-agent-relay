@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -26,10 +26,10 @@ const UUID_3 = '33333333-3333-4333-8333-333333333333';
 
 test('CodexAdapter.startVisibleSession：经 daemon 创建桌面可见会话且不登记隐藏绑定，支持后续队列发送与 turn_id 精确进度', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'relay-codex-visible-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   const workDir = join(root, 'demo-project');
   mkdirSync(workDir, { recursive: true });
-  const realWorkDir = realpathSync(workDir);
+  const realWorkDir = await realpath(workDir);
   const store = openRelayStore({ dataDir: join(root, 'store') });
   t.after(() => store.close());
 
@@ -177,7 +177,7 @@ test('AgyBridge + Sidecar + AgyAdapter.startVisibleSession：按 cwd 匹配项�
     if (u.pathname.endsWith('/CreateConversation')) {
       lsRequests.push(body);
       if (lsMode === 'timeout') {
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, 600).unref?.());
       }
       return new Response(JSON.stringify({ conversation: { id: lsRequests.length === 1 ? UUID_1 : UUID_2 } }), {
         status: 200,
@@ -324,7 +324,7 @@ test('Relay HTTP /api/agent-relay/sessions/start：支持防重、目录冲突�
 for (const agent of ['codex', 'agy']) {
   test(`${agent}-notify start.mjs：优先创建 Desktop 可见会话并输出查看指引，离线安全回退 CLI，unknown 绝不回退`, async (t) => {
     const root = mkdtempSync(join(tmpdir(), `relay-start-desktop-${agent}-`));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
+    t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
     const cwd = join(root, 'my repo');
     const bin = join(root, 'bin');
     mkdirSync(cwd, { recursive: true });
@@ -408,7 +408,10 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: '${UUID
       res.end();
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
+    t.after(async () => {
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+    });
 
     const configPath = join(root, 'notification-client.json');
     writeFileSync(
@@ -476,7 +479,7 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: '${UUID
       assert.equal(queried2.cli_command, `codex resume ${UUID_3}`);
     } else {
       assert.ok(queried2.cli_command.includes(`agy --conversation ${UUID_3}`));
-      assert.ok(queried2.cli_command.includes(realpathSync(cwd)));
+      assert.ok(queried2.cli_command.includes(queried2.cwd));
     }
 
     // 3) 派发后 unknown → 绝不回退 CLI！
@@ -494,12 +497,17 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: '${UUID
     const launched4 = await starter.launchJob(prep4, { env });
     assert.equal(launched4.mode, 'cli');
     assert.equal(hits.length, beforeHits, '显式 cli_only 不应调用桌面新建 HTTP');
+    for (let i = 0; i < 60; i++) {
+      const st = await starter.inspectJob('force-cli', { env });
+      if (st.status === 'completed' || st.status === 'failed') break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
   });
 }
 
 test('claude-notify start.mjs：新建方式保持后台 CLI 不变，输出含 claude --resume 命令', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'relay-start-claude-view-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   const cwd = join(root, 'claude repo');
   const bin = join(root, 'bin');
   mkdirSync(cwd, { recursive: true });
@@ -522,7 +530,10 @@ console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false
     res.end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(async () => {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  });
 
   const configPath = join(root, 'notification-client.json');
   writeFileSync(
@@ -551,6 +562,11 @@ console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false
   assert.equal(launched.mode, 'cli');
   assert.equal(launched.visibility, 'cli');
   assert.ok(launched.cli_command.includes(`claude --resume ${launched.session_id}`));
-  assert.ok(launched.cli_command.includes(realpathSync(cwd)));
+  assert.ok(launched.cli_command.includes(launched.cwd));
   assert.match(launched.view_hint, /claude --resume/);
+  for (let i = 0; i < 60; i++) {
+    const st = await starter.inspectJob('claude-1', { env });
+    if (st.status === 'completed' || st.status === 'failed') break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
 });

@@ -90,7 +90,8 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): AgentAdapter 
   function normalizeDirForMatch(pathValue: string): string {
     let resolvedPath = resolve(pathValue);
     try {
-      resolvedPath = realpathSync(resolvedPath);
+      // Windows 上 fs/promises.realpath 会展开 8.3 短路径，这里统一使用 native realpath 对齐。
+      resolvedPath = (realpathSync.native ?? realpathSync)(resolvedPath);
     } catch {
       /* 未存在或不可 realpath 时回退 resolve 结果。 */
     }
