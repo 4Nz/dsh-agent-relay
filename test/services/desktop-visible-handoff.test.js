@@ -602,9 +602,9 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: '${UUID
     assert.equal(launched2.fallback_reason, '桌面桥接未在线');
     assert.match(launched2.view_hint, /回退/);
 
-    // 等待分离的 CLI worker 完成并检查 state。
+    // 等待分离的 CLI worker 完成并检查 state（Windows runner 冷启动 Node 子进程较慢，放宽到 30 秒）。
     let queried2;
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 300; i++) {
       queried2 = await starter.inspectJob('fallback-1', { env });
       if (queried2.status === 'completed') break;
       await new Promise((r) => setTimeout(r, 100));
