@@ -57,16 +57,18 @@ macOS 会用 Spotlight 查全机已索引目录，再递归补查用户主目录
 
 如需主动创建后台会话并运行终端命令，建议在 DSH 前置安装页勾选「允许 agy CLI 在沙箱内自动执行终端命令」。该配置适用于当前用户的所有 agy CLI 会话。权限拒绝会记录为 `needs_attention`。
 
-目录确定后，调用当前 Skill 中的启动器。它运行官方 `agy` CLI（`agy --sandbox --output-format stream-json -p`），新建独立 CLI 会话并立即返回启动记录，不打开终端；首条任务已提交，不再重复 send。注意：Antigravity CLI 会话与桌面端会话目录默认隔离（分别位于 `~/.gemini/antigravity-cli/` 与 `~/.gemini/antigravity/`），不能将后台 CLI 新建宣称为已在桌面侧边栏打开的可见会话。
+目录确定后，调用当前 Skill 中的启动器。它运行官方 `agy` CLI（`agy --sandbox --output-format stream-json -p`），新建独立 CLI 会话并立即返回启动记录，不打开终端；首条任务已提交，不再重复 send。注意：Antigravity CLI 会话与桌面端会话目录默认隔离（分别位于 `~/.gemini/antigravity-cli/` 与 `~/.gemini/antigravity/`），不能将后台 CLI 新建宣称为已在桌面侧边栏打开的可见会话。macOS / Linux 优先使用 `--stdin <<'EOF'` 传入正文，无需创建临时文件；Windows PowerShell 5.1 建议先写入 UTF-8 文件再用 `--content-file`，短文本也可用 `--content`。
 
 ```bash
-node "<当前 Skill 绝对目录>/start.mjs" --cwd "<已验证绝对目录>" --request-id "<本次任务唯一 ID>" --content-file "<任务文件绝对路径>"
+node "<当前 Skill 绝对目录>/start.mjs" --cwd "<已验证绝对目录>" --request-id "<本次任务唯一 ID>" --stdin <<'EOF'
+<任务正文>
+EOF
 node "<当前 Skill 绝对目录>/start.mjs" --status --request-id "<原任务 ID>"
 ```
 
 查询读取本机私有记录，返回真实 `session_id`、执行状态、最近回复及结果文件；不会启动任务或调用模型。`starting` 只说明已请求启动，`running` 表示执行进程心跳正常；`completed` 表示本轮结束，业务目标是否完成须看正文。`needs_attention` 表示权限受阻，`failed` 表示已知失败，`unknown` 表示无法确认，均不能自行换 ID 重跑。
 
-同一 request_id、目录、任务、来源与回传目标只启动一次。记录保存在 `$DSH_HOME/agent-relay/background-jobs/agy/`（默认 `~/.dsh/agent-relay/background-jobs/agy/`，Windows 为 `%USERPROFILE%\.dsh\agent-relay\background-jobs\agy\`）。后台执行使用本机 `agy` CLI 登录和权限配置，不传入跳过权限审批参数。
+同一 request_id、目录、任务、来源与回传目标只启动一次。记录保存在 `$DSH_HOME/agent-relay/background-jobs/agy/`（默认 `~/.dsh/agent-relay/background-jobs/agy/`，Windows 为 `%USERPROFILE%\.dsh\agent-relay\background-jobs\agy\`），终态记录默认保留 30 天后由清理任务自动移除。后台执行使用本机 `agy` CLI 登录和权限配置，不传入跳过权限审批参数。
 
 ## 是否回传
 
@@ -82,13 +84,15 @@ node "<当前 Skill 绝对目录>/start.mjs" --status --request-id "<原任务 I
 
 ## 发送与查询
 
-先把正文写入本次任务的本地文件，再调用当前 Skill 实际安装目录的脚本：
+macOS / Linux 优先通过 `--stdin <<'EOF'` 传入正文，无需创建临时文件；Windows PowerShell 5.1 建议写入 UTF-8 文件后用 `--content-file`，短文本也可用 `--content "<正文>"`（三者互斥）：
 
 ```bash
-node "<当前 Skill 绝对目录>/send.mjs" --external-session-id "<目标真实会话 ID>" --request-id "<本次请求 ID>" --content-file "<正文文件绝对路径>"
+node "<当前 Skill 绝对目录>/send.mjs" --external-session-id "<目标真实会话 ID>" --request-id "<本次请求 ID>" --stdin <<'EOF'
+<任务正文>
+EOF
 ```
 
-短文本也可用 `--content "<正文>"`，不能与 `--content-file` 同用。脚本固定发送给 Antigravity（`agy`），不接受切换目标 Agent 的参数。Windows PowerShell 使用同样的 Node 参数和双引号路径。
+脚本固定发送给 Antigravity（`agy`），不接受切换目标 Agent 的参数。Windows PowerShell 使用同样的 Node 参数和双引号路径。
 
 ```bash
 node "<当前 Skill 绝对目录>/send.mjs" --status --request-id "<原请求 ID>"

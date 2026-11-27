@@ -1,6 +1,6 @@
 // 官方 CLI 后台新建；仅记录执行事实，回传由 Agent 按用户要求调用发送 Skill。
 import { mkdir, readFile, writeFile, rename, realpath, stat, open, copyFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,47 @@ async function save(path, value) {
   await writeFile(temporary, JSON.stringify(value) + '\n', { mode: 0o600, flag: 'wx' });
   await rename(temporary, path);
 }
+export async function readStdinText({ stream = process.stdin, maxBytes = 128 * 1024, timeoutMs = 15000 } = {}) {
+  if (stream.isTTY) throw new Error('使用 --stdin 时必须通过管道或 heredoc 传入正文，不能交互式等待终端输入');
+  return await new Promise((resolve_, reject) => {
+    const chunks = [];
+    let bytes = 0;
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stream.off('data', onData);
+      stream.off('end', onEnd);
+      stream.off('error', onError);
+      fn(value);
+    };
+    const timer = setTimeout(() => {
+      try { stream.destroy(); } catch { /* 忽略关闭异常 */ }
+      finish(reject, new Error('读取标准输入超时'));
+    }, timeoutMs);
+    timer.unref?.();
+    const onData = chunk => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+      bytes += buf.length;
+      if (bytes > maxBytes) {
+        try { stream.destroy(); } catch { /* 忽略关闭异常 */ }
+        finish(reject, new Error(`标准输入超过 ${maxBytes} 字节上限`));
+        return;
+      }
+      chunks.push(buf);
+    };
+    const onEnd = () => {
+      const text = Buffer.concat(chunks).toString('utf8').replace(/\r\n/g, '\n').replace(/\n$/, '');
+      finish(resolve_, text);
+    };
+    const onError = () => finish(reject, new Error('读取标准输入失败'));
+    stream.on('data', onData);
+    stream.on('end', onEnd);
+    stream.on('error', onError);
+    stream.resume?.();
+  });
+}
 function jobDirectory(requestId, { env = process.env, home = homedir() } = {}) {
   if (!target) throw new Error('请保留 codex-notify、claude-notify 或 agy-notify 目录名');
   if (typeof requestId !== 'string' || !requestId.trim() || requestId.length > 450)
@@ -25,24 +66,78 @@ function jobDirectory(requestId, { env = process.env, home = homedir() } = {}) {
   return join(expanded, 'agent-relay', 'background-jobs', target, hash(requestId));
 }
 
-function resolveAgyBinary(env, home = homedir()) {
-  if (env.DSH_AGY_BIN?.trim()) return env.DSH_AGY_BIN.trim();
-  const isWin = process.platform === 'win32';
+function resolveWindowsShim(shimPath, agent) {
+  const dir = dirname(shimPath);
+  const exeSibling = join(dir, `${agent}.exe`);
+  if (existsSync(exeSibling)) return { command: exeSibling, prefixArgs: [] };
+  if (/\.(cmd|bat)$/i.test(shimPath)) {
+    try {
+      const body = readFileSync(shimPath, 'utf8');
+      const match = body.match(/%dp0%[\\/]([^\r\n"]+\.[cm]?js)/i);
+      if (match?.[1]) {
+        const jsPath = join(dir, match[1].replaceAll('\\', '/'));
+        if (existsSync(jsPath)) return { command: process.execPath, prefixArgs: [jsPath] };
+      }
+    } catch { /* 读取 shim 失败时继续已知路径回退 */ }
+  }
+  const knownJs = agent === 'claude'
+    ? [join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js')]
+    : agent === 'codex'
+      ? [join(dir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js')]
+      : [];
+  for (const candidate of knownJs) {
+    if (existsSync(candidate)) return { command: process.execPath, prefixArgs: [candidate] };
+  }
+  return null;
+}
+
+export function resolveCliSpawn(agent, env = process.env, home = homedir(), platform = process.platform) {
+  const isWin = platform === 'win32';
+  const override = agent === 'agy'
+    ? env.DSH_AGY_BIN?.trim()
+    : env[agent === 'codex' ? 'DSH_CODEX_BIN' : 'DSH_CLAUDE_BIN']?.trim();
+  const toSpec = candidate => {
+    if (/\.[cm]?js$/i.test(candidate)) return { command: process.execPath, prefixArgs: [candidate] };
+    if (isWin && /\.(cmd|bat|ps1)$/i.test(candidate)) return resolveWindowsShim(candidate, agent);
+    return { command: candidate, prefixArgs: [] };
+  };
+  if (override) {
+    const resolved = toSpec(override);
+    if (!resolved) throw new Error(`Windows 下不支持直接启动 ${override}，请安装原生 .exe 或指定对应的 JS 入口`);
+    return resolved;
+  }
   const pathVal = Object.entries(env).find(([k]) => k.toLowerCase() === 'path')?.[1] ?? '';
-  const sep = isWin ? ';' : ':';
-  const names = isWin ? ['agy.exe', 'agy.cmd', 'agy.bat'] : ['agy'];
-  for (const dir of pathVal.split(sep).filter(Boolean)) {
-    const clean = dir.replace(/^"(.*)"$/, '$1');
-    for (const name of names) {
-      const candidate = join(clean, name);
-      if (existsSync(candidate)) return candidate;
+  const pathDirs = pathVal.split(isWin ? ';' : ':').filter(Boolean).map(dir => dir.replace(/^"(.*)"$/, '$1'));
+  if (isWin) {
+    for (const dir of pathDirs) {
+      const exe = join(dir, `${agent}.exe`);
+      if (existsSync(exe)) return { command: exe, prefixArgs: [] };
+    }
+    for (const dir of pathDirs) {
+      for (const ext of ['.cmd', '.bat', '.ps1']) {
+        const shim = join(dir, `${agent}${ext}`);
+        if (existsSync(shim)) {
+          const resolved = resolveWindowsShim(shim, agent);
+          if (resolved) return resolved;
+        }
+      }
+    }
+    const fallbacks = agent === 'agy'
+      ? [...(env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, 'agy', 'bin', 'agy.exe')] : []), join(home, 'AppData', 'Local', 'agy', 'bin', 'agy.exe')]
+      : [];
+    for (const candidate of fallbacks) if (existsSync(candidate)) return { command: candidate, prefixArgs: [] };
+    return { command: `${agent}.exe`, prefixArgs: [] };
+  }
+  if (agent === 'agy') {
+    for (const dir of pathDirs) {
+      const candidate = join(dir, 'agy');
+      if (existsSync(candidate)) return { command: candidate, prefixArgs: [] };
+    }
+    for (const candidate of [join(home, '.local', 'bin', 'agy'), '/opt/homebrew/bin/agy', '/usr/local/bin/agy']) {
+      if (existsSync(candidate)) return { command: candidate, prefixArgs: [] };
     }
   }
-  const fallbacks = isWin
-    ? [...(env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, 'agy', 'bin', 'agy.exe')] : []), join(home, 'AppData', 'Local', 'agy', 'bin', 'agy.exe')]
-    : [join(home, '.local', 'bin', 'agy'), '/opt/homebrew/bin/agy', '/usr/local/bin/agy'];
-  for (const candidate of fallbacks) if (existsSync(candidate)) return candidate;
-  return isWin ? 'agy.exe' : 'agy';
+  return { command: agent, prefixArgs: [] };
 }
 
 export async function prepareJob(input, options = {}) {
@@ -203,39 +298,43 @@ export async function runJob(directory, { env = process.env } = {}) {
     state.result = typeof lastReply === 'string' ? lastReply.slice(0, 16000) : null;
   }
   let outcome;
+  let resolveError = null;
   try {
-    const cli = request.agent === 'agy'
-      ? resolveAgyBinary(childEnv)
-      : (childEnv[request.agent === 'codex' ? 'DSH_CODEX_BIN' : 'DSH_CLAUDE_BIN'] || request.agent);
-    const script = /\.[cm]?js$/i.test(cli);
-    const child = spawn(script ? process.execPath : cli, script ? [cli, ...args] : args, { cwd: request.cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
-    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => {
-      keep(output, chunk);
-      line += chunk;
-      let at;
-      while ((at = line.indexOf('\n')) >= 0) { const complete = line.slice(0, at); line = line.slice(at + 1); event(complete); }
-      if (line.length > 2 * 1024 * 1024) { line = ''; parseError = true; }
-    });
-    child.stderr.on('data', chunk => keep(stderr, chunk, true));
-    child.stdin.on('error', () => {});
-    child.stdin.end(request.agent === 'agy' ? '' : request.prompt);
-    outcome = await new Promise(resolve_ => {
-      // agy 主进程退出后，宿主辅助进程可能仍持有管道。先排空尾部事件，再结束本次读取。
-      let drainTimeout;
-      if (request.agent === 'agy') child.once('exit', () => {
-        drainTimeout = setTimeout(() => {
-          child.stdout.destroy();
-          child.stderr.destroy();
-        }, 1000);
+    let spec;
+    try { spec = resolveCliSpawn(request.agent, childEnv); }
+    catch (error) { resolveError = error instanceof Error ? error.message : String(error); }
+    if (resolveError) {
+      outcome = { code: null, spawnError: true };
+    } else {
+      const child = spawn(spec.command, [...spec.prefixArgs, ...args], { cwd: request.cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+      child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+      child.stdout.on('data', chunk => {
+        keep(output, chunk);
+        line += chunk;
+        let at;
+        while ((at = line.indexOf('\n')) >= 0) { const complete = line.slice(0, at); line = line.slice(at + 1); event(complete); }
+        if (line.length > 2 * 1024 * 1024) { line = ''; parseError = true; }
       });
-      child.once('error', () => resolve_({ code: null, spawnError: true }));
-      child.once('close', (code, signal) => {
-        clearTimeout(drainTimeout);
-        resolve_({ code, signal });
+      child.stderr.on('data', chunk => keep(stderr, chunk, true));
+      child.stdin.on('error', () => {});
+      child.stdin.end(request.agent === 'agy' ? '' : request.prompt);
+      outcome = await new Promise(resolve_ => {
+        // agy 主进程退出后，宿主辅助进程可能仍持有管道。先排空尾部事件，再结束本次读取。
+        let drainTimeout;
+        if (request.agent === 'agy') child.once('exit', () => {
+          drainTimeout = setTimeout(() => {
+            child.stdout.destroy();
+            child.stderr.destroy();
+          }, 1000);
+        });
+        child.once('error', () => resolve_({ code: null, spawnError: true }));
+        child.once('close', (code, signal) => {
+          clearTimeout(drainTimeout);
+          resolve_({ code, signal });
+        });
       });
-    });
-    if (line.trim()) event(line);
+      if (line.trim()) event(line);
+    }
   } finally {
     clearInterval(heartbeat);
     await writes; await output.close(); await stderr.close();
@@ -244,7 +343,7 @@ export async function runJob(directory, { env = process.env } = {}) {
     await writeFile(join(directory, 'result.txt'), final, { mode: 0o600 });
     state.result = final.slice(0, 16000); state.result_file = join(directory, 'result.txt'); state.result_truncated = final.length > 16000;
   }
-  if (outcome.spawnError) { state.status = 'failed'; state.error = `无法启动 ${request.agent}，请检查 CLI 安装`; }
+  if (outcome.spawnError) { state.status = 'failed'; state.error = resolveError || `无法启动 ${request.agent}，请检查 CLI 安装`; }
   else if (state.status === 'running') {
     state.status = ended && outcome.code === 0 && !parseError && state.session_id ? (denied ? 'needs_attention' : 'completed') : 'unknown';
     if (state.status === 'unknown') state.error = '未确认正常轮次结束；保留原会话与记录，不自动重跑';
@@ -266,15 +365,23 @@ if (process.argv[1] && await realpath(process.argv[1]) === await realpath(self))
         seen.add(key);
         if (key === 'status') { status = true; continue; }
         if (key === 'omit-source') { input.omit_source = true; continue; }
-        if (!['request-id', 'cwd', 'content-file', 'reply-agent', 'reply-session-id', 'source-agent', 'source-session-id'].includes(key) || args[i + 1] === undefined)
-          throw new Error('新建使用 --cwd --request-id --content-file；查询使用 --status --request-id');
+        if (key === 'stdin') { input.stdin = true; continue; }
+        if (!['request-id', 'cwd', 'content', 'content-file', 'reply-agent', 'reply-session-id', 'source-agent', 'source-session-id'].includes(key) || args[i + 1] === undefined)
+          throw new Error('新建使用 --cwd --request-id 与正文（--stdin、--content 或 --content-file）；查询使用 --status --request-id');
         input[key.replaceAll('-', '_')] = args[++i];
       }
       if (status) {
         if (Object.keys(input).some(key => key !== 'request_id')) throw new Error('查询仅接受 --status --request-id');
         console.log(JSON.stringify(await inspectJob(input.request_id)));
       } else {
-        input.content = await readFile(input.content_file, 'utf8');
+        const sources = [input.content !== undefined, input.content_file !== undefined, input.stdin === true].filter(Boolean).length;
+        if (sources !== 1) throw new Error('新建必须且只能提供一种正文来源：--stdin、--content 或 --content-file');
+        if (input.content_file !== undefined) {
+          try { input.content = await readFile(input.content_file, 'utf8'); }
+          catch { throw new Error('无法读取正文文件'); }
+        } else if (input.stdin === true) {
+          input.content = await readStdinText();
+        }
         const prepared = await prepareJob(input);
         console.log(JSON.stringify(await launchJob(prepared)));
       }

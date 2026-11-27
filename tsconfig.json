@@ -11,5 +11,13 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/client.ts"]
+  "exclude": [
+    "src/client.ts",
+    "src/client/format.ts",
+    "src/client/styles.ts",
+    "src/client/drawer.ts",
+    "src/client/notifications.ts",
+    "src/client/install-drawer.ts",
+    "src/client/panel-drawers.ts"
+  ]
 }
